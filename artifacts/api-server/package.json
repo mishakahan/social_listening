@@ -16,6 +16,9 @@
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
+    "franc": "^6.2.0",
+    "node-cron": "^4.2.1",
+    "openai": "^6.34.0",
     "pino": "^9",
     "pino-http": "^10"
   },

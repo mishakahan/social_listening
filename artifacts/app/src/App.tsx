@@ -1,28 +1,42 @@
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Suspense, lazy } from "react";
 import NotFound from "@/pages/not-found";
+import { AppLayout } from "@/shells/AppLayout";
 
-const queryClient = new QueryClient();
+const RadarSetupPage = lazy(() => import("@/pages/radar/setup"));
+const SeedsAuditPage = lazy(() => import("@/pages/radar/audit/seeds"));
+const QueriesAuditPage = lazy(() => import("@/pages/radar/audit/queries"));
+const RunsAuditPage = lazy(() => import("@/pages/radar/audit/runs"));
+const TrendsListPage = lazy(() => import("@/pages/radar/trends/list"));
+const TrendDetailPage = lazy(() => import("@/pages/radar/trends/detail"));
+const ControlPanelPage = lazy(() => import("@/pages/radar/control-panel"));
 
-function Home() {
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30_000, retry: 2 },
+  },
+});
+
+function RadarRouter() {
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-50">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold text-gray-900">Replit Agent is building...</h1>
-        <p className="mt-2 text-sm text-gray-600">Your app will appear here once it's ready.</p>
-      </div>
-    </div>
-  );
-}
-
-function Router() {
-  return (
-    <Switch>
-      <Route path="/" component={Home} />
-      <Route component={NotFound} />
-    </Switch>
+    <AppLayout>
+      <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></div>}>
+        <Switch>
+          <Route path="/" component={() => <Redirect to="/radar/setup" />} />
+          <Route path="/radar/setup" component={RadarSetupPage} />
+          <Route path="/radar/audit/seeds" component={SeedsAuditPage} />
+          <Route path="/radar/audit/queries" component={QueriesAuditPage} />
+          <Route path="/radar/audit/runs" component={RunsAuditPage} />
+          <Route path="/radar/trends/:trendId" component={TrendDetailPage} />
+          <Route path="/radar/trends" component={TrendsListPage} />
+          <Route path="/radar/control-panel" component={ControlPanelPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
+    </AppLayout>
   );
 }
 
@@ -31,7 +45,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
+          <RadarRouter />
         </WouterRouter>
         <Toaster />
       </TooltipProvider>

@@ -1,20 +1,692 @@
-// Export your models here. Add one export per file
-// export * from "./posts";
-//
-// Each model/table should ideally be split into different files.
-// Each model/table should define a Drizzle table, insert schema, and types:
-//
-//   import { pgTable, text, serial } from "drizzle-orm/pg-core";
-//   import { createInsertSchema } from "drizzle-zod";
-//   import { z } from "zod/v4";
-//
-//   export const postsTable = pgTable("posts", {
-//     id: serial("id").primaryKey(),
-//     title: text("title").notNull(),
-//   });
-//
-//   export const insertPostSchema = createInsertSchema(postsTable).omit({ id: true });
-//   export type InsertPost = z.infer<typeof insertPostSchema>;
-//   export type Post = typeof postsTable.$inferSelect;
+import {
+  pgTable,
+  text,
+  serial,
+  integer,
+  timestamp,
+  boolean,
+  doublePrecision,
+  date,
+  jsonb,
+} from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod/v4";
 
-export {}
+// ---------------------------------------------------------------------------
+// Group 1: Supporting tables (standalone mode equivalents)
+// ---------------------------------------------------------------------------
+
+// companies (standalone stub)
+export const companies = pgTable("companies", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// users (standalone stub)
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// knowledge_items (standalone)
+export const knowledgeItems = pgTable("knowledge_items", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  category: text("category").notNull(),
+  type: text("type").notNull().default("trend_signal"),
+  title: text("title").notNull(),
+  topicLabel: text("topic_label"),
+  description: text("description"),
+  summary: text("summary"),
+  tags: jsonb("tags").$type<string[]>().default([]),
+  signalStrength: integer("signal_strength").default(0),
+  relevance: integer("relevance"),
+  confidence: doublePrecision("confidence"),
+  status: text("status").notNull().default("under_review"),
+  geographicScope: text("geographic_scope"),
+  timeHorizon: text("time_horizon"),
+  originType: text("origin_type").default("bot_ingestion"),
+  evidenceCount: integer("evidence_count").default(0),
+  userValidated: boolean("user_validated").default(false),
+  archived: boolean("archived").default(false),
+  snoozedUntil: timestamp("snoozed_until"),
+  flaggedAsNoise: boolean("flagged_as_noise").default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// knowledge_evidence
+export const knowledgeEvidence = pgTable("knowledge_evidence", {
+  id: serial("id").primaryKey(),
+  knowledgeItemId: integer("knowledge_item_id")
+    .notNull()
+    .references(() => knowledgeItems.id, { onDelete: "cascade" }),
+  title: text("title"),
+  source: text("source"),
+  evidenceType: text("evidence_type"),
+  audienceType: text("audience_type"),
+  content: text("content"),
+  sourceUrl: text("source_url"),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// Group 2: tp_* pipeline tables
+// ---------------------------------------------------------------------------
+
+// tp_seed_candidates
+export const tpSeedCandidates = pgTable("tp_seed_candidates", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  payload: jsonb("payload")
+    .notNull()
+    .$type<
+      Array<{
+        label: string;
+        description: string;
+        geography: string;
+        productCategoryLink: string;
+        territoryTag: string;
+        strategicCentrality: number;
+        actionableAt: string;
+        groundedIn: string[];
+        seedQueries: {
+          language: string;
+          keywords: string[];
+          hashtags: string[];
+        }[];
+      }>
+    >(),
+  edits: jsonb("edits").$type<Record<string, any>>().default({}),
+  status: text("status").notNull().default("draft"),
+  briefSnapshot: text("brief_snapshot").notNull(),
+  companyContextSnapshot: jsonb("company_context_snapshot").$type<
+    Record<string, any>
+  >(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  committedAt: timestamp("committed_at"),
+});
+
+// tp_seed_items
+export const tpSeedItems = pgTable("tp_seed_items", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  description: text("description"),
+  geography: text("geography").notNull(),
+  productCategoryLink: text("product_category_link"),
+  territoryTag: text("territory_tag"),
+  strategicCentrality: integer("strategic_centrality").notNull().default(50),
+  actionableAt: text("actionable_at"),
+  groundedIn: jsonb("grounded_in").$type<string[]>().default([]),
+  status: text("status").notNull().default("pending"),
+  editedFromPayload: jsonb("edited_from_payload").$type<
+    Record<string, any> | null
+  >(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// tp_scout_queries
+export const tpScoutQueries = pgTable("tp_scout_queries", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  seedItemId: integer("seed_item_id")
+    .notNull()
+    .references(() => tpSeedItems.id, { onDelete: "cascade" }),
+  topicLabel: text("topic_label").notNull(),
+  geography: text("geography").notNull(),
+  language: text("language").notNull(),
+  keywords: jsonb("keywords").notNull().$type<string[]>(),
+  hashtags: jsonb("hashtags").notNull().$type<string[]>(),
+  active: boolean("active").notNull().default(false),
+  scrapeCadence: text("scrape_cadence").notNull().default("daily"),
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  totalSignalsFetched: integer("total_signals_fetched").notNull().default(0),
+  totalSignalsUsable: integer("total_signals_usable").notNull().default(0),
+  llmJustification: text("llm_justification"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// tp_actor_runs
+export const tpActorRuns = pgTable("tp_actor_runs", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  scoutQueryId: integer("scout_query_id").references(
+    () => tpScoutQueries.id,
+    { onDelete: "set null" }
+  ),
+  actorSlug: text("actor_slug").notNull(),
+  platform: text("platform").notNull(),
+  runMode: text("run_mode").notNull(),
+  apifyRunId: text("apify_run_id"),
+  apifyDatasetId: text("apify_dataset_id"),
+  status: text("status").notNull().default("queued"),
+  inputPayload: jsonb("input_payload").notNull().$type<Record<string, any>>(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  recordsFetched: integer("records_fetched").notNull().default(0),
+  recordsUsable: integer("records_usable").notNull().default(0),
+  recordsDropped: integer("records_dropped").notNull().default(0),
+  oldestPostedAt: timestamp("oldest_posted_at"),
+  newestPostedAt: timestamp("newest_posted_at"),
+  costUsd: doublePrecision("cost_usd"),
+  errorMessage: text("error_message"),
+  rawLog: jsonb("raw_log")
+    .$type<Array<{ ts: string; level: string; msg: string }>>()
+    .default([]),
+  parentActorRunId: integer("parent_actor_run_id"),
+  isTestFire: boolean("is_test_fire").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// tp_raw_signals
+export const tpRawSignals = pgTable("tp_raw_signals", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  actorRunId: integer("actor_run_id").references(() => tpActorRuns.id, {
+    onDelete: "set null",
+  }),
+  scoutQueryId: integer("scout_query_id").references(
+    () => tpScoutQueries.id,
+    { onDelete: "set null" }
+  ),
+  platform: text("platform").notNull(),
+  sourceActor: text("source_actor").notNull(),
+  sourceId: text("source_id").notNull(),
+  sourceUrl: text("source_url"),
+  postedAt: timestamp("posted_at"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  authorHandle: text("author_handle"),
+  authorFollowers: integer("author_followers"),
+  authorTier: text("author_tier"),
+  authorVerified: boolean("author_verified").default(false),
+  text: text("text"),
+  mediaUrls: jsonb("media_urls").$type<string[]>().default([]),
+  hashtags: jsonb("hashtags").$type<string[]>().default([]),
+  mentions: jsonb("mentions").$type<string[]>().default([]),
+  language: text("language"),
+  languageConfidence: doublePrecision("language_confidence"),
+  geography: text("geography"),
+  engagementLikes: integer("engagement_likes"),
+  engagementComments: integer("engagement_comments"),
+  engagementShares: integer("engagement_shares"),
+  engagementViews: integer("engagement_views"),
+  engagementSaves: integer("engagement_saves"),
+  engagementScore: integer("engagement_score"),
+  engagementComposite: doublePrecision("engagement_composite"),
+  commercialIntent: boolean("commercial_intent").default(false),
+  commercialIntentConfidence: doublePrecision("commercial_intent_confidence"),
+  entityExtractionStatus: text("entity_extraction_status")
+    .notNull()
+    .default("pending"),
+  entityExtractionAt: timestamp("entity_extraction_at"),
+  backfillDerived: boolean("backfill_derived").notNull().default(false),
+  retainReason: text("retain_reason"),
+  raw: jsonb("raw").notNull().$type<Record<string, any>>(),
+  metadata: jsonb("metadata").$type<Record<string, any>>().default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// tp_entities
+export const tpEntities = pgTable("tp_entities", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  canonicalLabel: text("canonical_label").notNull(),
+  entityType: text("entity_type").notNull(),
+  aliases: jsonb("aliases").notNull().$type<string[]>().default([]),
+  firstSeenAt: timestamp("first_seen_at"),
+  lastSeenAt: timestamp("last_seen_at"),
+  totalMentions: integer("total_mentions").notNull().default(0),
+  deletedAt: timestamp("deleted_at"),
+  deletedByUserId: integer("deleted_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// tp_signal_entities
+export const tpSignalEntities = pgTable("tp_signal_entities", {
+  id: serial("id").primaryKey(),
+  rawSignalId: integer("raw_signal_id")
+    .notNull()
+    .references(() => tpRawSignals.id, { onDelete: "cascade" }),
+  entityId: integer("entity_id")
+    .notNull()
+    .references(() => tpEntities.id, { onDelete: "cascade" }),
+  mentionTextSpan: text("mention_text_span"),
+  sentiment: text("sentiment"),
+  sentimentConfidence: doublePrecision("sentiment_confidence"),
+  extractedAt: timestamp("extracted_at").defaultNow().notNull(),
+});
+
+// tp_entity_timeseries
+export const tpEntityTimeseries = pgTable("tp_entity_timeseries", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  entityId: integer("entity_id")
+    .notNull()
+    .references(() => tpEntities.id, { onDelete: "cascade" }),
+  platform: text("platform").notNull(),
+  geography: text("geography").notNull(),
+  territoryTag: text("territory_tag"),
+  bucketDate: date("bucket_date").notNull(),
+  mentions: integer("mentions").notNull().default(0),
+  uniqueAuthors: integer("unique_authors").notNull().default(0),
+  engagementSum: doublePrecision("engagement_sum").notNull().default(0),
+  engagementMedian: doublePrecision("engagement_median").notNull().default(0),
+  backfillDerived: boolean("backfill_derived").notNull().default(false),
+  computedAt: timestamp("computed_at").defaultNow().notNull(),
+});
+
+// tp_entity_state
+export const tpEntityState = pgTable("tp_entity_state", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  entityId: integer("entity_id")
+    .notNull()
+    .references(() => tpEntities.id, { onDelete: "cascade" }),
+  geography: text("geography").notNull(),
+  territoryTag: text("territory_tag"),
+  state: text("state").notNull().default("candidate"),
+  stateEnteredAt: timestamp("state_entered_at").defaultNow().notNull(),
+  lastTransitionReason: text("last_transition_reason"),
+  volume7d: integer("volume_7d").notNull().default(0),
+  volume30d: integer("volume_30d").notNull().default(0),
+  volume90d: integer("volume_90d").notNull().default(0),
+  velocity: doublePrecision("velocity").notNull().default(0),
+  growthWow: doublePrecision("growth_wow").notNull().default(0),
+  growthMom: doublePrecision("growth_mom").notNull().default(0),
+  volatility: doublePrecision("volatility").notNull().default(0),
+  platformsSeen: jsonb("platforms_seen").notNull().$type<string[]>().default([]),
+  knowledgeItemId: integer("knowledge_item_id").references(
+    () => knowledgeItems.id,
+    { onDelete: "set null" }
+  ),
+  sourceSeedItemIds: jsonb("source_seed_item_ids")
+    .notNull()
+    .$type<number[]>()
+    .default([]),
+  sourceSeedItemFirstSeenAt: jsonb("source_seed_item_first_seen_at")
+    .notNull()
+    .$type<Record<string, string>>()
+    .default({}),
+  computedAt: timestamp("computed_at").defaultNow().notNull(),
+});
+
+// tp_entity_synonyms
+export const tpEntitySynonyms = pgTable("tp_entity_synonyms", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  alias: text("alias").notNull(),
+  canonicalLabel: text("canonical_label").notNull(),
+  language: text("language"),
+  entityType: text("entity_type").notNull(),
+  source: text("source").notNull().default("auto"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// tp_pipeline_config
+export const tpPipelineConfig = pgTable("tp_pipeline_config", {
+  companyId: integer("company_id")
+    .primaryKey()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  // Tier 1
+  noiseFloor: integer("noise_floor").notNull().default(3),
+  commercialIntentThreshold: doublePrecision("commercial_intent_threshold")
+    .notNull()
+    .default(0.75),
+  languageConfidenceThreshold: doublePrecision("language_confidence_threshold")
+    .notNull()
+    .default(0.7),
+  engagementWeights: jsonb("engagement_weights")
+    .notNull()
+    .$type<Record<string, Record<string, number>>>()
+    .default({
+      instagram: { likes: 1, comments: 3, shares: 5, views: 0.1 },
+      tiktok: { likes: 1, comments: 5, shares: 3, views: 0.05 },
+      reddit: { score: 1, comments: 2, shares: 0, views: 0 },
+      xiaohongshu: { likes: 1, comments: 3, shares: 2, views: 0.1, saves: 4 },
+      google_trends: { views: 1, likes: 0, comments: 0, shares: 0 },
+    }),
+  authorTierWeights: jsonb("author_tier_weights")
+    .notNull()
+    .$type<Record<string, number>>()
+    .default({ nano: 0.5, micro: 1.0, mid: 1.5, macro: 2.0 }),
+  scrapeDepthLimits: jsonb("scrape_depth_limits")
+    .notNull()
+    .$type<Record<string, number>>()
+    .default({
+      instagram_hashtag: 500,
+      tiktok: 1000,
+      reddit: 500,
+      xiaohongshu: 300,
+      google_trends: 1,
+    }),
+  // Tier 2
+  dedupCosineThreshold: doublePrecision("dedup_cosine_threshold")
+    .notNull()
+    .default(0.8),
+  candidateToEmergingMinWeeks: integer("candidate_to_emerging_min_weeks")
+    .notNull()
+    .default(2),
+  candidateToEmergingMinWowGrowth: doublePrecision(
+    "candidate_to_emerging_min_wow_growth"
+  )
+    .notNull()
+    .default(0.3),
+  candidateToEmergingMinVolume: integer("candidate_to_emerging_min_volume")
+    .notNull()
+    .default(9),
+  crossSourceCoOccurrenceMultiplier: doublePrecision(
+    "cross_source_co_occurrence_multiplier"
+  )
+    .notNull()
+    .default(0.3),
+  scrapeCadence: jsonb("scrape_cadence")
+    .notNull()
+    .$type<Record<string, string>>()
+    .default({
+      instagram_hashtag: "daily",
+      tiktok: "daily",
+      reddit: "3x_week",
+      xiaohongshu: "daily",
+      google_trends: "weekly",
+    }),
+  volatilityTolerance: doublePrecision("volatility_tolerance")
+    .notNull()
+    .default(1.5),
+  minEvidenceForKnowledgeItem: integer("min_evidence_for_knowledge_item")
+    .notNull()
+    .default(5),
+  // Tier 3
+  peakingWeeksNegVelocity: integer("peaking_weeks_neg_velocity")
+    .notNull()
+    .default(2),
+  decliningWeeksNegVelocity: integer("declining_weeks_neg_velocity")
+    .notNull()
+    .default(3),
+  dormantThresholdWeeks: integer("dormant_threshold_weeks").notNull().default(4),
+  baselineWindowDays: integer("baseline_window_days").notNull().default(30),
+  baselineExclusionDays: integer("baseline_exclusion_days").notNull().default(7),
+  radarSurfaceMinSignalStrength: integer("radar_surface_min_signal_strength")
+    .notNull()
+    .default(40),
+  platformWeights: jsonb("platform_weights")
+    .notNull()
+    .$type<Record<string, number>>()
+    .default({
+      instagram: 1,
+      tiktok: 1,
+      reddit: 1,
+      xiaohongshu: 1,
+      google_trends: 1,
+    }),
+  // Budget
+  monthlyBudgetUsd: doublePrecision("monthly_budget_usd").notNull().default(500),
+  monthlyBudgetSoftPctWarning: integer("monthly_budget_soft_pct_warning")
+    .notNull()
+    .default(80),
+  monthlyBudgetHardPctBlock: integer("monthly_budget_hard_pct_block")
+    .notNull()
+    .default(100),
+  budgetOverrideUntil: timestamp("budget_override_until"),
+  // Author allowlist
+  authorAllowlist: jsonb("author_allowlist")
+    .notNull()
+    .$type<string[]>()
+    .default([]),
+  // Platform enables
+  platforms: jsonb("platforms")
+    .notNull()
+    .$type<Record<string, { enabled: boolean }>>()
+    .default({
+      instagram: { enabled: true },
+      tiktok: { enabled: true },
+      reddit: { enabled: true },
+      xiaohongshu: { enabled: true },
+      google_trends: { enabled: true },
+    }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// Relations
+// ---------------------------------------------------------------------------
+
+export const companiesRelations = relations(companies, ({ many }) => ({
+  tpSeedCandidates: many(tpSeedCandidates),
+  tpSeedItems: many(tpSeedItems),
+  tpScoutQueries: many(tpScoutQueries),
+  tpActorRuns: many(tpActorRuns),
+  tpRawSignals: many(tpRawSignals),
+  tpEntities: many(tpEntities),
+  tpEntityTimeseries: many(tpEntityTimeseries),
+  tpEntityState: many(tpEntityState),
+  tpEntitySynonyms: many(tpEntitySynonyms),
+  knowledgeItems: many(knowledgeItems),
+}));
+
+export const tpSeedItemsRelations = relations(tpSeedItems, ({ one, many }) => ({
+  company: one(companies, {
+    fields: [tpSeedItems.companyId],
+    references: [companies.id],
+  }),
+  tpScoutQueries: many(tpScoutQueries),
+}));
+
+export const tpScoutQueriesRelations = relations(
+  tpScoutQueries,
+  ({ one, many }) => ({
+    company: one(companies, {
+      fields: [tpScoutQueries.companyId],
+      references: [companies.id],
+    }),
+    seedItem: one(tpSeedItems, {
+      fields: [tpScoutQueries.seedItemId],
+      references: [tpSeedItems.id],
+    }),
+    tpActorRuns: many(tpActorRuns),
+    tpRawSignals: many(tpRawSignals),
+  })
+);
+
+export const tpActorRunsRelations = relations(tpActorRuns, ({ one, many }) => ({
+  company: one(companies, {
+    fields: [tpActorRuns.companyId],
+    references: [companies.id],
+  }),
+  scoutQuery: one(tpScoutQueries, {
+    fields: [tpActorRuns.scoutQueryId],
+    references: [tpScoutQueries.id],
+  }),
+  tpRawSignals: many(tpRawSignals),
+}));
+
+export const tpRawSignalsRelations = relations(
+  tpRawSignals,
+  ({ one, many }) => ({
+    company: one(companies, {
+      fields: [tpRawSignals.companyId],
+      references: [companies.id],
+    }),
+    actorRun: one(tpActorRuns, {
+      fields: [tpRawSignals.actorRunId],
+      references: [tpActorRuns.id],
+    }),
+    scoutQuery: one(tpScoutQueries, {
+      fields: [tpRawSignals.scoutQueryId],
+      references: [tpScoutQueries.id],
+    }),
+    tpSignalEntities: many(tpSignalEntities),
+  })
+);
+
+export const tpEntitiesRelations = relations(tpEntities, ({ one, many }) => ({
+  company: one(companies, {
+    fields: [tpEntities.companyId],
+    references: [companies.id],
+  }),
+  tpSignalEntities: many(tpSignalEntities),
+  tpEntityTimeseries: many(tpEntityTimeseries),
+  tpEntityState: many(tpEntityState),
+}));
+
+export const tpEntityStateRelations = relations(
+  tpEntityState,
+  ({ one }) => ({
+    company: one(companies, {
+      fields: [tpEntityState.companyId],
+      references: [companies.id],
+    }),
+    entity: one(tpEntities, {
+      fields: [tpEntityState.entityId],
+      references: [tpEntities.id],
+    }),
+    knowledgeItem: one(knowledgeItems, {
+      fields: [tpEntityState.knowledgeItemId],
+      references: [knowledgeItems.id],
+    }),
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Insert schemas and types
+// ---------------------------------------------------------------------------
+
+// companies
+export const insertCompanySchema = createInsertSchema(companies).omit({
+  id: true,
+});
+export type Company = typeof companies.$inferSelect;
+export type InsertCompany = z.infer<typeof insertCompanySchema>;
+
+// users
+export const insertUserSchema = createInsertSchema(users).omit({ id: true });
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
+
+// knowledgeItems
+export const insertKnowledgeItemSchema = createInsertSchema(
+  knowledgeItems
+).omit({ id: true });
+export type KnowledgeItem = typeof knowledgeItems.$inferSelect;
+export type InsertKnowledgeItem = z.infer<typeof insertKnowledgeItemSchema>;
+
+// knowledgeEvidence
+export const insertKnowledgeEvidenceSchema = createInsertSchema(
+  knowledgeEvidence
+).omit({ id: true });
+export type KnowledgeEvidence = typeof knowledgeEvidence.$inferSelect;
+export type InsertKnowledgeEvidence = z.infer<
+  typeof insertKnowledgeEvidenceSchema
+>;
+
+// tpSeedCandidates
+export const insertTpSeedCandidateSchema = createInsertSchema(
+  tpSeedCandidates
+).omit({ id: true });
+export type TpSeedCandidate = typeof tpSeedCandidates.$inferSelect;
+export type InsertTpSeedCandidate = z.infer<typeof insertTpSeedCandidateSchema>;
+
+// tpSeedItems
+export const insertTpSeedItemSchema = createInsertSchema(tpSeedItems).omit({
+  id: true,
+});
+export type TpSeedItem = typeof tpSeedItems.$inferSelect;
+export type InsertTpSeedItem = z.infer<typeof insertTpSeedItemSchema>;
+
+// tpScoutQueries
+export const insertTpScoutQuerySchema = createInsertSchema(
+  tpScoutQueries
+).omit({ id: true });
+export type TpScoutQuery = typeof tpScoutQueries.$inferSelect;
+export type InsertTpScoutQuery = z.infer<typeof insertTpScoutQuerySchema>;
+
+// tpActorRuns
+export const insertTpActorRunSchema = createInsertSchema(tpActorRuns).omit({
+  id: true,
+});
+export type TpActorRun = typeof tpActorRuns.$inferSelect;
+export type InsertTpActorRun = z.infer<typeof insertTpActorRunSchema>;
+
+// tpRawSignals
+export const insertTpRawSignalSchema = createInsertSchema(tpRawSignals).omit({
+  id: true,
+});
+export type TpRawSignal = typeof tpRawSignals.$inferSelect;
+export type InsertTpRawSignal = z.infer<typeof insertTpRawSignalSchema>;
+
+// tpEntities
+export const insertTpEntitySchema = createInsertSchema(tpEntities).omit({
+  id: true,
+});
+export type TpEntity = typeof tpEntities.$inferSelect;
+export type InsertTpEntity = z.infer<typeof insertTpEntitySchema>;
+
+// tpSignalEntities
+export const insertTpSignalEntitySchema = createInsertSchema(
+  tpSignalEntities
+).omit({ id: true });
+export type TpSignalEntity = typeof tpSignalEntities.$inferSelect;
+export type InsertTpSignalEntity = z.infer<typeof insertTpSignalEntitySchema>;
+
+// tpEntityTimeseries
+export const insertTpEntityTimeseriesSchema = createInsertSchema(
+  tpEntityTimeseries
+).omit({ id: true });
+export type TpEntityTimeseries = typeof tpEntityTimeseries.$inferSelect;
+export type InsertTpEntityTimeseries = z.infer<
+  typeof insertTpEntityTimeseriesSchema
+>;
+
+// tpEntityState
+export const insertTpEntityStateSchema = createInsertSchema(
+  tpEntityState
+).omit({ id: true });
+export type TpEntityState = typeof tpEntityState.$inferSelect;
+export type InsertTpEntityState = z.infer<typeof insertTpEntityStateSchema>;
+
+// tpEntitySynonyms
+export const insertTpEntitySynonymSchema = createInsertSchema(
+  tpEntitySynonyms
+).omit({ id: true });
+export type TpEntitySynonym = typeof tpEntitySynonyms.$inferSelect;
+export type InsertTpEntitySynonym = z.infer<typeof insertTpEntitySynonymSchema>;
+
+// tpPipelineConfig — no serial id; primaryKey is companyId
+export const insertTpPipelineConfigSchema =
+  createInsertSchema(tpPipelineConfig);
+export type TpPipelineConfig = typeof tpPipelineConfig.$inferSelect;
+export type InsertTpPipelineConfig = z.infer<
+  typeof insertTpPipelineConfigSchema
+>;
