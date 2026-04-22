@@ -193,7 +193,7 @@ Rules:
     { role: "user", content: `Generate the seed items array as JSON.` },
   ];
 
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAI().chat.completions.create({
     model: "gpt-4o-mini",
     temperature: 0.4,
     messages,
@@ -258,7 +258,7 @@ Rules:
 - Prefer phrases indicating consumer discovery or discussion
 - Return JSON: { results: [{ language: string, keywords: string[], hashtags: string[] }] }`;
 
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAI().chat.completions.create({
     model: "gpt-4o-mini",
     temperature: 0.4,
     messages: [

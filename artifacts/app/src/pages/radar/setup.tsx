@@ -28,8 +28,12 @@ export default function RadarSetupPage() {
         body: JSON.stringify({ brief }),
       });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Request failed: ${res.status}`);
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("application/json")) {
+          const json = await res.json();
+          throw new Error(json.error || `Request failed: ${res.status}`);
+        }
+        throw new Error(`Request failed: ${res.status}. The API server may still be starting up — please try again in a moment.`);
       }
       const data = await res.json();
       navigate(`/radar/audit/seeds?candidateId=${data.candidateId ?? data.id ?? ""}`);

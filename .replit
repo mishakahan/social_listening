@@ -17,7 +17,7 @@ mode = "parallel"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=3001 pnpm --filter @workspace/api-server run dev"
+args = "PORT=3001 VITE_PORT=5173 pnpm --filter @workspace/api-server run dev"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
@@ -38,6 +38,10 @@ externalPort = 3001
 [[ports]]
 localPort = 5173
 externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
 
 [[ports]]
 localPort = 23863

@@ -70,6 +70,16 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("error", (_err, _req, res) => {
+            res.writeHead(503, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: "API server is starting up — please wait a moment and try again.",
+              })
+            );
+          });
+        },
       },
     },
   },
