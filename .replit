@@ -21,7 +21,7 @@ args = "PORT=3001 pnpm --filter @workspace/api-server run dev"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=8080 BASE_PATH=/ pnpm --filter @workspace/app run dev"
+args = "PORT=5173 BASE_PATH=/ pnpm --filter @workspace/app run dev"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -36,5 +36,5 @@ localPort = 3001
 externalPort = 3001
 
 [[ports]]
-localPort = 8080
+localPort = 5173
 externalPort = 80
