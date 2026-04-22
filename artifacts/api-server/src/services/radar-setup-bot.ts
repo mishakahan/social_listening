@@ -1,7 +1,16 @@
 import OpenAI from "openai";
 import { logger } from "../lib/logger.js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY environment variable is not set. Add it to your .env file.");
+    }
+    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return _openai;
+}
 
 export interface CompanyContext {
   companyName: string | null;
@@ -70,7 +79,7 @@ async function parseJsonWithRetry<T>(
   let currentMessages = [...messages];
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const response = await openai.chat.completions.create({
+    const response = await getOpenAI().chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
       messages: currentMessages,
