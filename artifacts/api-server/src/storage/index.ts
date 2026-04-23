@@ -71,6 +71,34 @@ export async function getOrCreateDefaultCompany(): Promise<Company> {
   return inserted[0]!;
 }
 
+export async function getOrCreateDefaultUserId(): Promise<number> {
+  const existing = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, 1))
+    .limit(1);
+  if (existing.length > 0) {
+    return existing[0]!.id;
+  }
+  const inserted = await db
+    .insert(users)
+    .values({
+      email: "default@trendpipeline.local",
+      name: "Default User",
+    })
+    .onConflictDoNothing({ target: users.email })
+    .returning({ id: users.id });
+  if (inserted[0]) {
+    return inserted[0].id;
+  }
+  const fallback = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, "default@trendpipeline.local"))
+    .limit(1);
+  return fallback[0]!.id;
+}
+
 export async function getCompany(id: number): Promise<Company | undefined> {
   const rows = await db
     .select()

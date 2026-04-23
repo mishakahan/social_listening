@@ -44,7 +44,7 @@ router.post("/companies/:id/setup-radar/generate", async (req, res) => {
       return;
     }
 
-    const resolvedUserId = userId ?? 1;
+    const resolvedUserId = userId ?? (await storage.getOrCreateDefaultUserId());
 
     const { companyContext, seedItems } = await generateSeedCandidates(
       brief,
