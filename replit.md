@@ -43,3 +43,15 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   `/api/pipeline/companies/:id/pipeline-config` are validated by a Zod schema
   in `artifacts/api-server/src/routes/pipeline.ts` (id format, required label,
   unique ids, at-least-one type).
+- The Entities Audit page (`/radar/audit/entities`) shows a Pipeline panel with
+  three numbered steps (Extraction → Timeseries → State Machine). Each row
+  shows scope (what will be processed), a rough time estimate, and the last-run
+  timestamp. Scope/estimates come from `GET /api/pipeline/companies/:id/run-status`,
+  which counts pending/failed signals, joined signal×entity rows in the
+  timeseries window, and active (non-deleted) entities. Pipeline jobs are
+  fire-and-forget HTTP POSTs; the UI tracks "running" state via
+  `usePipelineRunTracker` (in `artifacts/app/src/lib/pipeline-status.ts`),
+  which clears each step's running flag when its `lastRunAt` advances or after
+  a heuristic timeout (extraction 10 min, timeseries 3 min, state machine 10 min).
+  While any step is running, the page polls run-status every 3s and invalidates
+  entity-states / signals queries on completion so users see fresh data.

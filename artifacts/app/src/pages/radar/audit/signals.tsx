@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,8 +12,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  fetchPipelineRunStatus,
+  extractionEstimate,
+  relativeTime,
+  usePipelineRunTracker,
+  type PipelineRunStatus,
+} from "@/lib/pipeline-status";
 
 interface RawSignal {
   id: number;
@@ -104,13 +111,49 @@ export default function SignalsAuditPage() {
     refetchOnWindowFocus: false,
   });
 
+  const { data: pipelineStatus } = useQuery<PipelineRunStatus>({
+    queryKey: ["pipeline-run-status", 1],
+    queryFn: () => fetchPipelineRunStatus(1),
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
+  });
+  const tracker = usePipelineRunTracker(pipelineStatus);
+  const extractionRunning = tracker.isRunning("extraction");
+
+  // Poll status while extraction is actually still running (decoupled from
+  // mutation.isPending — the POST is fire-and-forget). Also refresh the
+  // signals list when the run completes so users see the new statuses.
+  useEffect(() => {
+    if (!extractionRunning) return;
+    const id = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", 1] });
+    }, 3_000);
+    return () => clearInterval(id);
+  }, [extractionRunning, queryClient]);
+
   const extractionMutation = useMutation({
     mutationFn: triggerExtraction,
     onSuccess: () => {
-      toast.success("Entity extraction started — refresh in a moment");
+      tracker.markStarted("extraction");
+      toast.success("Entity extraction running — this page will refresh when it finishes");
     },
     onError: (err: Error) => toast.error(err.message || "Failed to start extraction"),
   });
+
+  // Refresh the signals list only when an extraction run actually completes
+  // (true → false transition). Skips the initial mount (extractionRunning
+  // starts as false) so we don't invalidate gratuitously.
+  const wasExtractionRunning = useRef(false);
+  useEffect(() => {
+    if (wasExtractionRunning.current && !extractionRunning) {
+      queryClient.invalidateQueries({ queryKey: ["signals"] });
+    }
+    wasExtractionRunning.current = extractionRunning;
+  }, [extractionRunning, queryClient]);
+
+  const extEstimate = pipelineStatus
+    ? extractionEstimate(pipelineStatus)
+    : null;
 
   const deleteMutation = useMutation({
     mutationFn: bulkDeleteSignals,
@@ -217,14 +260,44 @@ export default function SignalsAuditPage() {
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </Button>
-          <Button
-            size="sm"
-            className="gap-1.5"
-            disabled={extractionMutation.isPending}
-            onClick={() => extractionMutation.mutate()}
-          >
-            Run Extraction
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              size="sm"
+              className="gap-1.5"
+              disabled={
+                extractionMutation.isPending ||
+                extractionRunning ||
+                (extEstimate ? !extEstimate.willDoWork : false)
+              }
+              onClick={() => extractionMutation.mutate()}
+              title={
+                extEstimate && !extEstimate.willDoWork
+                  ? "No signals waiting for extraction"
+                  : undefined
+              }
+            >
+              {extractionMutation.isPending || extractionRunning ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Running…
+                </>
+              ) : (
+                "Run Extraction"
+              )}
+            </Button>
+            {extEstimate && (
+              <span className="text-muted-foreground text-[11px] leading-tight text-right">
+                {extEstimate.scope}
+                {extEstimate.willDoWork ? ` · ${extEstimate.estimate}` : ""}
+                {pipelineStatus?.extraction.lastExtractionAt && (
+                  <>
+                    {" · last run "}
+                    {relativeTime(pipelineStatus.extraction.lastExtractionAt)}
+                  </>
+                )}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

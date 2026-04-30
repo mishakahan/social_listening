@@ -1,5 +1,5 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -10,8 +10,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, RefreshCw, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
+import { AlertCircle, RefreshCw, ChevronDown, ChevronRight as ChevronRightIcon, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  fetchPipelineRunStatus,
+  relativeTime,
+  extractionEstimate,
+  timeseriesEstimate,
+  stateMachineEstimate,
+  usePipelineRunTracker,
+  type PipelineRunStatus,
+  type StepEstimate,
+} from "@/lib/pipeline-status";
 
 interface EntityState {
   id: number;
@@ -146,6 +156,194 @@ function TimeseriesInline({ entityId }: { entityId: number }) {
   );
 }
 
+interface PipelineStepRowProps {
+  index: number;
+  title: string;
+  description: string;
+  step: StepEstimate;
+  lastRunAt: string | null;
+  pending: boolean;
+  primary?: boolean;
+  onRun: () => void;
+}
+
+function PipelineStepRow({
+  index,
+  title,
+  description,
+  step,
+  lastRunAt,
+  pending,
+  primary,
+  onRun,
+}: PipelineStepRowProps) {
+  return (
+    <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:gap-4">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-xs font-mono">
+            {index}.
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          {pending && (
+            <span className="text-primary inline-flex items-center gap-1 text-xs">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              running…
+            </span>
+          )}
+        </div>
+        <p className="text-muted-foreground mt-1 text-xs">{description}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="text-foreground font-medium">{step.scope}</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-muted-foreground">
+            estimated {step.estimate}
+          </span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-muted-foreground">
+            last run {relativeTime(lastRunAt)}
+          </span>
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant={primary ? "default" : "outline"}
+        className="gap-1.5 sm:w-32 sm:justify-center"
+        disabled={pending || !step.willDoWork}
+        onClick={onRun}
+        title={!step.willDoWork ? "Nothing to do" : undefined}
+      >
+        {pending ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Running…
+          </>
+        ) : (
+          "Run"
+        )}
+      </Button>
+    </div>
+  );
+}
+
+interface PipelinePanelProps {
+  registerStart: (
+    fn: (step: "extraction" | "timeseries" | "stateMachine") => void
+  ) => void;
+  onRunExtraction: () => void;
+  onRunTimeseries: () => void;
+  onRunStateMachine: () => void;
+}
+
+function PipelinePanel({
+  registerStart,
+  onRunExtraction,
+  onRunTimeseries,
+  onRunStateMachine,
+}: PipelinePanelProps) {
+  const queryClient = useQueryClient();
+
+  const { data: status, isLoading } = useQuery<PipelineRunStatus>({
+    queryKey: ["pipeline-run-status", 1],
+    queryFn: () => fetchPipelineRunStatus(1),
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      // Poll every 3s while any step is still running. The tracker decides
+      // when "running" ends (lastRunAt advances OR heuristic timeout).
+      // We can't read tracker state here directly, so we rely on the
+      // closure captured by the component below via the staleTime/refetch
+      // mechanism. As a simple proxy: while we have no data yet, poll
+      // once; otherwise leave polling control to the effect below.
+      void query;
+      return false;
+    },
+    staleTime: 10_000,
+  });
+
+  const tracker = usePipelineRunTracker(status);
+
+  // Expose markStarted to the parent so its mutation onSuccess can call it.
+  useEffect(() => {
+    registerStart(tracker.markStarted);
+  }, [registerStart, tracker.markStarted]);
+
+  // Active polling driven by the tracker: while any step is "running",
+  // refetch the status every 3s and invalidate any other consumers.
+  useEffect(() => {
+    if (!tracker.anyRunning) return;
+    const id = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", 1] });
+    }, 3_000);
+    return () => clearInterval(id);
+  }, [tracker.anyRunning, queryClient]);
+
+  // When a long-running job completes, refresh the entity list so users see
+  // updated states without having to click Refresh.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !tracker.anyRunning) {
+      queryClient.invalidateQueries({ queryKey: ["entity-states"] });
+    }
+    wasRunning.current = tracker.anyRunning;
+  }, [tracker.anyRunning, queryClient]);
+
+  if (isLoading || !status) {
+    return (
+      <div className="border-border mb-6 rounded-xl border p-4">
+        <Skeleton className="mb-2 h-5 w-32" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
+  const ext = extractionEstimate(status);
+  const ts = timeseriesEstimate(status);
+  const sm = stateMachineEstimate(status);
+
+  return (
+    <div className="border-border mb-6 rounded-xl border overflow-hidden">
+      <div className="border-border bg-muted/30 border-b px-4 py-2">
+        <h2 className="text-sm font-semibold text-foreground">Pipeline</h2>
+        <p className="text-muted-foreground text-xs">
+          Run these steps in order to refresh entities from the latest signals.
+          Each runs in the background; this page polls for progress while it's
+          running and updates the timestamp when the job finishes.
+        </p>
+      </div>
+      <div className="divide-border divide-y">
+        <PipelineStepRow
+          index={1}
+          title="Entity Extraction"
+          description="Pulls named entities (trends, ingredients, products, places) out of raw signals using the LLM."
+          step={ext}
+          lastRunAt={status.extraction.lastExtractionAt}
+          pending={tracker.isRunning("extraction")}
+          onRun={onRunExtraction}
+        />
+        <PipelineStepRow
+          index={2}
+          title="Timeseries Aggregation"
+          description="Buckets signals into daily mention counts per entity / platform / geography over the last 90 days."
+          step={ts}
+          lastRunAt={status.timeseries.lastComputedAt}
+          pending={tracker.isRunning("timeseries")}
+          onRun={onRunTimeseries}
+        />
+        <PipelineStepRow
+          index={3}
+          title="State Machine"
+          description="Advances entities through their lifecycle (candidate → emerging → confirmed → peaking → declining → dormant)."
+          step={sm}
+          lastRunAt={status.stateMachine.lastComputedAt}
+          pending={tracker.isRunning("stateMachine")}
+          primary
+          onRun={onRunStateMachine}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function EntitiesAuditPage() {
   const [stateFilter, setStateFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -169,11 +367,25 @@ export default function EntitiesAuditPage() {
   const typeLookup: Record<string, { label: string; color: string }> = {};
   for (const t of entityTypes) typeLookup[t.id] = { label: t.label, color: t.color };
 
+  // PipelinePanel registers its tracker.markStarted via this ref so the
+  // mutations below can flag a step as "running" the moment the POST returns.
+  // The tracker (inside the panel) clears the flag when the matching
+  // last-run timestamp advances or a heuristic timeout elapses.
+  const markStartedRef = useRef<
+    ((step: "extraction" | "timeseries" | "stateMachine") => void) | null
+  >(null);
+  const registerStart = useCallback(
+    (fn: (step: "extraction" | "timeseries" | "stateMachine") => void) => {
+      markStartedRef.current = fn;
+    },
+    []
+  );
+
   const stateMachineMutation = useMutation({
     mutationFn: runStateMachine,
     onSuccess: () => {
-      toast.success("State machine started — refreshing in 5s…");
-      setTimeout(() => refetch(), 5000);
+      markStartedRef.current?.("stateMachine");
+      toast.success("State machine running — this page will refresh when it finishes");
     },
     onError: (err: Error) => toast.error(err.message || "Failed to start state machine"),
   });
@@ -181,15 +393,18 @@ export default function EntitiesAuditPage() {
   const timeseriesMutation = useMutation({
     mutationFn: runTimeseries,
     onSuccess: () => {
-      toast.success("Timeseries aggregation started — refreshing in 5s…");
-      setTimeout(() => refetch(), 5000);
+      markStartedRef.current?.("timeseries");
+      toast.success("Timeseries aggregation running — this page will refresh when it finishes");
     },
     onError: (err: Error) => toast.error(err.message || "Failed to start timeseries"),
   });
 
   const extractionMutation = useMutation({
     mutationFn: runEntityExtraction,
-    onSuccess: () => toast.success("Entity extraction started — run Timeseries then State Machine after it completes"),
+    onSuccess: () => {
+      markStartedRef.current?.("extraction");
+      toast.success("Entity extraction running — run Timeseries then State Machine when it finishes");
+    },
     onError: (err: Error) => toast.error(err.message || "Failed to start entity extraction"),
   });
 
@@ -245,34 +460,16 @@ export default function EntitiesAuditPage() {
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            disabled={extractionMutation.isPending}
-            onClick={() => extractionMutation.mutate()}
-          >
-            {extractionMutation.isPending ? "Extracting…" : "1. Run Extraction"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            disabled={timeseriesMutation.isPending}
-            onClick={() => timeseriesMutation.mutate()}
-          >
-            {timeseriesMutation.isPending ? "Aggregating…" : "2. Run Timeseries"}
-          </Button>
-          <Button
-            size="sm"
-            className="gap-1.5"
-            disabled={stateMachineMutation.isPending}
-            onClick={() => stateMachineMutation.mutate()}
-          >
-            {stateMachineMutation.isPending ? "Running…" : "3. Run State Machine"}
-          </Button>
         </div>
       </div>
+
+      {/* Pipeline run panel */}
+      <PipelinePanel
+        registerStart={registerStart}
+        onRunExtraction={() => extractionMutation.mutate()}
+        onRunTimeseries={() => timeseriesMutation.mutate()}
+        onRunStateMachine={() => stateMachineMutation.mutate()}
+      />
 
       {/* Filters */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -324,7 +521,7 @@ export default function EntitiesAuditPage() {
         <div className="rounded-xl border border-border p-12 text-center">
           <p className="text-sm font-medium text-muted-foreground">No entities found</p>
           <p className="text-xs text-muted-foreground mt-2 max-w-sm mx-auto">
-            Run the three steps in order using the buttons above:
+            Run the three steps in order from the Pipeline panel above:
           </p>
           <ol className="text-xs text-muted-foreground mt-2 space-y-1 text-left max-w-xs mx-auto list-decimal list-inside">
             <li><span className="font-medium">Run Extraction</span> — extract named entities from signals via LLM</li>

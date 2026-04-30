@@ -1351,6 +1351,34 @@ router.post("/companies/:id/run-ingestion", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/run-status
+// Returns live scope counts + last-run timestamps for the three manual
+// pipeline steps (extraction, timeseries, state machine), plus per-run
+// caps/defaults so the UI can show realistic time estimates.
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/run-status", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const status = await storage.getPipelineRunStatus(companyId);
+    res.json({
+      ...status,
+      // Per-run caps and timing assumptions used by the UI for estimates.
+      // Keep these in sync with entity-extraction.ts defaults.
+      meta: {
+        extractionBatchSize: 20,
+        extractionMaxBatches: 50,
+        // Empirical: one OpenAI batch (20 signals) typically returns in 5-12s.
+        // Use 8s as the midpoint for estimates.
+        extractionSecondsPerBatch: 8,
+      },
+    });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get pipeline run status");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/pipeline/companies/:id/run-entity-extraction
 // Manually run entity extraction pass
 // ---------------------------------------------------------------------------

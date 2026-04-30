@@ -1202,3 +1202,126 @@ export async function getTrendDetail(
     evidence,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Pipeline run status — live scope counts + last-run timestamps for the three
+// manual pipeline steps shown on the Entities Audit page.
+// ---------------------------------------------------------------------------
+
+export interface PipelineRunStatus {
+  extraction: {
+    pendingSignals: number;
+    failedSignals: number;
+    totalSignals: number;
+    lastExtractionAt: string | null;
+  };
+  timeseries: {
+    signalsInWindow: number;
+    windowDays: number;
+    lastComputedAt: string | null;
+  };
+  stateMachine: {
+    activeEntities: number;
+    lastComputedAt: string | null;
+  };
+}
+
+export async function getPipelineRunStatus(
+  companyId: number,
+  windowDays = 90
+): Promise<PipelineRunStatus> {
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+  const [
+    extractionRows,
+    extractionLastRows,
+    timeseriesWindowRows,
+    timeseriesLastRows,
+    activeEntityRows,
+    stateLastRows,
+  ] = await Promise.all([
+    db
+      .select({
+        status: tpRawSignals.entityExtractionStatus,
+        cnt: count(),
+      })
+      .from(tpRawSignals)
+      .where(eq(tpRawSignals.companyId, companyId))
+      .groupBy(tpRawSignals.entityExtractionStatus),
+    db
+      .select({ ts: sql<Date | null>`max(${tpRawSignals.entityExtractionAt})` })
+      .from(tpRawSignals)
+      .where(eq(tpRawSignals.companyId, companyId)),
+    // Count the same scope the timeseries job actually processes:
+    // raw signals joined to non-deleted entities via signal_entities.
+    db
+      .select({ cnt: count() })
+      .from(tpRawSignals)
+      .innerJoin(
+        tpSignalEntities,
+        eq(tpSignalEntities.rawSignalId, tpRawSignals.id)
+      )
+      .innerJoin(tpEntities, eq(tpEntities.id, tpSignalEntities.entityId))
+      .where(
+        and(
+          eq(tpRawSignals.companyId, companyId),
+          gte(tpRawSignals.capturedAt, since),
+          isNull(tpEntities.deletedAt)
+        )
+      ),
+    // Only consider timestamps from non-deleted entities — the manual job
+    // skips deleted ones, so a deleted entity's stale row should not make
+    // "last run" look fresher than reality.
+    db
+      .select({ ts: sql<Date | null>`max(${tpEntityTimeseries.computedAt})` })
+      .from(tpEntityTimeseries)
+      .innerJoin(tpEntities, eq(tpEntityTimeseries.entityId, tpEntities.id))
+      .where(
+        and(eq(tpEntities.companyId, companyId), isNull(tpEntities.deletedAt))
+      ),
+    db
+      .select({ cnt: count() })
+      .from(tpEntities)
+      .where(
+        and(eq(tpEntities.companyId, companyId), isNull(tpEntities.deletedAt))
+      ),
+    db
+      .select({ ts: sql<Date | null>`max(${tpEntityState.computedAt})` })
+      .from(tpEntityState)
+      .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
+      .where(
+        and(eq(tpEntities.companyId, companyId), isNull(tpEntities.deletedAt))
+      ),
+  ]);
+
+  let pending = 0;
+  let failed = 0;
+  let total = 0;
+  for (const row of extractionRows) {
+    const n = Number(row.cnt ?? 0);
+    total += n;
+    if (row.status === "pending") pending = n;
+    else if (row.status === "failed") failed = n;
+  }
+
+  const toIso = (v: Date | null | undefined): string | null =>
+    v ? new Date(v).toISOString() : null;
+
+  return {
+    extraction: {
+      pendingSignals: pending,
+      failedSignals: failed,
+      totalSignals: total,
+      lastExtractionAt: toIso(extractionLastRows[0]?.ts ?? null),
+    },
+    timeseries: {
+      signalsInWindow: Number(timeseriesWindowRows[0]?.cnt ?? 0),
+      windowDays,
+      lastComputedAt: toIso(timeseriesLastRows[0]?.ts ?? null),
+    },
+    stateMachine: {
+      activeEntities: Number(activeEntityRows[0]?.cnt ?? 0),
+      lastComputedAt: toIso(stateLastRows[0]?.ts ?? null),
+    },
+  };
+}
