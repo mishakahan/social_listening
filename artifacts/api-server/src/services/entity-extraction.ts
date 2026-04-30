@@ -18,29 +18,62 @@ function getOpenAI(): OpenAI {
 // GPT-4o-mini extraction prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are a trend-extraction assistant. For each social media post provided, identify:
-- TREND: emerging consumer trends, product categories, aesthetics, behaviors, or cultural phenomena
-- PRODUCT: specific products, brands, or product types
-- PLACE: geographic regions relevant to the trend
+export const ENTITY_TYPES = [
+  "ingredient",
+  "flavour",
+  "format",
+  "packaging",
+  "functional_benefit",
+  "emotional_benefit",
+  "occasion",
+  "provenance",
+  "dietary_claim",
+  "brand",
+  "segment",
+  "aesthetic_tag",
+  "other",
+] as const;
+
+export type EntityType = (typeof ENTITY_TYPES)[number];
+
+const ENTITY_TYPE_GUIDE = `Entity type taxonomy (confectionery / consumer-goods radar):
+- ingredient: raw inputs (e.g. maca, hazelnut, oat milk, sea salt) — anchor for ingredient-led innovation.
+- flavour: taste profiles (e.g. salted caramel, yuzu, smoky, floral) — confectionery moves on flavour.
+- format: physical product format (e.g. bar, pastille, gummy, hot chocolate, lozenge) — format-shifts (freeze-dried fruit pastilles, soft-bake) are key signals.
+- packaging: container / presentation (e.g. tin, gift box, advent calendar, plastic-free).
+- functional_benefit: physiological claims (e.g. gut health, focus, sleep, energy, immunity) — "functional health" focal territory.
+- emotional_benefit: emotional payoffs (e.g. nostalgia, comfort, ritual, treat, self-care) — confectionery is emotional; clusters here drive concept work.
+- occasion: usage moments / events (e.g. Christmas, Easter, hostess, post-workout, midnight) — "gifting culture" focal territory.
+- provenance: origin / heritage (e.g. Piedmontese, Sicilian, Modica, single-origin Madagascar) — premium positioning lever.
+- dietary_claim: dietary positioning (e.g. vegan, gluten-free, no added sugar, keto, organic) — increasingly entire trend spaces.
+- brand: brand or maker names (e.g. Lindt, Venchi, Caffarel, Pastiglie Leone) — competitive intel + co-mention graphs.
+- segment: audience / persona / tribe (e.g. Gen Z, kidult, parents, fitness, expats).
+- aesthetic_tag: TikTok-native aesthetics and meme labels (e.g. "dopamine snack", "girl dinner", *-core suffixes, kawaii) — where TikTok-native trends live.
+- other: escape hatch — use only if the entity does not fit any other type. Do not force-fit.`;
+
+const SYSTEM_PROMPT = `You are a trend-extraction assistant for a confectionery / consumer-goods trend radar. For each social media post provided, identify the salient entities and classify them with the taxonomy below.
+
+${ENTITY_TYPE_GUIDE}
 
 Output strict JSON: an array of objects, one per input signal (in same order). Each object:
 {
   "signalIndex": <number>,
   "entities": [
-    { "label": "<canonical name>", "type": "trend"|"product"|"place", "span": "<mention text>", "sentiment": "positive"|"neutral"|"negative" }
+    { "label": "<canonical name>", "type": "<one of: ${ENTITY_TYPES.join(" | ")}>", "span": "<mention text>", "sentiment": "positive"|"neutral"|"negative" }
   ]
 }
 
 Rules:
-- Only extract entities explicitly or strongly implied by the text
-- Normalize labels: title case, no hashtag symbols, singular form
-- Max 5 entities per signal
-- If no entities found, use "entities": []
-- Do not add commentary, only valid JSON`;
+- Only extract entities explicitly or strongly implied by the text.
+- Normalize labels: title case (or original casing for proper nouns and aesthetic tags), no hashtag symbols, singular form.
+- Pick the most specific type that fits. Use "other" only as a last resort.
+- Max 5 entities per signal.
+- If no entities found, use "entities": [].
+- Do not add commentary, only valid JSON.`;
 
 interface ExtractedEntity {
   label: string;
-  type: "trend" | "product" | "place";
+  type: EntityType;
   span: string;
   sentiment: "positive" | "neutral" | "negative";
 }
@@ -118,14 +151,22 @@ export async function extractEntitiesForBatch(
     for (const entity of result.entities) {
       if (!entity.label || !entity.type) continue;
 
+      // Coerce unexpected types to "other" so a single bad LLM output
+      // doesn't poison the entity table.
+      const safeType: EntityType = (ENTITY_TYPES as readonly string[]).includes(
+        entity.type
+      )
+        ? (entity.type as EntityType)
+        : "other";
+
       // Resolve synonym if one exists in the synonym table
-      const canonicalLabel = await storage.resolveSynonym(companyId, entity.label, entity.type);
+      const canonicalLabel = await storage.resolveSynonym(companyId, entity.label, safeType);
 
       // Upsert the entity
       const entityRecord = await storage.upsertEntity(
         companyId,
         canonicalLabel,
-        entity.type,
+        safeType,
         entity.label !== canonicalLabel ? entity.label : undefined
       );
 

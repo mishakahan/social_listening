@@ -169,7 +169,7 @@ async function ensureKnowledgeItem(
   if (!states.includes(entityState.state as TrendState)) return;
 
   const entity = (await storage.getEntities(companyId)).find(
-    (e) => e.id === entityState.entityId && e.entityType === "trend"
+    (e) => e.id === entityState.entityId
   );
   if (!entity) return;
 
@@ -185,12 +185,12 @@ async function ensureKnowledgeItem(
 
   const ki = await storage.upsertKnowledgeItem({
     companyId,
-    category: "trend",
+    category: entity.entityType,
     topicLabel: entity.canonicalLabel,
     geographicScope: entityState.geography,
-    type: "trend",
+    type: entity.entityType,
     title: entity.canonicalLabel,
-    summary: `${entity.canonicalLabel} — ${entityState.state} trend in ${entityState.geography}. v7d=${metrics.volume7d}, WoW=${(metrics.growthWow * 100).toFixed(1)}%`,
+    summary: `${entity.canonicalLabel} (${entity.entityType}) — ${entityState.state} in ${entityState.geography}. v7d=${metrics.volume7d}, WoW=${(metrics.growthWow * 100).toFixed(1)}%`,
     status: entityState.state,
     archived: entityState.state === "dormant",
     signalStrength,
