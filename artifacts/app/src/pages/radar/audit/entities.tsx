@@ -60,39 +60,26 @@ const STATE_COLORS: Record<string, string> = {
   resurgent: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
 };
 
-const TYPE_COLORS: Record<string, string> = {
-  ingredient: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
-  flavour: "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300",
-  format: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-  packaging: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
-  functional_benefit: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
-  emotional_benefit: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
-  occasion: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
-  provenance: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-  dietary_claim: "bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-300",
-  brand: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
-  segment: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300",
-  aesthetic_tag: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300",
-  other: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300",
-};
+// Fallback colour for any entity type the user removed from the taxonomy
+// (so historical rows still render with a chip).
+const FALLBACK_TYPE_COLOR = "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300";
 
 const STATE_OPTIONS = ["all", "candidate", "emerging", "confirmed", "peaking", "declining", "dormant", "resurgent"];
-const TYPE_OPTIONS = [
-  "all",
-  "ingredient",
-  "flavour",
-  "format",
-  "packaging",
-  "functional_benefit",
-  "emotional_benefit",
-  "occasion",
-  "provenance",
-  "dietary_claim",
-  "brand",
-  "segment",
-  "aesthetic_tag",
-  "other",
-];
+
+interface EntityTypeConfig {
+  id: string;
+  label: string;
+  description: string;
+  examples: string;
+  color: string;
+}
+
+async function fetchEntityTypes(): Promise<EntityTypeConfig[]> {
+  const res = await fetch("/api/pipeline/companies/1/pipeline-config");
+  if (!res.ok) throw new Error(await res.text());
+  const cfg = (await res.json()) as { entityTypes?: EntityTypeConfig[] };
+  return cfg.entityTypes ?? [];
+}
 
 function pct(v: number): string {
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
@@ -170,6 +157,17 @@ export default function EntitiesAuditPage() {
     queryFn: () => fetchEntityStates(stateFilter, geoFilter),
     refetchOnWindowFocus: false,
   });
+
+  const { data: entityTypes = [] } = useQuery({
+    queryKey: ["entity-types-config"],
+    queryFn: fetchEntityTypes,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  });
+
+  // Lookup table of id -> { label, color } built from the per-company config.
+  const typeLookup: Record<string, { label: string; color: string }> = {};
+  for (const t of entityTypes) typeLookup[t.id] = { label: t.label, color: t.color };
 
   const stateMachineMutation = useMutation({
     mutationFn: runStateMachine,
@@ -292,13 +290,14 @@ export default function EntitiesAuditPage() {
         </Select>
 
         <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); }}>
-          <SelectTrigger className="h-8 w-36 text-xs">
+          <SelectTrigger className="h-8 w-44 text-xs">
             <SelectValue placeholder="Type" />
           </SelectTrigger>
           <SelectContent>
-            {TYPE_OPTIONS.map((t) => (
-              <SelectItem key={t} value={t} className="text-xs">
-                {t === "all" ? "All types" : t}
+            <SelectItem value="all" className="text-xs">All types</SelectItem>
+            {entityTypes.map((t) => (
+              <SelectItem key={t.id} value={t.id} className="text-xs">
+                {t.label}
               </SelectItem>
             ))}
           </SelectContent>
@@ -375,8 +374,12 @@ export default function EntitiesAuditPage() {
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${TYPE_COLORS[s.entity.entityType] ?? "bg-gray-100 text-gray-700"}`}>
-                          {s.entity.entityType}
+                        <span
+                          className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            typeLookup[s.entity.entityType]?.color ?? FALLBACK_TYPE_COLOR
+                          }`}
+                        >
+                          {typeLookup[s.entity.entityType]?.label ?? s.entity.entityType}
                         </span>
                       </td>
                       <td className="px-3 py-2.5">

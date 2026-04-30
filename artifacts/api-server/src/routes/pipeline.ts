@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import * as storage from "../storage/index.js";
 import {
   generateSeedCandidates,
@@ -954,10 +955,44 @@ router.get("/companies/:id/pipeline-config", async (req, res) => {
 // ---------------------------------------------------------------------------
 // PATCH /api/pipeline/companies/:id/pipeline-config
 // ---------------------------------------------------------------------------
+const entityTypeSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9_]+$/, "id must be lowercase letters, digits, or underscores"),
+  label: z.string().min(1).max(64),
+  description: z.string().max(500).optional().default(""),
+  examples: z.string().max(500).optional().default(""),
+  color: z.string().min(1).max(200),
+});
+
+const patchConfigSchema = z
+  .object({
+    entityTypes: z
+      .array(entityTypeSchema)
+      .min(1, "At least one entity type is required")
+      .max(50)
+      .refine(
+        (arr) => new Set(arr.map((t) => t.id)).size === arr.length,
+        { message: "Entity type ids must be unique" }
+      )
+      .optional(),
+  })
+  .passthrough();
+
 router.patch("/companies/:id/pipeline-config", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
-    const updated = await storage.updatePipelineConfig(companyId, req.body);
+    const parsed = patchConfigSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid pipeline config",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+    const updated = await storage.updatePipelineConfig(companyId, parsed.data);
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to update pipeline config");

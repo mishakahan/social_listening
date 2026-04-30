@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 import { logger } from "../lib/logger.js";
 import * as storage from "../storage/index.js";
-import type { TpRawSignal, InsertTpSignalEntity } from "@workspace/db";
+import {
+  DEFAULT_ENTITY_TYPES,
+  type EntityTypeConfig,
+  type TpRawSignal,
+  type InsertTpSignalEntity,
+} from "@workspace/db";
 
 let _openai: OpenAI | null = null;
 
@@ -15,65 +20,67 @@ function getOpenAI(): OpenAI {
 }
 
 // ---------------------------------------------------------------------------
-// GPT-4o-mini extraction prompt
+// Per-company entity-type taxonomy
 // ---------------------------------------------------------------------------
 
-export const ENTITY_TYPES = [
-  "ingredient",
-  "flavour",
-  "format",
-  "packaging",
-  "functional_benefit",
-  "emotional_benefit",
-  "occasion",
-  "provenance",
-  "dietary_claim",
-  "brand",
-  "segment",
-  "aesthetic_tag",
-  "other",
-] as const;
+// Re-export for any other module that wants to inspect the built-in fallback.
+export { DEFAULT_ENTITY_TYPES };
 
-export type EntityType = (typeof ENTITY_TYPES)[number];
+/**
+ * Read the entity-type taxonomy from the company's pipeline_config. Falls back
+ * to DEFAULT_ENTITY_TYPES if the config is missing/empty (e.g. for a brand-new
+ * company before its first save).
+ */
+async function getEntityTypesForCompany(
+  companyId: number
+): Promise<EntityTypeConfig[]> {
+  try {
+    const cfg = await storage.getPipelineConfig(companyId);
+    const types = (cfg.entityTypes ?? []).filter((t) => t && t.id);
+    return types.length > 0 ? types : DEFAULT_ENTITY_TYPES;
+  } catch (err) {
+    logger.warn(
+      { err, companyId },
+      "Failed to load entity-type config, falling back to defaults"
+    );
+    return DEFAULT_ENTITY_TYPES;
+  }
+}
 
-const ENTITY_TYPE_GUIDE = `Entity type taxonomy (confectionery / consumer-goods radar):
-- ingredient: raw inputs (e.g. maca, hazelnut, oat milk, sea salt) — anchor for ingredient-led innovation.
-- flavour: taste profiles (e.g. salted caramel, yuzu, smoky, floral) — confectionery moves on flavour.
-- format: physical product format (e.g. bar, pastille, gummy, hot chocolate, lozenge) — format-shifts (freeze-dried fruit pastilles, soft-bake) are key signals.
-- packaging: container / presentation (e.g. tin, gift box, advent calendar, plastic-free).
-- functional_benefit: physiological claims (e.g. gut health, focus, sleep, energy, immunity) — "functional health" focal territory.
-- emotional_benefit: emotional payoffs (e.g. nostalgia, comfort, ritual, treat, self-care) — confectionery is emotional; clusters here drive concept work.
-- occasion: usage moments / events (e.g. Christmas, Easter, hostess, post-workout, midnight) — "gifting culture" focal territory.
-- provenance: origin / heritage (e.g. Piedmontese, Sicilian, Modica, single-origin Madagascar) — premium positioning lever.
-- dietary_claim: dietary positioning (e.g. vegan, gluten-free, no added sugar, keto, organic) — increasingly entire trend spaces.
-- brand: brand or maker names (e.g. Lindt, Venchi, Caffarel, Pastiglie Leone) — competitive intel + co-mention graphs.
-- segment: audience / persona / tribe (e.g. Gen Z, kidult, parents, fitness, expats).
-- aesthetic_tag: TikTok-native aesthetics and meme labels (e.g. "dopamine snack", "girl dinner", *-core suffixes, kawaii) — where TikTok-native trends live.
-- other: escape hatch — use only if the entity does not fit any other type. Do not force-fit.`;
+function buildSystemPrompt(types: EntityTypeConfig[]): string {
+  const guideLines = types
+    .map((t) => {
+      const examples = t.examples ? ` (e.g. ${t.examples})` : "";
+      const desc = t.description ? ` — ${t.description}` : "";
+      return `- ${t.id}: ${t.label}${examples}${desc}`;
+    })
+    .join("\n");
+  const idList = types.map((t) => t.id).join(" | ");
+  return `You are a trend-extraction assistant for a consumer-goods trend radar. For each social media post provided, identify the salient entities and classify them using the taxonomy below.
 
-const SYSTEM_PROMPT = `You are a trend-extraction assistant for a confectionery / consumer-goods trend radar. For each social media post provided, identify the salient entities and classify them with the taxonomy below.
-
-${ENTITY_TYPE_GUIDE}
+Entity type taxonomy:
+${guideLines}
 
 Output strict JSON: an array of objects, one per input signal (in same order). Each object:
 {
   "signalIndex": <number>,
   "entities": [
-    { "label": "<canonical name>", "type": "<one of: ${ENTITY_TYPES.join(" | ")}>", "span": "<mention text>", "sentiment": "positive"|"neutral"|"negative" }
+    { "label": "<canonical name>", "type": "<one of: ${idList}>", "span": "<mention text>", "sentiment": "positive"|"neutral"|"negative" }
   ]
 }
 
 Rules:
 - Only extract entities explicitly or strongly implied by the text.
 - Normalize labels: title case (or original casing for proper nouns and aesthetic tags), no hashtag symbols, singular form.
-- Pick the most specific type that fits. Use "other" only as a last resort.
+- Pick the most specific type that fits. Use the most-generic / catch-all type only as a last resort.
 - Max 5 entities per signal.
 - If no entities found, use "entities": [].
 - Do not add commentary, only valid JSON.`;
+}
 
 interface ExtractedEntity {
   label: string;
-  type: EntityType;
+  type: string;
   span: string;
   sentiment: "positive" | "neutral" | "negative";
 }
@@ -83,7 +90,10 @@ interface ExtractionResult {
   entities: ExtractedEntity[];
 }
 
-async function callGpt(signals: TpRawSignal[]): Promise<ExtractionResult[]> {
+async function callGpt(
+  signals: TpRawSignal[],
+  systemPrompt: string
+): Promise<ExtractionResult[]> {
   const inputLines = signals.map((s, i) => {
     const text = [s.text, ...(s.hashtags ?? [])].filter(Boolean).join(" ").slice(0, 500);
     return `[${i}] platform=${s.platform} text=${JSON.stringify(text)}`;
@@ -94,7 +104,7 @@ async function callGpt(signals: TpRawSignal[]): Promise<ExtractionResult[]> {
     temperature: 0.2,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: inputLines.join("\n") },
     ],
   });
@@ -120,12 +130,21 @@ export async function extractEntitiesForBatch(
 ): Promise<void> {
   if (signals.length === 0) return;
 
+  // Load the per-company entity taxonomy and build the prompt from it.
+  const entityTypes = await getEntityTypesForCompany(companyId);
+  const allowedTypeIds = new Set(entityTypes.map((t) => t.id));
+  // If the user kept a catch-all type ("other"), use it for unknown LLM
+  // outputs; otherwise we drop unknown entities rather than silently
+  // misclassifying them into an arbitrary user category.
+  const fallbackTypeId = allowedTypeIds.has("other") ? "other" : null;
+  const systemPrompt = buildSystemPrompt(entityTypes);
+
   let results: ExtractionResult[] = [];
   let attempts = 0;
 
   while (attempts < 3) {
     try {
-      results = await callGpt(signals);
+      results = await callGpt(signals, systemPrompt);
       break;
     } catch (err: any) {
       attempts++;
@@ -151,13 +170,18 @@ export async function extractEntitiesForBatch(
     for (const entity of result.entities) {
       if (!entity.label || !entity.type) continue;
 
-      // Coerce unexpected types to "other" so a single bad LLM output
-      // doesn't poison the entity table.
-      const safeType: EntityType = (ENTITY_TYPES as readonly string[]).includes(
-        entity.type
-      )
-        ? (entity.type as EntityType)
-        : "other";
+      // Coerce unexpected types to the configured fallback so a single bad
+      // LLM output (or a type the user removed) doesn't poison the entity
+      // table. If the user removed the catch-all "other" type, drop unknown
+      // entities rather than silently misclassifying them.
+      let safeType: string;
+      if (allowedTypeIds.has(entity.type)) {
+        safeType = entity.type;
+      } else if (fallbackTypeId) {
+        safeType = fallbackTypeId;
+      } else {
+        continue;
+      }
 
       // Resolve synonym if one exists in the synonym table
       const canonicalLabel = await storage.resolveSynonym(companyId, entity.label, safeType);

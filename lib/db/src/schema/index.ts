@@ -369,6 +369,111 @@ export const tpEntitySynonyms = pgTable("tp_entity_synonyms", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Entity-type taxonomy used by the Control Panel + LLM extraction prompt.
+// Stored as a JSONB array on tp_pipeline_config.entityTypes so each company can
+// customise the types it tracks.
+export interface EntityTypeConfig {
+  id: string;            // machine name written to tp_entities.entity_type (e.g. "ingredient")
+  label: string;         // display name (e.g. "Ingredient")
+  description: string;   // short rationale shown in UI and LLM prompt
+  examples: string;      // comma-separated examples shown in UI and LLM prompt
+  color: string;         // tailwind utility classes for the type chip
+}
+
+export const DEFAULT_ENTITY_TYPES: EntityTypeConfig[] = [
+  {
+    id: "ingredient",
+    label: "Ingredient",
+    description: "Raw inputs — anchor for ingredient-led innovation.",
+    examples: "maca, hazelnut, oat milk, sea salt",
+    color: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+  },
+  {
+    id: "flavour",
+    label: "Flavour",
+    description: "Taste profiles — confectionery moves on flavour.",
+    examples: "salted caramel, yuzu, smoky, floral",
+    color: "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300",
+  },
+  {
+    id: "format",
+    label: "Format",
+    description: "Physical product format. Format-shifts are key signals.",
+    examples: "bar, pastille, gummy, hot chocolate, lozenge",
+    color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+  },
+  {
+    id: "packaging",
+    label: "Packaging",
+    description: "Container or presentation.",
+    examples: "tin, gift box, advent calendar, plastic-free",
+    color: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
+  },
+  {
+    id: "functional_benefit",
+    label: "Functional benefit",
+    description: "Physiological claims — functional health focal territory.",
+    examples: "gut health, focus, sleep, energy, immunity",
+    color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+  },
+  {
+    id: "emotional_benefit",
+    label: "Emotional benefit",
+    description: "Emotional payoffs — clusters here drive concept work.",
+    examples: "nostalgia, comfort, ritual, treat, self-care",
+    color: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
+  },
+  {
+    id: "occasion",
+    label: "Occasion",
+    description: "Usage moments and events — gifting culture focal territory.",
+    examples: "Christmas, Easter, hostess, post-workout, midnight",
+    color: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
+  },
+  {
+    id: "provenance",
+    label: "Provenance",
+    description: "Origin or heritage — premium positioning lever.",
+    examples: "Piedmontese, Sicilian, Modica, single-origin Madagascar",
+    color: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+  },
+  {
+    id: "dietary_claim",
+    label: "Dietary claim",
+    description: "Dietary positioning — increasingly entire trend spaces.",
+    examples: "vegan, gluten-free, no added sugar, keto, organic",
+    color: "bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-300",
+  },
+  {
+    id: "brand",
+    label: "Brand",
+    description: "Brand or maker names — competitive intel and co-mention graphs.",
+    examples: "Lindt, Venchi, Caffarel, Pastiglie Leone",
+    color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  },
+  {
+    id: "segment",
+    label: "Segment",
+    description: "Audience, persona, or tribe.",
+    examples: "Gen Z, kidult, parents, fitness, expats",
+    color: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300",
+  },
+  {
+    id: "aesthetic_tag",
+    label: "Aesthetic tag",
+    description: "TikTok-native aesthetics and meme labels — where TikTok-native trends live.",
+    examples: "dopamine snack, girl dinner, *-core suffixes, kawaii",
+    color: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300",
+  },
+  {
+    id: "other",
+    label: "Other",
+    description: "Escape hatch — use only if no other type fits. Do not force-fit.",
+    examples: "",
+    color: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300",
+  },
+];
+
 // tp_pipeline_config
 export const tpPipelineConfig = pgTable("tp_pipeline_config", {
   companyId: integer("company_id")
@@ -490,6 +595,12 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
       xiaohongshu: { enabled: true },
       google_trends: { enabled: true },
     }),
+  // Entity-extraction taxonomy (used to build the LLM prompt and to render
+  // entity-type chips/filters in the UI). Editable from the Control Panel.
+  entityTypes: jsonb("entity_types")
+    .notNull()
+    .$type<EntityTypeConfig[]>()
+    .default(DEFAULT_ENTITY_TYPES),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

@@ -12,6 +12,14 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle2, X, Plus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
+interface EntityTypeConfig {
+  id: string;
+  label: string;
+  description: string;
+  examples: string;
+  color: string;
+}
+
 interface PipelineConfig {
   // Tier 1
   noiseFloor: number;
@@ -30,7 +38,40 @@ interface PipelineConfig {
   radarSurfaceMinSignalStrength: number;
   // Other
   authorAllowlist: string[];
+  entityTypes: EntityTypeConfig[];
   [key: string]: unknown;
+}
+
+// Tailwind colour palette for the entity-type chip picker.
+const TYPE_COLOR_SWATCHES: { label: string; value: string }[] = [
+  { label: "Slate", value: "bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300" },
+  { label: "Gray", value: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300" },
+  { label: "Red", value: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300" },
+  { label: "Orange", value: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" },
+  { label: "Amber", value: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
+  { label: "Yellow", value: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300" },
+  { label: "Lime", value: "bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-300" },
+  { label: "Green", value: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300" },
+  { label: "Emerald", value: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" },
+  { label: "Teal", value: "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300" },
+  { label: "Cyan", value: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300" },
+  { label: "Sky", value: "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300" },
+  { label: "Blue", value: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" },
+  { label: "Indigo", value: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300" },
+  { label: "Violet", value: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300" },
+  { label: "Purple", value: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300" },
+  { label: "Fuchsia", value: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300" },
+  { label: "Pink", value: "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300" },
+  { label: "Rose", value: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
+];
+
+function slugifyTypeId(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
 }
 
 async function fetchConfig(): Promise<PipelineConfig> {
@@ -253,6 +294,252 @@ function AuthorAllowlist({ authors, onSave, isSaving, ready }: AuthorAllowlistPr
           Add
         </Button>
       </div>
+    </div>
+  );
+}
+
+interface EntityTypesEditorProps {
+  types: EntityTypeConfig[];
+  onSave: (k: string, v: unknown) => void;
+  isSaving: boolean;
+  ready: boolean;
+}
+
+function EntityTypesEditor({ types, onSave, isSaving, ready }: EntityTypesEditorProps) {
+  const [items, setItems] = useState<EntityTypeConfig[]>(types);
+  const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<EntityTypeConfig[] | null>(null);
+
+  useEffect(() => { setItems(types); }, [types]);
+
+  // Debounce persistence so rapid blur/colour/move edits coalesce into one
+  // PATCH and out-of-order responses from the server can't overwrite newer
+  // local edits.
+  const persist = useCallback((next: EntityTypeConfig[]) => {
+    if (!ready) return;
+    pendingRef.current = next;
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      const payload = pendingRef.current;
+      pendingRef.current = null;
+      persistTimerRef.current = null;
+      if (!payload) return;
+      onSave("entityTypes", payload);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }, 600);
+  }, [onSave, ready]);
+
+  useEffect(() => () => {
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+  }, []);
+
+  const commit = (next: EntityTypeConfig[]) => {
+    // Validate ids: non-empty, unique. Validation runs synchronously so the
+    // user sees the error immediately while typing; persistence is debounced
+    // inside `persist`.
+    const seen = new Set<string>();
+    for (const t of next) {
+      if (!t.id) {
+        setErrorMsg("Each type needs an id");
+        return;
+      }
+      if (seen.has(t.id)) {
+        setErrorMsg(`Duplicate id "${t.id}" — ids must be unique`);
+        return;
+      }
+      seen.add(t.id);
+    }
+    if (!next.some((t) => t.label.trim().length > 0)) {
+      setErrorMsg("At least one type needs a label");
+      return;
+    }
+    setErrorMsg(null);
+    persist(next);
+  };
+
+  const updateField = (index: number, patch: Partial<EntityTypeConfig>) => {
+    const next = items.map((t, i) => (i === index ? { ...t, ...patch } : t));
+    setItems(next);
+    commit(next);
+  };
+
+  const addType = () => {
+    const next: EntityTypeConfig[] = [
+      ...items,
+      {
+        id: `type_${items.length + 1}`,
+        label: "New type",
+        description: "",
+        examples: "",
+        color: TYPE_COLOR_SWATCHES[items.length % TYPE_COLOR_SWATCHES.length]!.value,
+      },
+    ];
+    setItems(next);
+    commit(next);
+  };
+
+  const removeType = (index: number) => {
+    const next = items.filter((_, i) => i !== index);
+    setItems(next);
+    commit(next);
+  };
+
+  const moveType = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    setItems(next);
+    commit(next);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <Label className="text-sm font-medium">Entity Type Taxonomy</Label>
+          {saved && <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />}
+          {isSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Categories the LLM uses to classify extracted entities. Each type's
+          label, description, and examples are injected into the extraction
+          prompt — write them as if briefing a junior analyst. The id is the
+          machine-readable code stored on each entity (lowercase, no spaces).
+          Existing entities keep their old type even if you rename or remove it.
+        </p>
+      </div>
+
+      {errorMsg && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">{errorMsg}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="space-y-2">
+        {items.map((t, i) => (
+          <div
+            key={i}
+            className="rounded-md border border-border p-3 space-y-2 bg-card"
+          >
+            <div className="flex items-start gap-2">
+              <span
+                className={`inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium ${t.color} flex-shrink-0 mt-1`}
+              >
+                {t.label || t.id || "—"}
+              </span>
+              <div className="flex-1" />
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 text-xs"
+                  onClick={() => moveType(i, -1)}
+                  disabled={i === 0}
+                  title="Move up"
+                >
+                  ↑
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 text-xs"
+                  onClick={() => moveType(i, 1)}
+                  disabled={i === items.length - 1}
+                  title="Move down"
+                >
+                  ↓
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeType(i)}
+                  title="Remove"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Label</Label>
+                <Input
+                  value={t.label}
+                  onChange={(e) => updateField(i, { label: e.target.value })}
+
+                  className="h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Id (machine name)</Label>
+                <Input
+                  value={t.id}
+                  onChange={(e) => updateField(i, { id: slugifyTypeId(e.target.value) })}
+
+                  className="h-8 text-sm font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Description (for LLM)</Label>
+              <Input
+                value={t.description}
+                onChange={(e) => updateField(i, { description: e.target.value })}
+
+                placeholder="Short rationale shown in the extraction prompt"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            <div>
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Examples (comma-separated)</Label>
+              <Input
+                value={t.examples}
+                onChange={(e) => updateField(i, { examples: e.target.value })}
+
+                placeholder="e.g. hazelnut, sea salt, oat milk"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            <div>
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Color</Label>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {TYPE_COLOR_SWATCHES.map((sw) => {
+                  const selected = sw.value === t.color;
+                  return (
+                    <button
+                      key={sw.value}
+                      type="button"
+                      title={sw.label}
+                      onClick={() => {
+                        const next = items.map((it, idx) => (idx === i ? { ...it, color: sw.value } : it));
+                        setItems(next);
+                        commit(next);
+                      }}
+                      className={`h-6 w-6 rounded ${sw.value.split(" ")[0]} ${
+                        selected ? "ring-2 ring-offset-1 ring-foreground" : "ring-1 ring-border"
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Button size="sm" variant="outline" className="gap-1.5 h-8" onClick={addType}>
+        <Plus className="h-3.5 w-3.5" />
+        Add entity type
+      </Button>
     </div>
   );
 }
@@ -538,6 +825,33 @@ export default function ControlPanelPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Entity types */}
+      <Accordion type="single" collapsible defaultValue="entity-types" className="mt-4">
+        <Card>
+          <AccordionItem value="entity-types" className="border-0">
+            <AccordionTrigger className="px-5 py-4 hover:no-underline">
+              <div className="flex items-center gap-3">
+                <Badge variant="outline" className="text-xs">Taxonomy</Badge>
+                <span className="text-sm font-semibold">Entity Types</span>
+                <span className="text-xs text-muted-foreground font-normal">
+                  {cfg.entityTypes?.length ?? 0} types · drives extraction prompt
+                </span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <div className="px-5 pb-2">
+                <EntityTypesEditor
+                  types={cfg.entityTypes ?? []}
+                  onSave={handleSave}
+                  isSaving={saveMutation.isPending}
+                  ready={ready}
+                />
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        </Card>
+      </Accordion>
     </div>
   );
 }
