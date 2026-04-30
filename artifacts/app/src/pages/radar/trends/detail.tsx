@@ -42,10 +42,14 @@ interface TrendDetail {
     | "resurgent";
   signalStrength: number;
   wowGrowthPct?: number;
+  growthMomPct?: number;
+  volume7d?: number;
+  volume30d?: number;
   platforms: string[];
   evidenceCount: number;
   geography?: string;
   territoryTag?: string;
+  summary?: string;
   description?: string;
   evidence?: EvidenceItem[];
   updatedAt?: string;
@@ -233,7 +237,7 @@ export default function TrendDetailPage() {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
         {/* Signal strength */}
         <Card>
           <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
@@ -241,7 +245,7 @@ export default function TrendDetailPage() {
             <span className={`text-3xl font-bold tabular-nums ${signalColor}`}>
               {trend.signalStrength}
             </span>
-            <span className="text-xs text-muted-foreground">Signal Strength</span>
+            <span className="text-xs text-muted-foreground">Signal</span>
           </CardContent>
         </Card>
 
@@ -269,28 +273,56 @@ export default function TrendDetailPage() {
                   {trend.wowGrowthPct > 0 ? "+" : ""}
                   {trend.wowGrowthPct.toFixed(1)}%
                 </span>
-                <span className="text-xs text-muted-foreground">WoW Growth</span>
+                <span className="text-xs text-muted-foreground">WoW</span>
               </>
             ) : (
               <>
                 <Minus className="h-5 w-5 text-muted-foreground" />
                 <span className="text-3xl font-bold text-muted-foreground">—</span>
-                <span className="text-xs text-muted-foreground">WoW Growth</span>
+                <span className="text-xs text-muted-foreground">WoW</span>
               </>
             )}
           </CardContent>
         </Card>
 
-        {/* Evidence count */}
+        {/* MoM growth */}
+        <Card>
+          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
+            {trend.growthMomPct != null ? (
+              <>
+                {trend.growthMomPct > 0 ? (
+                  <TrendingUp className="h-5 w-5 text-green-400" />
+                ) : trend.growthMomPct < 0 ? (
+                  <TrendingDown className="h-5 w-5 text-red-400" />
+                ) : (
+                  <Minus className="h-5 w-5 text-muted-foreground" />
+                )}
+                <span className={`text-3xl font-bold tabular-nums ${trend.growthMomPct > 0 ? "text-green-600" : trend.growthMomPct < 0 ? "text-red-500" : "text-muted-foreground"}`}>
+                  {trend.growthMomPct > 0 ? "+" : ""}
+                  {trend.growthMomPct.toFixed(1)}%
+                </span>
+                <span className="text-xs text-muted-foreground">MoM</span>
+              </>
+            ) : (
+              <>
+                <Minus className="h-5 w-5 text-muted-foreground" />
+                <span className="text-3xl font-bold text-muted-foreground">—</span>
+                <span className="text-xs text-muted-foreground">MoM</span>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Volume */}
         <Card>
           <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
             <div className="h-5 w-5 rounded-full bg-primary/20 flex items-center justify-center">
-              <span className="text-[10px] font-bold text-primary">E</span>
+              <span className="text-[10px] font-bold text-primary">V</span>
             </div>
             <span className="text-3xl font-bold tabular-nums text-foreground">
-              {trend.evidenceCount ?? (trend.evidence?.length ?? 0)}
+              {trend.volume7d ?? trend.evidenceCount ?? 0}
             </span>
-            <span className="text-xs text-muted-foreground">Evidence Items</span>
+            <span className="text-xs text-muted-foreground">Vol 7d</span>
           </CardContent>
         </Card>
       </div>

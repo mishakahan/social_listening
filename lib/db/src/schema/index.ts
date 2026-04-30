@@ -8,6 +8,7 @@ import {
   doublePrecision,
   date,
   jsonb,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
@@ -192,6 +193,7 @@ export const tpActorRuns = pgTable("tp_actor_runs", {
   newestPostedAt: timestamp("newest_posted_at"),
   costUsd: doublePrecision("cost_usd"),
   errorMessage: text("error_message"),
+  ingestionStatus: text("ingestion_status").notNull().default("pending"),
   rawLog: jsonb("raw_log")
     .$type<Array<{ ts: string; level: string; msg: string }>>()
     .default([]),
@@ -201,7 +203,9 @@ export const tpActorRuns = pgTable("tp_actor_runs", {
 });
 
 // tp_raw_signals
-export const tpRawSignals = pgTable("tp_raw_signals", {
+export const tpRawSignals = pgTable(
+  "tp_raw_signals",
+  {
   id: serial("id").primaryKey(),
   companyId: integer("company_id")
     .notNull()
@@ -248,7 +252,9 @@ export const tpRawSignals = pgTable("tp_raw_signals", {
   raw: jsonb("raw").notNull().$type<Record<string, any>>(),
   metadata: jsonb("metadata").$type<Record<string, any>>().default({}),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+  },
+  (t) => [uniqueIndex("tp_raw_signals_dedup_idx").on(t.companyId, t.platform, t.sourceId)]
+);
 
 // tp_entities
 export const tpEntities = pgTable("tp_entities", {
@@ -284,7 +290,9 @@ export const tpSignalEntities = pgTable("tp_signal_entities", {
 });
 
 // tp_entity_timeseries
-export const tpEntityTimeseries = pgTable("tp_entity_timeseries", {
+export const tpEntityTimeseries = pgTable(
+  "tp_entity_timeseries",
+  {
   id: serial("id").primaryKey(),
   companyId: integer("company_id")
     .notNull()
@@ -302,10 +310,14 @@ export const tpEntityTimeseries = pgTable("tp_entity_timeseries", {
   engagementMedian: doublePrecision("engagement_median").notNull().default(0),
   backfillDerived: boolean("backfill_derived").notNull().default(false),
   computedAt: timestamp("computed_at").defaultNow().notNull(),
-});
+  },
+  (t) => [uniqueIndex("tp_entity_timeseries_bucket_idx").on(t.entityId, t.platform, t.geography, t.bucketDate)]
+);
 
 // tp_entity_state
-export const tpEntityState = pgTable("tp_entity_state", {
+export const tpEntityState = pgTable(
+  "tp_entity_state",
+  {
   id: serial("id").primaryKey(),
   companyId: integer("company_id")
     .notNull()
@@ -339,7 +351,9 @@ export const tpEntityState = pgTable("tp_entity_state", {
     .$type<Record<string, string>>()
     .default({}),
   computedAt: timestamp("computed_at").defaultNow().notNull(),
-});
+  },
+  (t) => [uniqueIndex("tp_entity_state_geo_idx").on(t.entityId, t.geography)]
+);
 
 // tp_entity_synonyms
 export const tpEntitySynonyms = pgTable("tp_entity_synonyms", {

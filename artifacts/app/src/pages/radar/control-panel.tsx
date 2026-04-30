@@ -19,11 +19,15 @@ interface PipelineConfig {
   languageConfidenceThreshold: number;
   // Tier 2
   candidateToEmergingMinWeeks: number;
-  minWoWGrowth: number;
-  minVolume: number;
+  candidateToEmergingMinWowGrowth: number;
+  candidateToEmergingMinVolume: number;
+  minEvidenceForKnowledgeItem: number;
+  volatilityTolerance: number;
   // Tier 3
   peakingWeeksNegVelocity: number;
+  decliningWeeksNegVelocity: number;
   dormantThresholdWeeks: number;
+  radarSurfaceMinSignalStrength: number;
   // Other
   authorAllowlist: string[];
   [key: string]: unknown;
@@ -147,10 +151,10 @@ interface SliderFieldProps {
 }
 
 function SliderField({ fieldKey, label, help, value, min, max, step = 0.01, onChange, onSave, ready }: SliderFieldProps) {
-  const [local, setLocal] = useState(value);
+  const [local, setLocal] = useState(value ?? min);
   const saved = useAutoSave(fieldKey, local, (p) => onSave(fieldKey, p[fieldKey]), ready);
 
-  useEffect(() => { setLocal(value); }, [value]);
+  useEffect(() => { setLocal(value ?? min); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <FieldRow label={label} help={help} saved={saved}>
@@ -159,12 +163,12 @@ function SliderField({ fieldKey, label, help, value, min, max, step = 0.01, onCh
           min={min}
           max={max}
           step={step}
-          value={[local]}
+          value={[local ?? min]}
           onValueChange={([v]) => { setLocal(v); onChange(v); }}
           className="flex-1"
         />
         <span className="text-sm tabular-nums w-10 text-right text-muted-foreground">
-          {local.toFixed(step < 1 ? 2 : 0)}
+          {(local ?? min).toFixed(step < 1 ? 2 : 0)}
         </span>
       </div>
     </FieldRow>
@@ -416,24 +420,46 @@ export default function ControlPanelPage() {
                   ready={ready}
                 />
                 <SliderField
-                  fieldKey="minWoWGrowth"
+                  fieldKey="candidateToEmergingMinWowGrowth"
                   label="Min WoW Growth"
-                  help="Minimum week-over-week growth rate required for promotion."
-                  value={cfg.minWoWGrowth}
+                  help="Minimum week-over-week growth rate required for promotion to Emerging."
+                  value={cfg.candidateToEmergingMinWowGrowth}
                   min={0}
                   max={1}
                   step={0.01}
-                  onChange={(v) => setField("minWoWGrowth", v)}
+                  onChange={(v) => setField("candidateToEmergingMinWowGrowth", v)}
                   onSave={handleSave}
                   ready={ready}
                 />
                 <NumberField
-                  fieldKey="minVolume"
-                  label="Min Volume"
-                  help="Minimum total post count needed for a trend to be considered."
-                  value={cfg.minVolume}
-                  min={0}
-                  onChange={(v) => setField("minVolume", v)}
+                  fieldKey="candidateToEmergingMinVolume"
+                  label="Min Volume (30d)"
+                  help="Minimum 30-day post count needed before a trend can be promoted."
+                  value={cfg.candidateToEmergingMinVolume}
+                  min={1}
+                  onChange={(v) => setField("candidateToEmergingMinVolume", v)}
+                  onSave={handleSave}
+                  ready={ready}
+                />
+                <NumberField
+                  fieldKey="minEvidenceForKnowledgeItem"
+                  label="Min Evidence for Knowledge Item"
+                  help="Minimum number of signals before a trend is surfaced as a Knowledge Item."
+                  value={cfg.minEvidenceForKnowledgeItem}
+                  min={1}
+                  onChange={(v) => setField("minEvidenceForKnowledgeItem", v)}
+                  onSave={handleSave}
+                  ready={ready}
+                />
+                <SliderField
+                  fieldKey="volatilityTolerance"
+                  label="Volatility Tolerance"
+                  help="Higher values allow more volatile trends to be promoted. Range 0.5–3.0."
+                  value={cfg.volatilityTolerance}
+                  min={0.5}
+                  max={3}
+                  step={0.1}
+                  onChange={(v) => setField("volatilityTolerance", v)}
                   onSave={handleSave}
                   ready={ready}
                 />
@@ -456,11 +482,21 @@ export default function ControlPanelPage() {
               <div className="px-5">
                 <NumberField
                   fieldKey="peakingWeeksNegVelocity"
-                  label="Peaking Weeks Neg Velocity"
-                  help="Consecutive weeks of negative velocity before a peaking trend starts declining."
+                  label="Peaking → Declining Weeks"
+                  help="Consecutive weeks of negative velocity before a peaking trend transitions to declining."
                   value={cfg.peakingWeeksNegVelocity}
                   min={1}
                   onChange={(v) => setField("peakingWeeksNegVelocity", v)}
+                  onSave={handleSave}
+                  ready={ready}
+                />
+                <NumberField
+                  fieldKey="decliningWeeksNegVelocity"
+                  label="Declining → Dormant Weeks"
+                  help="Consecutive weeks of declining volume before a trend is marked dormant."
+                  value={cfg.decliningWeeksNegVelocity}
+                  min={1}
+                  onChange={(v) => setField("decliningWeeksNegVelocity", v)}
                   onSave={handleSave}
                   ready={ready}
                 />
@@ -471,6 +507,17 @@ export default function ControlPanelPage() {
                   value={cfg.dormantThresholdWeeks}
                   min={1}
                   onChange={(v) => setField("dormantThresholdWeeks", v)}
+                  onSave={handleSave}
+                  ready={ready}
+                />
+                <NumberField
+                  fieldKey="radarSurfaceMinSignalStrength"
+                  label="Min Signal Strength (0–100)"
+                  help="Minimum computed signal strength score before a trend appears in the Trends tab."
+                  value={cfg.radarSurfaceMinSignalStrength}
+                  min={0}
+                  max={100}
+                  onChange={(v) => setField("radarSurfaceMinSignalStrength", v)}
                   onSave={handleSave}
                   ready={ready}
                 />

@@ -2,7 +2,7 @@ import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, Search, ClipboardCheck, PlayCircle, TrendingUp,
-  Settings, Radar, ChevronRight,
+  Settings, Radar, ChevronRight, Activity, Tag,
 } from "lucide-react";
 
 const navItems = [
@@ -10,6 +10,8 @@ const navItems = [
   { href: "/radar/audit/seeds", label: "Seeds", parent: "Audit", icon: Search },
   { href: "/radar/audit/queries", label: "Queries", parent: "Audit", icon: ClipboardCheck },
   { href: "/radar/audit/runs", label: "Runs", parent: "Audit", icon: PlayCircle },
+  { href: "/radar/audit/signals", label: "Signals", parent: "Audit", icon: Activity },
+  { href: "/radar/audit/entities", label: "Entities", parent: "Audit", icon: Tag },
   { href: "/radar/trends", label: "Trends", icon: TrendingUp },
   { href: "/radar/control-panel", label: "Control Panel", icon: Settings },
 ];
@@ -70,6 +72,8 @@ function Breadcrumbs({ location }: { location: string }) {
     seeds: "Seeds",
     queries: "Queries",
     runs: "Runs",
+    signals: "Signals",
+    entities: "Entities",
     trends: "Trends",
     "control-panel": "Control Panel",
   };

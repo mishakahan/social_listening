@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx watch --clear-screen=false src/index.ts",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -12,15 +12,16 @@
   "dependencies": {
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
+    "apify-client": "^2.23.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
     "franc": "^6.2.0",
+    "http-proxy-middleware": "^3.0.5",
     "node-cron": "^4.2.1",
     "openai": "^6.34.0",
     "pino": "^9",
-    "http-proxy-middleware": "^3.0.5",
     "pino-http": "^10"
   },
   "devDependencies": {

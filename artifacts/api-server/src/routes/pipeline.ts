@@ -6,6 +6,17 @@ import {
   type SeedCandidateItem,
   type CompanyContext,
 } from "../services/radar-setup-bot.js";
+import {
+  getApifyClient,
+  getWebhookBaseUrl,
+  buildActorInput,
+  getActorMemoryMb,
+  mapApifyStatus,
+} from "../services/apify.js";
+import { ingestActorRun } from "../services/ingestion.js";
+import { runEntityExtraction } from "../services/entity-extraction.js";
+import { runTimeseriesAggregation } from "../services/timeseries.js";
+import { runStateMachine } from "../services/state-machine.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -335,6 +346,39 @@ router.patch("/scout-queries/:id", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/pipeline/scout-queries/:id
+// ---------------------------------------------------------------------------
+router.delete("/scout-queries/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id!, 10);
+    await storage.deleteScoutQuery(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to delete scout query");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/pipeline/companies/:id/scout-queries/bulk
+// Body: { queryIds: number[] }
+// ---------------------------------------------------------------------------
+router.delete("/companies/:id/scout-queries/bulk", async (req, res) => {
+  try {
+    const { queryIds } = req.body as { queryIds: number[] };
+    if (!Array.isArray(queryIds) || queryIds.length === 0) {
+      res.status(400).json({ error: "queryIds must be a non-empty array" });
+      return;
+    }
+    await storage.deleteScoutQueries(queryIds);
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to bulk delete scout queries");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/pipeline/scout-queries/:id/test-fire
 // Simulation: returns mock data
 // ---------------------------------------------------------------------------
@@ -388,76 +432,67 @@ router.post("/scout-queries/:id/test-fire", async (req, res) => {
 router.post("/companies/:id/scout-queries/launch", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
+    const { queryIds } = (req.body ?? {}) as { queryIds?: number[] };
 
-    // Get all scout queries for the company
-    const queries = await storage.getScoutQueries(companyId);
+    // Get queries to launch: selected IDs if provided, otherwise all active
+    const allQueries = await storage.getScoutQueries(companyId);
+    const queries =
+      queryIds && queryIds.length > 0
+        ? allQueries.filter((q) => queryIds.includes(q.id))
+        : allQueries.filter((q) => q.active);
+
+    if (queries.length === 0) {
+      res.status(400).json({ error: "No queries to launch" });
+      return;
+    }
+
+    const apifyClient = getApifyClient();
+    const webhookBaseUrl = getWebhookBaseUrl();
+    const webhookUrl = webhookBaseUrl
+      ? `${webhookBaseUrl}/api/pipeline/webhooks/apify`
+      : null;
+
+    if (webhookUrl) {
+      logger.info({ webhookUrl }, "Apify webhooks will be registered");
+    } else {
+      logger.warn("No SERVER_URL or REPLIT_DOMAINS set — Apify webhooks disabled; runs will be polled for status");
+    }
 
     const actorRunIds: number[] = [];
-    const COST_PER_RUN = 0.05; // USD estimate per run
 
     for (const query of queries) {
-      // Flip active=true
-      await storage.updateScoutQuery(query.id, { active: true });
-
-      // Determine platforms based on query language/geography
-      const platforms: { platform: string; runMode: string; actorSlug: string }[] =
-        [];
-
-      // IG: always 2 runs
-      platforms.push({
-        platform: "instagram",
-        runMode: "backfill:ig_posts",
-        actorSlug: "apify/instagram-scraper",
-      });
-      platforms.push({
-        platform: "instagram",
-        runMode: "backfill:ig_reels",
-        actorSlug: "apify/instagram-reel-scraper",
-      });
-
-      // TikTok: 1 run
-      platforms.push({
-        platform: "tiktok",
-        runMode: "backfill:tiktok",
-        actorSlug: "clockworks/tiktok-scraper",
-      });
-
-      // Reddit: up to 2 runs
-      if (query.keywords && query.keywords.length > 0) {
-        platforms.push({
-          platform: "reddit",
-          runMode: "backfill:reddit_search",
-          actorSlug: "trudax/reddit-scraper",
-        });
-      }
-      // Reddit subreddits (simplified: always add if not zh-CN)
-      if (query.language !== "zh-CN") {
-        platforms.push({
-          platform: "reddit",
-          runMode: "backfill:reddit_subreddits",
-          actorSlug: "trudax/reddit-scraper",
-        });
+      if (!query.active) {
+        await storage.updateScoutQuery(query.id, { active: true });
       }
 
-      // XHS: if language is zh-CN
+      const queryInput = {
+        keywords: query.keywords,
+        hashtags: query.hashtags,
+        language: query.language,
+        geography: query.geography,
+        topicLabel: query.topicLabel,
+      };
+
+      const platforms: { platform: string; runMode: string; actorSlug: string }[] = [];
+
+      platforms.push({ platform: "instagram", runMode: "backfill:ig_posts",  actorSlug: "apify/instagram-scraper" });
+      platforms.push({ platform: "instagram", runMode: "backfill:ig_reels",  actorSlug: "apify/instagram-scraper" });
+      platforms.push({ platform: "tiktok",    runMode: "backfill:tiktok",    actorSlug: "clockworks/tiktok-scraper" });
+
+      if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
+        platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
+      }
       if (query.language === "zh-CN") {
-        platforms.push({
-          platform: "xiaohongshu",
-          runMode: "backfill:xhs_search",
-          actorSlug: "easyapi/xhs-scraper",
-        });
+        platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search",   actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
       }
-
-      // Google Trends: if geography is not CN
       if (query.geography !== "CN") {
-        platforms.push({
-          platform: "google_trends",
-          runMode: "backfill:google_trends",
-          actorSlug: "apify/google-trends-scraper",
-        });
+        platforms.push({ platform: "google_trends", runMode: "backfill:google_trends", actorSlug: "apify/google-trends-scraper" });
       }
 
       for (const p of platforms) {
+        const actorInput = buildActorInput(p.actorSlug, p.runMode, queryInput);
+
+        // Create the DB record first so we have an ID
         const run = await storage.createActorRun({
           companyId,
           scoutQueryId: query.id,
@@ -465,23 +500,85 @@ router.post("/companies/:id/scout-queries/launch", async (req, res) => {
           platform: p.platform,
           runMode: p.runMode,
           status: "queued",
-          inputPayload: {
-            keywords: query.keywords,
-            hashtags: query.hashtags,
-            language: query.language,
-            geography: query.geography,
-            topicLabel: query.topicLabel,
-          },
+          inputPayload: queryInput,
         });
+
+        // Fire the Apify actor
+        try {
+          const webhooks = webhookUrl
+            ? [
+                {
+                  eventTypes: [
+                    "ACTOR.RUN.SUCCEEDED",
+                    "ACTOR.RUN.FAILED",
+                    "ACTOR.RUN.TIMED_OUT",
+                    "ACTOR.RUN.ABORTED",
+                  ] as any,
+                  requestUrl: webhookUrl,
+                  payloadTemplate: JSON.stringify({
+                    eventType: "{{eventType}}",
+                    resource: "{{resource}}",
+                    internalRunId: run.id,
+                  }),
+                },
+              ]
+            : undefined;
+
+          const apifyRun = await apifyClient
+            .actor(p.actorSlug)
+            .start(actorInput, { memory: getActorMemoryMb(p.actorSlug), webhooks });
+
+          await storage.updateActorRun(run.id, {
+            apifyRunId: apifyRun.id,
+            apifyDatasetId: apifyRun.defaultDatasetId ?? null,
+            status: "running",
+            startedAt: new Date(),
+          });
+
+          logger.info(
+            { runId: run.id, apifyRunId: apifyRun.id, actor: p.actorSlug },
+            "Apify actor started"
+          );
+        } catch (apifyErr: any) {
+          logger.error(
+            { err: apifyErr, runId: run.id, actor: p.actorSlug },
+            "Failed to start Apify actor"
+          );
+          await storage.updateActorRun(run.id, {
+            status: "failed",
+            errorMessage: apifyErr.message ?? "Failed to start actor",
+          });
+        }
+
         actorRunIds.push(run.id);
+
+        // Stagger launches to avoid bursting the Apify concurrent memory limit
+        await new Promise((r) => setTimeout(r, 1500));
       }
     }
 
-    const estimatedCostUsd = actorRunIds.length * COST_PER_RUN;
-
-    res.json({ success: true, actorRunIds, estimatedCostUsd });
+    res.json({ success: true, actorRunIds });
   } catch (err: any) {
     logger.error({ err }, "Failed to launch scout queries");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/pipeline/companies/:id/actor-runs
+// Body: { runIds: number[] }  — deletes the specified run records from the DB.
+// ---------------------------------------------------------------------------
+router.delete("/companies/:id/actor-runs", async (req, res) => {
+  try {
+    const { runIds } = req.body as { runIds?: number[] };
+    if (!runIds || runIds.length === 0) {
+      res.status(400).json({ error: "runIds array required" });
+      return;
+    }
+    await storage.deleteActorRuns(runIds);
+    res.json({ deleted: runIds.length });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to delete actor runs");
     res.status(500).json({ error: err.message });
   }
 });
@@ -541,6 +638,33 @@ router.get("/actor-runs/:id/sample-signals", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/pipeline/actor-runs/:id/output
+// Fetches up to 50 items from the Apify dataset for a completed run.
+// ---------------------------------------------------------------------------
+router.get("/actor-runs/:id/output", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id!, 10);
+    const run = await storage.getActorRun(id);
+    if (!run) {
+      res.status(404).json({ error: "Actor run not found" });
+      return;
+    }
+    if (!run.apifyDatasetId) {
+      res.status(404).json({ error: "No dataset available for this run" });
+      return;
+    }
+    const limit = Math.min(parseInt((req.query.limit as string) ?? "50", 10), 200);
+    const result = await getApifyClient()
+      .dataset(run.apifyDatasetId)
+      .listItems({ limit });
+    res.json({ items: result.items, total: result.total, count: result.count });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to fetch run output");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/pipeline/actor-runs/:id/retry
 // ---------------------------------------------------------------------------
 router.post("/actor-runs/:id/retry", async (req, res) => {
@@ -551,15 +675,145 @@ router.post("/actor-runs/:id/retry", async (req, res) => {
       res.status(404).json({ error: "Actor run not found" });
       return;
     }
-    const updated = await storage.updateActorRun(id, {
+
+    // Reset record first
+    await storage.updateActorRun(id, {
       status: "queued",
+      apifyRunId: null,
+      apifyDatasetId: null,
       errorMessage: null,
       startedAt: null,
       completedAt: null,
+      recordsFetched: 0,
+      recordsUsable: 0,
+      recordsDropped: 0,
+      costUsd: null,
     });
+
+    const webhookBaseUrl = getWebhookBaseUrl();
+    const webhookUrl = webhookBaseUrl
+      ? `${webhookBaseUrl}/api/pipeline/webhooks/apify`
+      : null;
+
+    const queryInput = run.inputPayload as {
+      keywords: string[];
+      hashtags: string[];
+      language: string;
+      geography: string;
+      topicLabel: string;
+    };
+    const actorInput = buildActorInput(run.actorSlug, run.runMode, queryInput);
+
+    const webhooks = webhookUrl
+      ? [
+          {
+            eventTypes: [
+              "ACTOR.RUN.SUCCEEDED",
+              "ACTOR.RUN.FAILED",
+              "ACTOR.RUN.TIMED_OUT",
+              "ACTOR.RUN.ABORTED",
+            ] as any,
+            requestUrl: webhookUrl,
+            payloadTemplate: JSON.stringify({
+              eventType: "{{eventType}}",
+              resource: "{{resource}}",
+              internalRunId: run.id,
+            }),
+          },
+        ]
+      : undefined;
+
+    const apifyRun = await getApifyClient()
+      .actor(run.actorSlug)
+      .start(actorInput, { memory: getActorMemoryMb(run.actorSlug), webhooks });
+
+    const updated = await storage.updateActorRun(id, {
+      apifyRunId: apifyRun.id,
+      apifyDatasetId: apifyRun.defaultDatasetId ?? null,
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    logger.info({ runId: id, apifyRunId: apifyRun.id }, "Actor run retried");
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to retry actor run");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/actor-runs/:id/cancel
+// Aborts the Apify run if active, marks DB record as cancelled.
+// ---------------------------------------------------------------------------
+router.post("/actor-runs/:id/cancel", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id!, 10);
+    const run = await storage.getActorRun(id);
+    if (!run) {
+      res.status(404).json({ error: "Actor run not found" });
+      return;
+    }
+
+    // Abort on Apify if it has an active run
+    if (run.apifyRunId && (run.status === "running" || run.status === "queued")) {
+      try {
+        await getApifyClient().run(run.apifyRunId).abort();
+      } catch (e: any) {
+        // Log but don't fail — we still want to mark it cancelled locally
+        logger.warn({ err: e, apifyRunId: run.apifyRunId }, "Apify abort call failed");
+      }
+    }
+
+    const updated = await storage.updateActorRun(id, {
+      status: "failed",
+      errorMessage: "Cancelled by user",
+      completedAt: new Date(),
+    });
+    res.json(updated);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to cancel actor run");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/actor-runs/bulk-cancel
+// Body: { runIds: number[] }
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/actor-runs/bulk-cancel", async (req, res) => {
+  try {
+    const { runIds } = req.body as { runIds: number[] };
+    if (!Array.isArray(runIds) || runIds.length === 0) {
+      res.status(400).json({ error: "runIds must be a non-empty array" });
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      runIds.map(async (id) => {
+        const run = await storage.getActorRun(id);
+        if (!run) return null;
+
+        if (run.apifyRunId && (run.status === "running" || run.status === "queued")) {
+          try {
+            await getApifyClient().run(run.apifyRunId).abort();
+          } catch (e: any) {
+            logger.warn({ err: e, apifyRunId: run.apifyRunId }, "Apify abort call failed");
+          }
+        }
+
+        return storage.updateActorRun(id, {
+          status: "failed",
+          errorMessage: "Cancelled by user",
+          completedAt: new Date(),
+        });
+      })
+    );
+
+    const cancelled = results.filter((r) => r.status === "fulfilled" && r.value).length;
+    res.json({ success: true, cancelled });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to bulk cancel actor runs");
     res.status(500).json({ error: err.message });
   }
 });
@@ -585,40 +839,103 @@ router.get("/companies/:id/actor-runs/summary", async (req, res) => {
 // POST /api/pipeline/webhooks/apify
 // ---------------------------------------------------------------------------
 router.post("/webhooks/apify", async (req, res) => {
+  // Always respond 200 immediately so Apify doesn't retry
+  res.status(200).json({ ok: true });
+
   try {
     const body = req.body as {
       eventType?: string;
-      actorRunId?: string;
-      status?: string;
-      resource?: { id?: string; status?: string; defaultDatasetId?: string };
+      internalRunId?: number;
+      resource?: {
+        id?: string;
+        status?: string;
+        defaultDatasetId?: string;
+        stats?: { netRxBytes?: number };
+        usageTotalUsd?: number;
+        exitCode?: number;
+        statusMessage?: string;
+      };
     };
 
-    logger.info({ body }, "Received Apify webhook");
+    logger.info({ eventType: body.eventType, apifyRunId: body.resource?.id }, "Apify webhook received");
 
-    // Try to find the actor run by apify run id
-    const apifyRunId =
-      body.resource?.id ?? body.actorRunId;
-    const apifyStatus = body.resource?.status ?? body.status;
+    const apifyRunId = body.resource?.id;
+    const apifyStatus = body.resource?.status;
+    if (!apifyRunId || !apifyStatus) return;
 
-    if (apifyRunId) {
-      // Find runs with this apify run id (we'd need a query, but for now
-      // we mark by any run that matches - simplified implementation)
-      const newStatus =
-        apifyStatus === "SUCCEEDED"
-          ? "succeeded"
-          : apifyStatus === "FAILED"
-          ? "failed"
-          : "running";
-
-      logger.info({ apifyRunId, newStatus }, "Apify webhook processed");
+    // Look up our run record — prefer the internalRunId embedded in the webhook payload
+    let run = body.internalRunId
+      ? await storage.getActorRun(body.internalRunId)
+      : undefined;
+    if (!run) {
+      run = await storage.getActorRunByApifyRunId(apifyRunId);
+    }
+    if (!run) {
+      logger.warn({ apifyRunId }, "Received Apify webhook for unknown run");
+      return;
     }
 
-    res.status(200).json({ ok: true });
+    const newStatus = mapApifyStatus(apifyStatus);
+    const isTerminal = newStatus !== "running";
+
+    const update: Record<string, unknown> = { status: newStatus };
+
+    if (isTerminal) {
+      update.completedAt = new Date();
+
+      // Pull final stats from the Apify run resource
+      if (body.resource?.usageTotalUsd != null) {
+        update.costUsd = body.resource.usageTotalUsd;
+      }
+      if (body.resource?.statusMessage) {
+        update.errorMessage = newStatus !== "succeeded" ? body.resource.statusMessage : null;
+      }
+
+      // Fetch dataset item count for succeeded runs
+      if (newStatus === "succeeded" && body.resource?.defaultDatasetId) {
+        try {
+          const dataset = await getApifyClient()
+            .dataset(body.resource.defaultDatasetId)
+            .get();
+          if (dataset) {
+            update.recordsFetched = dataset.itemCount ?? 0;
+          }
+        } catch (e: any) {
+          logger.warn({ err: e }, "Could not fetch dataset item count");
+        }
+      }
+    }
+
+    await storage.updateActorRun(run.id, update as any);
+    logger.info({ runId: run.id, apifyRunId, newStatus }, "Actor run updated from webhook");
+
+    // Kick off ingestion asynchronously for succeeded runs
+    if (newStatus === "succeeded" && body.resource?.defaultDatasetId) {
+      triggerIngestion(run.id, body.resource.defaultDatasetId).catch((e) =>
+        logger.error({ err: e, runId: run.id }, "Ingestion trigger failed")
+      );
+    }
   } catch (err: any) {
     logger.error({ err }, "Failed to process Apify webhook");
-    res.status(500).json({ error: err.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Ingestion trigger helper (async, not awaited from webhook)
+// ---------------------------------------------------------------------------
+async function triggerIngestion(runId: number, datasetId: string): Promise<void> {
+  const run = await storage.getActorRun(runId);
+  if (!run) return;
+
+  logger.info({ runId, datasetId }, "Fetching dataset for ingestion");
+  const items = await getApifyClient().dataset(datasetId).listItems({ limit: 1000 });
+  const data = items.items ?? [];
+
+  await ingestActorRun(run, data);
+
+  // After ingestion, run entity extraction for this company
+  await runEntityExtraction(run.companyId, { actorRunId: runId });
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/pipeline/companies/:id/pipeline-config
@@ -806,22 +1123,36 @@ router.delete(
 
 // ---------------------------------------------------------------------------
 // GET /api/pipeline/companies/:id/trends
-// Returns knowledgeItems with type='trend_signal'
+// Returns enriched trends (entity state + knowledge item joined)
 // ---------------------------------------------------------------------------
 router.get("/companies/:id/trends", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
-    const filters: { type?: string; state?: string; archived?: boolean } = {
-      type: "trend_signal",
-    };
-    if (req.query.state) filters.state = req.query.state as string;
-    if (req.query.archived !== undefined)
-      filters.archived = req.query.archived === "true";
-
-    const items = await storage.getKnowledgeItems(companyId, filters);
-    res.json(items);
+    const archived = req.query.archived !== undefined ? req.query.archived === "true" : undefined;
+    const trends = await storage.getTrendsEnriched(companyId, { archived });
+    res.json(trends);
   } catch (err: any) {
     logger.error({ err }, "Failed to get trends");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/trends/:trendId
+// Returns enriched trend detail with evidence
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/trends/:trendId", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const trendId = parseInt(req.params.trendId!, 10);
+    const trend = await storage.getTrendDetail(companyId, trendId);
+    if (!trend) {
+      res.status(404).json({ error: "Trend not found" });
+      return;
+    }
+    res.json(trend);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get trend detail");
     res.status(500).json({ error: err.message });
   }
 });
@@ -841,6 +1172,196 @@ router.patch("/trends/:id/status", async (req, res) => {
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to update trend status");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===========================================================================
+// AUDIT ROUTES — for observability into the pipeline
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/signals
+// ?platform=&entityExtractionStatus=&limit=&offset=
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/signals", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const filters: any = {
+      limit: Math.min(Number(req.query.limit ?? 100), 500),
+      offset: Number(req.query.offset ?? 0),
+    };
+    if (req.query.platform) filters.platform = req.query.platform as string;
+    if (req.query.actorRunId) filters.actorRunId = Number(req.query.actorRunId);
+    if (req.query.entityExtractionStatus) filters.entityExtractionStatus = req.query.entityExtractionStatus as string;
+
+    const [signals, total] = await Promise.all([
+      storage.getRawSignalsByCompany(companyId, filters),
+      storage.getRawSignalCount(companyId, filters),
+    ]);
+    res.json({ signals, total });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get signals");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/signals/bulk-delete
+// Body: { signalIds: number[] }
+// Using POST instead of DELETE because some proxy layers strip DELETE request bodies.
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/signals/bulk-delete", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const { signalIds } = req.body as { signalIds?: number[] };
+    if (!Array.isArray(signalIds) || signalIds.length === 0) {
+      res.status(400).json({ error: "signalIds must be a non-empty array" });
+      return;
+    }
+    const deleted = await storage.deleteRawSignals(signalIds);
+    res.json({ deleted });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to bulk delete signals");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/entities
+// ?entityType=
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/entities", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const filters: any = {};
+    if (req.query.entityType) filters.entityType = req.query.entityType as string;
+    const entities = await storage.getEntities(companyId, filters);
+    res.json(entities);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get entities");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/entity-states
+// ?state=&geography=
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/entity-states", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const filters: any = {};
+    if (req.query.state) filters.state = req.query.state as string;
+    if (req.query.geography) filters.geography = req.query.geography as string;
+    const states = await storage.getEntityStateWithEntity(companyId, filters);
+    res.json(states);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get entity states");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/entities/:id/timeseries?windowDays=90
+// ---------------------------------------------------------------------------
+router.get("/entities/:id/timeseries", async (req, res) => {
+  try {
+    const entityId = parseInt(req.params.id!, 10);
+    const windowDays = Math.min(Number(req.query.windowDays ?? 90), 365);
+    const rows = await storage.getEntityTimeseries(entityId, windowDays);
+    res.json(rows);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get entity timeseries");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-ingestion
+// Manually re-trigger ingestion for a specific actor run
+// Body: { runId: number }
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-ingestion", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const { runId } = req.body as { runId?: number };
+    if (!runId) {
+      res.status(400).json({ error: "runId is required" });
+      return;
+    }
+    const run = await storage.getActorRun(runId);
+    if (!run || run.companyId !== companyId) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    if (!run.apifyDatasetId) {
+      res.status(400).json({ error: "Run has no dataset ID" });
+      return;
+    }
+
+    // Reset ingestion status so it can be re-claimed
+    await storage.updateActorRun(runId, { ingestionStatus: "pending" } as any);
+
+    res.json({ ok: true, message: "Ingestion triggered" });
+
+    // Fire async
+    triggerIngestion(runId, run.apifyDatasetId).catch((e) =>
+      logger.error({ err: e, runId }, "Manual ingestion trigger failed")
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to trigger ingestion");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-entity-extraction
+// Manually run entity extraction pass
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-entity-extraction", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "Entity extraction started" });
+    runEntityExtraction(companyId).catch((e) =>
+      logger.error({ err: e, companyId }, "Manual entity extraction failed")
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start entity extraction");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-timeseries
+// Manually trigger timeseries aggregation
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-timeseries", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "Timeseries aggregation started" });
+    runTimeseriesAggregation(companyId).catch((e) =>
+      logger.error({ err: e, companyId }, "Manual timeseries aggregation failed")
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start timeseries aggregation");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-state-machine
+// Manually trigger state machine
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-state-machine", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "State machine started" });
+    runStateMachine(companyId).catch((e) =>
+      logger.error({ err: e, companyId }, "Manual state machine failed")
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start state machine");
     res.status(500).json({ error: err.message });
   }
 });

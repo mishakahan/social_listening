@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -15,6 +16,8 @@ import {
   Globe,
   Tag,
   Layers,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -91,13 +94,14 @@ function centralityBadge(value: number) {
 interface SeedCardProps {
   item: SeedItem;
   index: number;
-  candidateId: number;
+  selected: boolean;
+  onSelect: (index: number, checked: boolean) => void;
   allItems: SeedItem[];
   onUpdate: (items: SeedItem[]) => void;
   isPending: boolean;
 }
 
-function SeedCard({ item, index, allItems, onUpdate, isPending }: SeedCardProps) {
+function SeedCard({ item, index, selected, onSelect, allItems, onUpdate, isPending }: SeedCardProps) {
   const status = item.status ?? "pending";
 
   const setStatus = (next: "approved" | "killed" | "pending") => {
@@ -112,19 +116,28 @@ function SeedCard({ item, index, allItems, onUpdate, isPending }: SeedCardProps)
       ? "border-green-400 bg-green-50/30 dark:bg-green-950/20"
       : status === "killed"
       ? "border-border opacity-50"
+      : selected
+      ? "border-blue-300 bg-blue-50/20 dark:bg-blue-950/10"
       : "border-border";
 
   return (
     <Card className={`transition-all duration-200 ${cardBorder}`}>
       <CardHeader className="pb-3 pt-4 px-5">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-foreground text-sm leading-tight">{item.label}</h3>
-            {item.description && (
-              <p className="text-xs text-muted-foreground mt-1 leading-relaxed line-clamp-2">
-                {item.description}
-              </p>
-            )}
+          <div className="flex items-start gap-2 flex-1 min-w-0">
+            <Checkbox
+              checked={selected}
+              onCheckedChange={(checked) => onSelect(index, !!checked)}
+              className="mt-0.5 flex-shrink-0"
+            />
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-foreground text-sm leading-tight">{item.label}</h3>
+              {item.description && (
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed line-clamp-2">
+                  {item.description}
+                </p>
+              )}
+            </div>
           </div>
           <div className="flex-shrink-0">{centralityBadge(item.strategicCentrality)}</div>
         </div>
@@ -231,6 +244,7 @@ export default function SeedsAuditPage() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const [localItems, setLocalItems] = useState<SeedItem[] | null>(null);
+  const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set());
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["seed-candidates"],
@@ -268,9 +282,49 @@ export default function SeedsAuditPage() {
     patchMutation.mutate(updated);
   };
 
+  const handleSelect = (index: number, checked: boolean) => {
+    setSelectedIndexes((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(index);
+      else next.delete(index);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIndexes.size === items.length) {
+      setSelectedIndexes(new Set());
+    } else {
+      setSelectedIndexes(new Set(items.map((_, i) => i)));
+    }
+  };
+
+  const handleBulkStatus = (status: "approved" | "killed" | "pending", indexSet: Set<number>) => {
+    const updated = items.map((s, i) =>
+      indexSet.has(i) ? { ...s, status } : s
+    );
+    handleUpdate(updated);
+  };
+
   const approvedCount = items.filter((s) => (s.status ?? "pending") === "approved").length;
+  const killedCount = items.filter((s) => (s.status ?? "pending") === "killed").length;
+  const pendingCount = items.filter((s) => !s.status || s.status === "pending").length;
   const totalCount = items.length;
   const canCommit = approvedCount > 0;
+
+  const selectedCount = selectedIndexes.size;
+  const allSelected = totalCount > 0 && selectedCount === totalCount;
+  const someSelected = selectedCount > 0 && !allSelected;
+
+  const pendingSelectedIndexes = new Set(
+    [...selectedIndexes].filter((i) => !items[i]?.status || items[i]?.status === "pending")
+  );
+  const approvedSelectedIndexes = new Set(
+    [...selectedIndexes].filter((i) => items[i]?.status === "approved")
+  );
+  const killedSelectedIndexes = new Set(
+    [...selectedIndexes].filter((i) => items[i]?.status === "killed")
+  );
 
   if (isLoading) {
     return (
@@ -302,8 +356,15 @@ export default function SeedsAuditPage() {
       <div className="p-8 max-w-3xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-foreground mb-1">Seeds Audit</h1>
-          <p className="text-muted-foreground text-sm">
-            Review and approve seed topics for your radar pipeline.
+          <p className="text-muted-foreground text-sm max-w-3xl">
+            Step 1 of 5 — The LLM analyzed your company brief and proposed a set of seed topics: focused
+            areas of consumer interest that are strategically relevant to monitor (e.g., "Premium Gift
+            Chocolate — Germany"). Each seed defines a thematic territory, a geography, a product
+            category link, and a strategic centrality score. Seeds are the root of the entire pipeline —
+            every approved seed will be expanded into keyword/hashtag queries that drive what gets
+            scraped. Review the proposals here: approve the ones that align with your strategy, kill the
+            ones that don't. Only approved seeds generate scout queries. Once you commit, the pipeline
+            moves to Queries.
           </p>
         </div>
         <Card className="p-12 text-center">
@@ -327,11 +388,18 @@ export default function SeedsAuditPage() {
   return (
     <div className="p-8 max-w-3xl mx-auto pb-24">
       {/* Header */}
-      <div className="mb-6 flex items-start justify-between">
+      <div className="mb-4 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Seeds Audit</h1>
-          <p className="text-muted-foreground text-sm">
-            Review the generated seed topics. Approve the ones you want to track.
+          <p className="text-muted-foreground text-sm max-w-3xl">
+            Step 1 of 5 — The LLM analyzed your company brief and proposed a set of seed topics: focused
+            areas of consumer interest that are strategically relevant to monitor (e.g., "Premium Gift
+            Chocolate — Germany"). Each seed defines a thematic territory, a geography, a product
+            category link, and a strategic centrality score. Seeds are the root of the entire pipeline —
+            every approved seed will be expanded into keyword/hashtag queries that drive what gets
+            scraped. Review the proposals here: approve the ones that align with your strategy, kill the
+            ones that don't. Only approved seeds generate scout queries. Once you commit, the pipeline
+            moves to Queries.
           </p>
         </div>
         <div className="text-right">
@@ -343,19 +411,116 @@ export default function SeedsAuditPage() {
       </div>
 
       {/* Stats bar */}
-      <div className="flex gap-3 mb-6">
+      <div className="flex gap-3 mb-4">
         <Badge variant="outline" className="gap-1">
           <span className="h-2 w-2 rounded-full bg-green-500 inline-block" />
           {approvedCount} approved
         </Badge>
         <Badge variant="outline" className="gap-1">
           <span className="h-2 w-2 rounded-full bg-red-400 inline-block" />
-          {items.filter((s) => (s.status ?? "pending") === "killed").length} killed
+          {killedCount} killed
         </Badge>
         <Badge variant="outline" className="gap-1">
           <span className="h-2 w-2 rounded-full bg-gray-400 inline-block" />
-          {items.filter((s) => !s.status || s.status === "pending").length} pending
+          {pendingCount} pending
         </Badge>
+      </div>
+
+      {/* Bulk actions toolbar */}
+      <div className="flex items-center flex-wrap gap-2 mb-4 p-2 bg-muted/40 rounded-lg border border-border">
+        <button
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors"
+          onClick={handleSelectAll}
+        >
+          {allSelected ? (
+            <CheckSquare className="h-3.5 w-3.5" />
+          ) : someSelected ? (
+            <CheckSquare className="h-3.5 w-3.5 opacity-50" />
+          ) : (
+            <Square className="h-3.5 w-3.5" />
+          )}
+          {allSelected ? "Deselect all" : "Select all"}
+        </button>
+
+        <div className="w-px h-4 bg-border mx-1" />
+
+        {/* Bulk actions for selection */}
+        {selectedCount > 0 ? (
+          <>
+            <span className="text-xs text-muted-foreground">{selectedCount} selected —</span>
+            {(pendingSelectedIndexes.size > 0 || killedSelectedIndexes.size > 0) && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7 px-2 text-green-700 border-green-300 hover:bg-green-50"
+                disabled={patchMutation.isPending}
+                onClick={() => handleBulkStatus("approved", selectedIndexes)}
+              >
+                <CheckCircle className="h-3.5 w-3.5 mr-1" />
+                Approve selected
+              </Button>
+            )}
+            {(pendingSelectedIndexes.size > 0 || approvedSelectedIndexes.size > 0) && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7 px-2 text-red-700 border-red-300 hover:bg-red-50"
+                disabled={patchMutation.isPending}
+                onClick={() => handleBulkStatus("killed", selectedIndexes)}
+              >
+                <XCircle className="h-3.5 w-3.5 mr-1" />
+                Kill selected
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-xs h-7 px-2 text-muted-foreground"
+              disabled={patchMutation.isPending}
+              onClick={() => handleBulkStatus("pending", selectedIndexes)}
+            >
+              Reset selected
+            </Button>
+          </>
+        ) : (
+          <>
+            {/* Global bulk actions when nothing selected */}
+            {pendingCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7 px-2 text-green-700 border-green-300 hover:bg-green-50"
+                disabled={patchMutation.isPending}
+                onClick={() => {
+                  const pendingAll = new Set(
+                    items.map((_, i) => i).filter((i) => !items[i]?.status || items[i]?.status === "pending")
+                  );
+                  handleBulkStatus("approved", pendingAll);
+                }}
+              >
+                <CheckCircle className="h-3.5 w-3.5 mr-1" />
+                Approve all pending
+              </Button>
+            )}
+            {pendingCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7 px-2 text-red-700 border-red-300 hover:bg-red-50"
+                disabled={patchMutation.isPending}
+                onClick={() => {
+                  const pendingAll = new Set(
+                    items.map((_, i) => i).filter((i) => !items[i]?.status || items[i]?.status === "pending")
+                  );
+                  handleBulkStatus("killed", pendingAll);
+                }}
+              >
+                <XCircle className="h-3.5 w-3.5 mr-1" />
+                Kill all pending
+              </Button>
+            )}
+          </>
+        )}
       </div>
 
       {/* Seed cards */}
@@ -365,7 +530,8 @@ export default function SeedsAuditPage() {
             key={`${item.label}-${i}`}
             item={item}
             index={i}
-            candidateId={candidateId}
+            selected={selectedIndexes.has(i)}
+            onSelect={handleSelect}
             allItems={items}
             onUpdate={handleUpdate}
             isPending={patchMutation.isPending}

@@ -31,6 +31,12 @@ import {
   type InsertTpEntity,
   type TpEntitySynonym,
   type InsertTpEntitySynonym,
+  type TpSignalEntity,
+  type InsertTpSignalEntity,
+  type TpEntityTimeseries,
+  type InsertTpEntityTimeseries,
+  type TpEntityState,
+  type InsertTpEntityState,
   type TpPipelineConfig,
   type KnowledgeItem,
   type InsertKnowledgeItem,
@@ -49,11 +55,18 @@ import {
   sql,
   count,
   sum,
+  gte,
+  lte,
+  lt,
 } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Companies
 // ---------------------------------------------------------------------------
+
+export async function getAllCompanies(): Promise<Company[]> {
+  return db.select().from(companies);
+}
 
 export async function getOrCreateDefaultCompany(): Promise<Company> {
   const existing = await db
@@ -309,6 +322,15 @@ export async function incrementScoutQueryCounters(
     .where(eq(tpScoutQueries.id, id));
 }
 
+export async function deleteScoutQuery(id: number): Promise<void> {
+  await db.delete(tpScoutQueries).where(eq(tpScoutQueries.id, id));
+}
+
+export async function deleteScoutQueries(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db.delete(tpScoutQueries).where(inArray(tpScoutQueries.id, ids));
+}
+
 // ---------------------------------------------------------------------------
 // Actor Runs
 // ---------------------------------------------------------------------------
@@ -327,6 +349,17 @@ export async function getActorRun(
     .select()
     .from(tpActorRuns)
     .where(eq(tpActorRuns.id, id))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getActorRunByApifyRunId(
+  apifyRunId: string
+): Promise<TpActorRun | undefined> {
+  const rows = await db
+    .select()
+    .from(tpActorRuns)
+    .where(eq(tpActorRuns.apifyRunId, apifyRunId))
     .limit(1);
   return rows[0];
 }
@@ -362,6 +395,11 @@ export async function updateActorRun(
     .where(eq(tpActorRuns.id, id))
     .returning();
   return rows[0]!;
+}
+
+export async function deleteActorRuns(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db.delete(tpActorRuns).where(inArray(tpActorRuns.id, ids));
 }
 
 export async function getActorRunSummary(
@@ -634,4 +672,533 @@ export async function getKnowledgeEvidence(
     return q.limit(limit);
   }
   return q;
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion mutex
+// ---------------------------------------------------------------------------
+
+// Atomically claim a run for ingestion. Returns true if this caller won the
+// race (ingestionStatus was 'pending' → 'processing'). Returns false if
+// another worker already claimed it.
+export async function claimIngestion(runId: number): Promise<boolean> {
+  const rows = await db
+    .update(tpActorRuns)
+    .set({ ingestionStatus: "processing" } as any)
+    .where(
+      and(eq(tpActorRuns.id, runId), eq(tpActorRuns.ingestionStatus as any, "pending"))
+    )
+    .returning({ id: tpActorRuns.id });
+  return rows.length > 0;
+}
+
+export async function markIngestionDone(
+  runId: number,
+  stats: {
+    usable: number;
+    dropped: number;
+    oldestPostedAt?: Date | null;
+    newestPostedAt?: Date | null;
+  }
+): Promise<void> {
+  await db
+    .update(tpActorRuns)
+    .set({
+      ingestionStatus: "done",
+      recordsUsable: stats.usable,
+      recordsDropped: stats.dropped,
+      oldestPostedAt: stats.oldestPostedAt ?? undefined,
+      newestPostedAt: stats.newestPostedAt ?? undefined,
+    } as any)
+    .where(eq(tpActorRuns.id, runId));
+}
+
+export async function markIngestionFailed(
+  runId: number,
+  error: string
+): Promise<void> {
+  await db
+    .update(tpActorRuns)
+    .set({ ingestionStatus: "failed", errorMessage: error } as any)
+    .where(eq(tpActorRuns.id, runId));
+}
+
+// ---------------------------------------------------------------------------
+// Raw Signals — bulk operations
+// ---------------------------------------------------------------------------
+
+export async function bulkInsertRawSignals(
+  signals: InsertTpRawSignal[]
+): Promise<{ inserted: number }> {
+  if (signals.length === 0) return { inserted: 0 };
+  const rows = await db
+    .insert(tpRawSignals)
+    .values(signals)
+    .onConflictDoNothing()
+    .returning({ id: tpRawSignals.id });
+  return { inserted: rows.length };
+}
+
+export async function getRawSignalsByCompany(
+  companyId: number,
+  filters?: {
+    actorRunId?: number;
+    platform?: string;
+    entityExtractionStatus?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<TpRawSignal[]> {
+  const conditions = [eq(tpRawSignals.companyId, companyId)];
+  if (filters?.actorRunId !== undefined) {
+    conditions.push(eq(tpRawSignals.actorRunId, filters.actorRunId));
+  }
+  if (filters?.platform) {
+    conditions.push(eq(tpRawSignals.platform, filters.platform));
+  }
+  if (filters?.entityExtractionStatus) {
+    conditions.push(eq(tpRawSignals.entityExtractionStatus, filters.entityExtractionStatus));
+  }
+  const q = db
+    .select()
+    .from(tpRawSignals)
+    .where(and(...conditions))
+    .orderBy(desc(tpRawSignals.capturedAt))
+    .limit(filters?.limit ?? 100)
+    .offset(filters?.offset ?? 0);
+  return q;
+}
+
+export async function getRawSignalCount(
+  companyId: number,
+  filters?: { actorRunId?: number; platform?: string; entityExtractionStatus?: string }
+): Promise<number> {
+  const conditions = [eq(tpRawSignals.companyId, companyId)];
+  if (filters?.actorRunId !== undefined) {
+    conditions.push(eq(tpRawSignals.actorRunId, filters.actorRunId));
+  }
+  if (filters?.platform) {
+    conditions.push(eq(tpRawSignals.platform, filters.platform));
+  }
+  if (filters?.entityExtractionStatus) {
+    conditions.push(eq(tpRawSignals.entityExtractionStatus, filters.entityExtractionStatus));
+  }
+  const rows = await db
+    .select({ cnt: count() })
+    .from(tpRawSignals)
+    .where(and(...conditions));
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+export async function deleteRawSignals(ids: number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const rows = await db
+    .delete(tpRawSignals)
+    .where(inArray(tpRawSignals.id, ids))
+    .returning({ id: tpRawSignals.id });
+  return rows.length;
+}
+
+export async function getUnextractedSignals(
+  companyId: number,
+  limit: number,
+  actorRunId?: number
+): Promise<TpRawSignal[]> {
+  const conditions = [
+    eq(tpRawSignals.companyId, companyId),
+    eq(tpRawSignals.entityExtractionStatus, "pending"),
+  ];
+  if (actorRunId !== undefined) {
+    conditions.push(eq(tpRawSignals.actorRunId, actorRunId));
+  }
+  return db
+    .select()
+    .from(tpRawSignals)
+    .where(and(...conditions))
+    .orderBy(asc(tpRawSignals.capturedAt))
+    .limit(limit);
+}
+
+export async function markSignalsExtracted(signalIds: number[]): Promise<void> {
+  if (signalIds.length === 0) return;
+  await db
+    .update(tpRawSignals)
+    .set({ entityExtractionStatus: "done", entityExtractionAt: new Date() })
+    .where(inArray(tpRawSignals.id, signalIds));
+}
+
+export async function markSignalsExtractionFailed(signalIds: number[]): Promise<void> {
+  if (signalIds.length === 0) return;
+  await db
+    .update(tpRawSignals)
+    .set({ entityExtractionStatus: "failed" })
+    .where(inArray(tpRawSignals.id, signalIds));
+}
+
+// ---------------------------------------------------------------------------
+// Signal Entities
+// ---------------------------------------------------------------------------
+
+export async function bulkInsertSignalEntities(
+  data: InsertTpSignalEntity[]
+): Promise<void> {
+  if (data.length === 0) return;
+  await db.insert(tpSignalEntities).values(data).onConflictDoNothing();
+}
+
+// ---------------------------------------------------------------------------
+// Entities — extended operations
+// ---------------------------------------------------------------------------
+
+export async function getEntities(
+  companyId: number,
+  filters?: { entityType?: string; deletedAt?: "null" | "any" }
+): Promise<TpEntity[]> {
+  const conditions = [eq(tpEntities.companyId, companyId)];
+  if (filters?.entityType) {
+    conditions.push(eq(tpEntities.entityType, filters.entityType));
+  }
+  if (!filters?.deletedAt || filters.deletedAt === "null") {
+    conditions.push(isNull(tpEntities.deletedAt));
+  }
+  return db
+    .select()
+    .from(tpEntities)
+    .where(and(...conditions))
+    .orderBy(desc(tpEntities.totalMentions));
+}
+
+export async function updateEntityMentionStats(
+  entityId: number,
+  delta: { mentions: number; firstSeenAt?: Date; lastSeenAt?: Date }
+): Promise<void> {
+  await db
+    .update(tpEntities)
+    .set({
+      totalMentions: sql`${tpEntities.totalMentions} + ${delta.mentions}`,
+      ...(delta.firstSeenAt
+        ? { firstSeenAt: sql`LEAST(COALESCE(${tpEntities.firstSeenAt}, ${delta.firstSeenAt}), ${delta.firstSeenAt})` }
+        : {}),
+      ...(delta.lastSeenAt
+        ? { lastSeenAt: sql`GREATEST(COALESCE(${tpEntities.lastSeenAt}, ${delta.lastSeenAt}), ${delta.lastSeenAt})` }
+        : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(tpEntities.id, entityId));
+}
+
+// ---------------------------------------------------------------------------
+// Entity Timeseries
+// ---------------------------------------------------------------------------
+
+export async function upsertEntityTimeseries(
+  data: InsertTpEntityTimeseries
+): Promise<TpEntityTimeseries> {
+  const rows = await db
+    .insert(tpEntityTimeseries)
+    .values(data)
+    .onConflictDoUpdate({
+      target: [
+        tpEntityTimeseries.entityId,
+        tpEntityTimeseries.platform,
+        tpEntityTimeseries.geography,
+        tpEntityTimeseries.bucketDate,
+      ],
+      set: {
+        mentions: data.mentions,
+        uniqueAuthors: data.uniqueAuthors,
+        engagementSum: data.engagementSum,
+        engagementMedian: data.engagementMedian,
+        computedAt: new Date(),
+      },
+    })
+    .returning();
+  return rows[0]!;
+}
+
+export async function getEntityTimeseries(
+  entityId: number,
+  windowDays: number
+): Promise<TpEntityTimeseries[]> {
+  const since = new Date(Date.now() - windowDays * 86400 * 1000);
+  const sinceDate = since.toISOString().slice(0, 10);
+  return db
+    .select()
+    .from(tpEntityTimeseries)
+    .where(
+      and(
+        eq(tpEntityTimeseries.entityId, entityId),
+        gte(tpEntityTimeseries.bucketDate, sinceDate)
+      )
+    )
+    .orderBy(asc(tpEntityTimeseries.bucketDate));
+}
+
+export async function getEntityTimeseriesByCompany(
+  companyId: number,
+  windowDays: number
+): Promise<TpEntityTimeseries[]> {
+  const since = new Date(Date.now() - windowDays * 86400 * 1000);
+  const sinceDate = since.toISOString().slice(0, 10);
+  return db
+    .select()
+    .from(tpEntityTimeseries)
+    .where(
+      and(
+        eq(tpEntityTimeseries.companyId, companyId),
+        gte(tpEntityTimeseries.bucketDate, sinceDate)
+      )
+    )
+    .orderBy(asc(tpEntityTimeseries.bucketDate));
+}
+
+// ---------------------------------------------------------------------------
+// Entity State
+// ---------------------------------------------------------------------------
+
+export async function getOrCreateEntityState(
+  companyId: number,
+  entityId: number,
+  geography: string
+): Promise<TpEntityState> {
+  const existing = await db
+    .select()
+    .from(tpEntityState)
+    .where(
+      and(eq(tpEntityState.entityId, entityId), eq(tpEntityState.geography, geography))
+    )
+    .limit(1);
+  if (existing.length > 0) return existing[0]!;
+
+  const rows = await db
+    .insert(tpEntityState)
+    .values({ companyId, entityId, geography, state: "candidate" })
+    .onConflictDoNothing()
+    .returning();
+  if (rows.length > 0) return rows[0]!;
+
+  // Lost race — fetch what the other inserter created
+  const fetched = await db
+    .select()
+    .from(tpEntityState)
+    .where(
+      and(eq(tpEntityState.entityId, entityId), eq(tpEntityState.geography, geography))
+    )
+    .limit(1);
+  return fetched[0]!;
+}
+
+export async function updateEntityState(
+  id: number,
+  data: Partial<TpEntityState>
+): Promise<TpEntityState> {
+  const rows = await db
+    .update(tpEntityState)
+    .set({ ...data, computedAt: new Date() })
+    .where(eq(tpEntityState.id, id))
+    .returning();
+  return rows[0]!;
+}
+
+export async function getEntityStates(
+  companyId: number,
+  filters?: { state?: string; geography?: string; entityId?: number }
+): Promise<TpEntityState[]> {
+  const conditions = [eq(tpEntityState.companyId, companyId)];
+  if (filters?.state) conditions.push(eq(tpEntityState.state, filters.state));
+  if (filters?.geography) conditions.push(eq(tpEntityState.geography, filters.geography));
+  if (filters?.entityId !== undefined) conditions.push(eq(tpEntityState.entityId, filters.entityId));
+  return db
+    .select()
+    .from(tpEntityState)
+    .where(and(...conditions))
+    .orderBy(desc(tpEntityState.computedAt));
+}
+
+export async function getEntityStateWithEntity(
+  companyId: number,
+  filters?: { state?: string; geography?: string; minVolume7d?: number }
+): Promise<Array<TpEntityState & { entity: TpEntity }>> {
+  const conditions = [eq(tpEntityState.companyId, companyId)];
+  if (filters?.state) conditions.push(eq(tpEntityState.state, filters.state));
+  if (filters?.geography) conditions.push(eq(tpEntityState.geography, filters.geography));
+  if (filters?.minVolume7d !== undefined) {
+    conditions.push(gte(tpEntityState.volume7d, filters.minVolume7d));
+  }
+  const rows = await db
+    .select({ state: tpEntityState, entity: tpEntities })
+    .from(tpEntityState)
+    .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
+    .where(and(...conditions))
+    .orderBy(desc(tpEntityState.volume7d));
+  return rows.map((r) => ({ ...r.state, entity: r.entity }));
+}
+
+// ---------------------------------------------------------------------------
+// Enriched Trends — joins entity states to knowledge items for the Trends page
+// ---------------------------------------------------------------------------
+
+export interface EnrichedTrend {
+  id: number;           // knowledge item id
+  title: string;
+  state: string;
+  signalStrength: number;
+  wowGrowthPct: number;
+  platforms: string[];
+  evidenceCount: number;
+  geography: string;
+  territoryTag: string | null;
+  summary: string | null;
+  description: string | null;
+  topicLabel: string | null;
+  updatedAt: string;
+}
+
+export async function getTrendsEnriched(
+  companyId: number,
+  filters?: { archived?: boolean }
+): Promise<EnrichedTrend[]> {
+  const conditions = [
+    eq(tpEntityState.companyId, companyId),
+    not(isNull(tpEntityState.knowledgeItemId)),
+    isNull(tpEntities.deletedAt),
+  ];
+
+  const rows = await db
+    .select({
+      ki: knowledgeItems,
+      es: tpEntityState,
+    })
+    .from(tpEntityState)
+    .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
+    .innerJoin(knowledgeItems, eq(tpEntityState.knowledgeItemId, knowledgeItems.id))
+    .where(and(...conditions))
+    .orderBy(desc(tpEntityState.volume7d));
+
+  return rows
+    .filter((r) =>
+      filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
+    )
+    .map((r) => ({
+      id: r.ki.id,
+      title: r.ki.title,
+      state: r.es.state,
+      signalStrength: r.ki.signalStrength ?? 0,
+      wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
+      platforms: r.es.platformsSeen ?? [],
+      evidenceCount: r.ki.evidenceCount ?? 0,
+      geography: r.es.geography,
+      territoryTag: r.es.territoryTag ?? null,
+      summary: r.ki.summary ?? null,
+      description: r.ki.description ?? null,
+      topicLabel: r.ki.topicLabel ?? null,
+      updatedAt: r.ki.updatedAt.toISOString(),
+    }));
+}
+
+export interface TrendEvidence {
+  id: number;
+  title: string | null;
+  source: string;
+  url: string | null;
+  publishedAt: string | null;
+  engagementScore: number | null;
+  platform: string;
+  author: string | null;
+  excerpt: string | null;
+}
+
+export async function getTrendDetail(
+  companyId: number,
+  knowledgeItemId: number
+): Promise<(EnrichedTrend & { evidence: TrendEvidence[]; growthMomPct: number; volume7d: number; volume30d: number }) | null> {
+  const conditions = [
+    eq(tpEntityState.companyId, companyId),
+    eq(tpEntityState.knowledgeItemId, knowledgeItemId),
+  ];
+
+  const rows = await db
+    .select({ ki: knowledgeItems, es: tpEntityState })
+    .from(tpEntityState)
+    .innerJoin(knowledgeItems, eq(tpEntityState.knowledgeItemId, knowledgeItems.id))
+    .where(and(...conditions))
+    .limit(1);
+
+  if (rows.length === 0) {
+    // Fall back to plain knowledge item lookup
+    const kiRows = await db.select().from(knowledgeItems).where(
+      and(eq(knowledgeItems.id, knowledgeItemId), eq(knowledgeItems.companyId, companyId))
+    ).limit(1);
+    if (kiRows.length === 0) return null;
+    const ki = kiRows[0]!;
+    return {
+      id: ki.id,
+      title: ki.title,
+      state: "candidate",
+      signalStrength: ki.signalStrength ?? 0,
+      wowGrowthPct: 0,
+      growthMomPct: 0,
+      platforms: [],
+      evidenceCount: ki.evidenceCount ?? 0,
+      geography: ki.geographicScope ?? "Global",
+      territoryTag: null,
+      summary: ki.summary ?? null,
+      description: ki.description ?? null,
+      topicLabel: ki.topicLabel ?? null,
+      updatedAt: ki.updatedAt.toISOString(),
+      volume7d: 0,
+      volume30d: 0,
+      evidence: [],
+    };
+  }
+
+  const { ki, es } = rows[0]!;
+
+  // Fetch raw signals for this entity as evidence (most recent, limit 20)
+  const evidenceRows = await db
+    .select({
+      sig: tpRawSignals,
+    })
+    .from(tpSignalEntities)
+    .innerJoin(tpRawSignals, eq(tpSignalEntities.rawSignalId, tpRawSignals.id))
+    .where(
+      and(
+        eq(tpSignalEntities.entityId, es.entityId),
+        eq(tpRawSignals.companyId, companyId)
+      )
+    )
+    .orderBy(desc(tpRawSignals.capturedAt))
+    .limit(20);
+
+  const evidence: TrendEvidence[] = evidenceRows.map((r) => ({
+    id: r.sig.id,
+    title: r.sig.text?.slice(0, 120) ?? null,
+    source: r.sig.platform,
+    url: r.sig.sourceUrl ?? null,
+    publishedAt: r.sig.postedAt?.toISOString() ?? null,
+    engagementScore: r.sig.engagementScore ?? null,
+    platform: r.sig.platform,
+    author: r.sig.authorHandle ?? null,
+    excerpt: r.sig.text?.slice(0, 300) ?? null,
+  }));
+
+  return {
+    id: ki.id,
+    title: ki.title,
+    state: es.state,
+    signalStrength: ki.signalStrength ?? 0,
+    wowGrowthPct: Math.round(es.growthWow * 1000) / 10,
+    growthMomPct: Math.round(es.growthMom * 1000) / 10,
+    platforms: es.platformsSeen ?? [],
+    evidenceCount: ki.evidenceCount ?? 0,
+    geography: es.geography,
+    territoryTag: es.territoryTag ?? null,
+    summary: ki.summary ?? null,
+    description: ki.description ?? null,
+    topicLabel: ki.topicLabel ?? null,
+    updatedAt: ki.updatedAt.toISOString(),
+    volume7d: es.volume7d,
+    volume30d: es.volume30d,
+    evidence,
+  };
 }

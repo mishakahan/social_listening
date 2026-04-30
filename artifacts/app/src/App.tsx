@@ -1,6 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Suspense, lazy } from "react";
 import NotFound from "@/pages/not-found";
@@ -10,6 +11,8 @@ const RadarSetupPage = lazy(() => import("@/pages/radar/setup"));
 const SeedsAuditPage = lazy(() => import("@/pages/radar/audit/seeds"));
 const QueriesAuditPage = lazy(() => import("@/pages/radar/audit/queries"));
 const RunsAuditPage = lazy(() => import("@/pages/radar/audit/runs"));
+const SignalsAuditPage = lazy(() => import("@/pages/radar/audit/signals"));
+const EntitiesAuditPage = lazy(() => import("@/pages/radar/audit/entities"));
 const TrendsListPage = lazy(() => import("@/pages/radar/trends/list"));
 const TrendDetailPage = lazy(() => import("@/pages/radar/trends/detail"));
 const ControlPanelPage = lazy(() => import("@/pages/radar/control-panel"));
@@ -30,6 +33,8 @@ function RadarRouter() {
           <Route path="/radar/audit/seeds" component={SeedsAuditPage} />
           <Route path="/radar/audit/queries" component={QueriesAuditPage} />
           <Route path="/radar/audit/runs" component={RunsAuditPage} />
+          <Route path="/radar/audit/signals" component={SignalsAuditPage} />
+          <Route path="/radar/audit/entities" component={EntitiesAuditPage} />
           <Route path="/radar/trends/:trendId" component={TrendDetailPage} />
           <Route path="/radar/trends" component={TrendsListPage} />
           <Route path="/radar/control-panel" component={ControlPanelPage} />
@@ -48,6 +53,7 @@ function App() {
           <RadarRouter />
         </WouterRouter>
         <Toaster />
+        <Sonner />
       </TooltipProvider>
     </QueryClientProvider>
   );
