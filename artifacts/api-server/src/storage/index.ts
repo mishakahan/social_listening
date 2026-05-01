@@ -14,6 +14,7 @@ import {
   tpEntityTimeseries,
   tpEntityState,
   tpEntitySynonyms,
+  tpKeywordInterest,
   tpPipelineConfig,
   type Company,
   type InsertCompany,
@@ -37,6 +38,8 @@ import {
   type InsertTpEntityTimeseries,
   type TpEntityState,
   type InsertTpEntityState,
+  type TpKeywordInterest,
+  type InsertTpKeywordInterest,
   type TpPipelineConfig,
   type KnowledgeItem,
   type InsertKnowledgeItem,
@@ -739,6 +742,59 @@ export async function bulkInsertRawSignals(
   return { inserted: rows.length };
 }
 
+// ---------------------------------------------------------------------------
+// Keyword interest (Google Trends) — narrow time series, separate from
+// tp_raw_signals. Idempotent on (companyId, keyword, geo, bucketDate).
+// ---------------------------------------------------------------------------
+
+export async function bulkUpsertKeywordInterest(
+  rows: InsertTpKeywordInterest[]
+): Promise<{ upserted: number }> {
+  if (rows.length === 0) return { upserted: 0 };
+  const inserted = await db
+    .insert(tpKeywordInterest)
+    .values(rows)
+    .onConflictDoUpdate({
+      target: [
+        tpKeywordInterest.companyId,
+        tpKeywordInterest.keyword,
+        tpKeywordInterest.geo,
+        tpKeywordInterest.bucketDate,
+      ],
+      set: {
+        interestValue: sql`excluded.interest_value`,
+        actorRunId: sql`excluded.actor_run_id`,
+        fetchedAt: sql`excluded.fetched_at`,
+      },
+    })
+    .returning({ id: tpKeywordInterest.id });
+  return { upserted: inserted.length };
+}
+
+export async function getKeywordInterestSeries(
+  companyId: number,
+  keywords: string[],
+  windowDays = 90
+): Promise<TpKeywordInterest[]> {
+  if (keywords.length === 0) return [];
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+  const sinceDate = since.toISOString().slice(0, 10);
+  // Keywords from Apify are case-preserved but Google Trends usually lowercases.
+  // Match case-insensitively to be safe.
+  const lowered = keywords.map((k) => k.toLowerCase());
+  return db
+    .select()
+    .from(tpKeywordInterest)
+    .where(
+      and(
+        eq(tpKeywordInterest.companyId, companyId),
+        gte(tpKeywordInterest.bucketDate, sinceDate),
+        inArray(sql`lower(${tpKeywordInterest.keyword})`, lowered)
+      )
+    )
+    .orderBy(asc(tpKeywordInterest.bucketDate));
+}
+
 export async function getRawSignalsByCompany(
   companyId: number,
   filters?: {
@@ -1200,6 +1256,106 @@ export async function getTrendDetail(
     volume7d: es.volume7d,
     volume30d: es.volume30d,
     evidence,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Trend time-series — combined social mentions + Google search interest for
+// the trend's primary entity. Used by the trend detail chart.
+// ---------------------------------------------------------------------------
+
+export interface TrendTimeseriesPoint {
+  date: string;        // YYYY-MM-DD
+  mentions: number;    // sum across platforms / geographies
+  interest: number | null; // 0-100, null if no GT data for that day
+}
+
+export interface TrendTimeseriesResponse {
+  entityId: number | null;
+  keywords: string[];   // keywords matched in tp_keyword_interest
+  windowDays: number;
+  hasInterest: boolean;
+  hasMentions: boolean;
+  points: TrendTimeseriesPoint[];
+}
+
+export async function getTrendTimeseries(
+  companyId: number,
+  knowledgeItemId: number,
+  windowDays = 90
+): Promise<TrendTimeseriesResponse> {
+  // Find the entity behind this knowledge item via tp_entity_state.
+  const stateRows = await db
+    .select({ es: tpEntityState, ent: tpEntities })
+    .from(tpEntityState)
+    .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
+    .where(
+      and(
+        eq(tpEntityState.companyId, companyId),
+        eq(tpEntityState.knowledgeItemId, knowledgeItemId)
+      )
+    )
+    .limit(1);
+
+  if (stateRows.length === 0) {
+    return {
+      entityId: null,
+      keywords: [],
+      windowDays,
+      hasInterest: false,
+      hasMentions: false,
+      points: [],
+    };
+  }
+
+  const { es, ent } = stateRows[0]!;
+
+  // Build keyword set from canonical label + aliases (defensive against null).
+  const keywords = Array.from(
+    new Set(
+      [ent.canonicalLabel, ...(ent.aliases ?? [])]
+        .filter((s): s is string => typeof s === "string" && s.length > 0)
+        .map((s) => s.trim())
+    )
+  );
+
+  const [mentionRows, interestRows] = await Promise.all([
+    getEntityTimeseries(es.entityId, windowDays),
+    getKeywordInterestSeries(companyId, keywords, windowDays),
+  ]);
+
+  // Aggregate mentions by date (sum across platform/geography).
+  const mentionsByDate = new Map<string, number>();
+  for (const r of mentionRows) {
+    const date = String(r.bucketDate);
+    mentionsByDate.set(date, (mentionsByDate.get(date) ?? 0) + (r.mentions ?? 0));
+  }
+
+  // For interest, take the MAX across keywords for a date (keywords are
+  // closely related; max preserves the visible signal). Empty days stay null.
+  const interestByDate = new Map<string, number>();
+  for (const r of interestRows) {
+    const date = String(r.bucketDate);
+    const prev = interestByDate.get(date);
+    interestByDate.set(date, prev == null ? r.interestValue : Math.max(prev, r.interestValue));
+  }
+
+  const allDates = new Set<string>([...mentionsByDate.keys(), ...interestByDate.keys()]);
+  const points: TrendTimeseriesPoint[] = Array.from(allDates)
+    .sort()
+    .map((date) => ({
+      date,
+      mentions: mentionsByDate.get(date) ?? 0,
+      interest: interestByDate.has(date) ? interestByDate.get(date)! : null,
+    }));
+
+  return {
+    entityId: es.entityId,
+    keywords,
+    windowDays,
+    hasInterest: interestByDate.size > 0,
+    hasMentions: mentionsByDate.size > 0,
+    points,
   };
 }
 

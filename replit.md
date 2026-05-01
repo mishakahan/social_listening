@@ -55,3 +55,25 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   a heuristic timeout (extraction 10 min, timeseries 3 min, state machine 10 min).
   While any step is running, the page polls run-status every 3s and invalidates
   entity-states / signals queries on completion so users see fresh data.
+- **Google Trends storage (Option B)**: search-interest data does **not** flow
+  through `tp_raw_signals` (which is reserved for actual social mentions with
+  per-post engagement counts). It lives in its own narrow table
+  `tp_keyword_interest (company_id, actor_run_id, keyword, geo, bucket_date,
+  interest_value 0–100, fetched_at)`, dedup'd by
+  `(company_id, keyword, geo, bucket_date)` and upserted on re-run.
+  Ingestion routing branches on `run.platform === "google_trends"` →
+  `ingestGoogleTrendsRun` (in `services/ingestion.ts`); both the Apify webhook
+  path (`routes/pipeline.ts: triggerIngestion`) and the orphan-run poll
+  fallback (`src/index.ts`) honor the branch. The parser handles all observed
+  Apify google-trends-scraper shapes (flat one-row-per-item, `interestOverTime`
+  with tagged objects, parallel arrays, scalar-per-point, keyed-map).
+- The Trend Detail page (`/radar/trends/:id`) shows a "Signal Over Time" chart
+  (`pages/radar/trends/trend-timeseries-chart.tsx`) — bars for absolute social
+  mentions (left axis, summed across platforms/geographies from
+  `tp_entity_timeseries`) and a line for Google search interest (right axis,
+  0–100, max across keyword aliases from `tp_keyword_interest`). The header
+  copy makes clear the two scales are not directly comparable
+  (mentions = supply of conversation, interest = demand). Data comes from
+  `GET /api/pipeline/companies/:id/trends/:trendId/timeseries?windowDays=N`,
+  which resolves the trend's primary entity via `tp_entity_state` and uses
+  `canonicalLabel + aliases` as the keyword set.

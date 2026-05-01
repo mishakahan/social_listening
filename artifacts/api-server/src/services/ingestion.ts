@@ -1,7 +1,12 @@
 import { franc } from "franc";
 import { logger } from "../lib/logger.js";
 import * as storage from "../storage/index.js";
-import type { TpActorRun, TpPipelineConfig, InsertTpRawSignal } from "@workspace/db";
+import type {
+  TpActorRun,
+  TpPipelineConfig,
+  InsertTpRawSignal,
+  InsertTpKeywordInterest,
+} from "@workspace/db";
 
 // ---------------------------------------------------------------------------
 // Author tier classification
@@ -280,49 +285,9 @@ function normalizeXhs(item: Record<string, unknown>): NormalizedSignal | null {
   };
 }
 
-function normalizeGoogleTrends(item: Record<string, unknown>): NormalizedSignal | null {
-  // Google Trends items are search-volume data points, not social posts
-  const keyword = String(item["keyword"] ?? item["searchTerm"] ?? "");
-  if (!keyword) return null;
-  const date = String(item["date"] ?? item["formattedTime"] ?? "");
-  const sourceId = `${keyword}__${date}`;
-  // Apify Google Trends uses "value"/"extractedValue" for relative search interest (0-100)
-  const engViews = Number(item["value"] ?? item["extractedValue"] ?? 0);
-  const { score, composite } = computeEngagement("google_trends",
-    { likes: 0, comments: 0, shares: 0, views: engViews, saves: 0 },
-    { google_trends: { views: 1 } }
-  );
-  return {
-    platform: "google_trends",
-    sourceActor: "apify/google-trends-scraper",
-    sourceId,
-    sourceUrl: null,
-    postedAt: date ? new Date(date) : null,
-    authorHandle: null,
-    authorFollowers: null,
-    authorTier: "nano",
-    authorVerified: false,
-    text: keyword,
-    hashtags: [],
-    mentions: [],
-    language: null,
-    languageConfidence: null,
-    geography: String(item["geo"] ?? ""),
-    engagementLikes: null,
-    engagementComments: null,
-    engagementShares: null,
-    engagementViews: engViews || null,
-    engagementSaves: null,
-    engagementScore: score,
-    engagementComposite: composite,
-    commercialIntent: false,
-    commercialIntentConfidence: null,
-    backfillDerived: false,
-    retainReason: null,
-    raw: item,
-    metadata: {},
-  };
-}
+// Google Trends is handled via a separate writer (not normalizeItem) because
+// its data shape is a relative 0-100 search-interest time series, not social
+// posts. See `extractKeywordInterestRows` and `ingestGoogleTrendsRun` below.
 
 function normalizeItem(
   platform: string,
@@ -333,8 +298,245 @@ function normalizeItem(
     case "tiktok": return normalizeTikTok(item);
     case "reddit": return normalizeReddit(item);
     case "xiaohongshu": return normalizeXhs(item);
-    case "google_trends": return normalizeGoogleTrends(item);
     default: return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google Trends extraction → tp_keyword_interest rows
+// ---------------------------------------------------------------------------
+
+function toIsoDate(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  const str = String(value);
+  // Apify google-trends emits ISO strings like "2025-04-12T00:00:00.000Z" and
+  // also formatted strings like "Apr 12, 2025". Try Date parse for both.
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return null;
+}
+
+interface ExtractedInterestRow {
+  keyword: string;
+  geo: string;
+  bucketDate: string;
+  interestValue: number;
+}
+
+function clampInterest(n: number): number {
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+interface ExtractStats {
+  rows: ExtractedInterestRow[];
+  itemsWithRows: number;   // dataset items that produced at least one row
+  itemsDropped: number;    // dataset items that produced zero rows
+}
+
+function extractKeywordInterestRowsWithStats(
+  items: unknown[]
+): ExtractStats {
+  const rows: ExtractedInterestRow[] = [];
+  let itemsWithRows = 0;
+  let itemsDropped = 0;
+
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") {
+      itemsDropped++;
+      continue;
+    }
+    const item = raw as Record<string, unknown>;
+    const before = rows.length;
+
+    // Top-level fields shared across most google-trends-scraper output shapes.
+    const geo = String(item["geo"] ?? item["country"] ?? "");
+    const topKeyword = item["keyword"] ?? item["searchTerm"] ?? item["term"];
+    const topKeywordStr = topKeyword == null ? null : String(topKeyword).trim() || null;
+
+    // The scraper sometimes ships an array of keywords for a multi-keyword query
+    // (parallel arrays with `values`/`value`). Capture it for that case.
+    const itemKeywords: string[] | null = (() => {
+      const k = item["keywords"] ?? item["queries"];
+      if (Array.isArray(k)) return k.map((v) => String(v).trim()).filter(Boolean);
+      return null;
+    })();
+
+    // Shape A: each item already represents a single (keyword, date, value).
+    const flatDate = toIsoDate(item["date"] ?? item["formattedTime"] ?? item["time"]);
+    const flatValue = item["value"] ?? item["extractedValue"];
+    if (topKeywordStr && flatDate && flatValue != null && !Array.isArray(flatValue)) {
+      const num = Number(flatValue);
+      if (Number.isFinite(num)) {
+        rows.push({
+          keyword: topKeywordStr,
+          geo,
+          bucketDate: flatDate,
+          interestValue: clampInterest(num),
+        });
+      }
+      if (rows.length > before) itemsWithRows++;
+      else itemsDropped++;
+      continue;
+    }
+
+    // Shape B: item carries an `interestOverTime` (or similar) array of points.
+    const series =
+      (item["interestOverTime"] as unknown) ??
+      (item["interest_over_time"] as unknown) ??
+      (item["timelineData"] as unknown) ??
+      (item["data"] as unknown);
+    if (!Array.isArray(series)) {
+      itemsDropped++;
+      continue;
+    }
+
+    for (const pointRaw of series) {
+      if (!pointRaw || typeof pointRaw !== "object") continue;
+      const point = pointRaw as Record<string, unknown>;
+      const date = toIsoDate(point["date"] ?? point["formattedTime"] ?? point["time"]);
+      if (!date) continue;
+
+      // Possible value shapes inside a point:
+      //   { value: number }                                        -> single (uses topKeyword)
+      //   { value: number[] }                                      -> parallel array (uses itemKeywords / topKeyword)
+      //   { values: number[] }                                     -> parallel array (uses itemKeywords / topKeyword)
+      //   { values: [{ keyword, value }, ...] }                    -> tagged objects
+      //   { [keyword]: number, ... }                               -> keyed map (rare)
+      const values = point["values"];
+      const value = point["value"];
+
+      // (1) values is an array of tagged objects
+      if (Array.isArray(values) && values.length > 0 && typeof values[0] === "object" && values[0] !== null) {
+        for (const v of values) {
+          if (!v || typeof v !== "object") continue;
+          const vv = v as Record<string, unknown>;
+          const kw = String(vv["keyword"] ?? vv["query"] ?? topKeywordStr ?? "").trim();
+          const num = Number(vv["value"] ?? vv["extractedValue"]);
+          if (!kw || !Number.isFinite(num)) continue;
+          rows.push({ keyword: kw, geo, bucketDate: date, interestValue: clampInterest(num) });
+        }
+        continue;
+      }
+
+      // (2) values is an array of numbers (parallel to itemKeywords/topKeyword)
+      if (Array.isArray(values) && values.every((v) => typeof v === "number")) {
+        const nums = values as number[];
+        const keywordsForPoint =
+          itemKeywords && itemKeywords.length === nums.length
+            ? itemKeywords
+            : topKeywordStr
+              ? Array(nums.length).fill(topKeywordStr)
+              : null;
+        if (!keywordsForPoint) continue;
+        for (let i = 0; i < nums.length; i++) {
+          const kw = keywordsForPoint[i];
+          if (!kw || !Number.isFinite(nums[i]!)) continue;
+          rows.push({ keyword: kw, geo, bucketDate: date, interestValue: clampInterest(nums[i]!) });
+        }
+        continue;
+      }
+
+      // (3) value is an array of numbers (parallel array variant)
+      if (Array.isArray(value) && value.every((v) => typeof v === "number")) {
+        const nums = value as number[];
+        const keywordsForPoint =
+          itemKeywords && itemKeywords.length === nums.length
+            ? itemKeywords
+            : topKeywordStr
+              ? Array(nums.length).fill(topKeywordStr)
+              : null;
+        if (!keywordsForPoint) continue;
+        for (let i = 0; i < nums.length; i++) {
+          const kw = keywordsForPoint[i];
+          if (!kw || !Number.isFinite(nums[i]!)) continue;
+          rows.push({ keyword: kw, geo, bucketDate: date, interestValue: clampInterest(nums[i]!) });
+        }
+        continue;
+      }
+
+      // (4) single scalar value -> pair with topKeyword
+      const scalar = value ?? point["extractedValue"];
+      if (scalar != null && !Array.isArray(scalar) && topKeywordStr) {
+        const num = Number(scalar);
+        if (Number.isFinite(num)) {
+          rows.push({ keyword: topKeywordStr, geo, bucketDate: date, interestValue: clampInterest(num) });
+        }
+        continue;
+      }
+
+      // (5) keyed-map shape: every other own-property is a number keyed by keyword
+      const keyedRows: ExtractedInterestRow[] = [];
+      for (const [k, v] of Object.entries(point)) {
+        if (k === "date" || k === "formattedTime" || k === "time" || k === "value" || k === "values" || k === "extractedValue") continue;
+        if (typeof v !== "number" || !Number.isFinite(v)) continue;
+        keyedRows.push({ keyword: k, geo, bucketDate: date, interestValue: clampInterest(v) });
+      }
+      if (keyedRows.length > 0) rows.push(...keyedRows);
+    }
+
+    if (rows.length > before) itemsWithRows++;
+    else itemsDropped++;
+  }
+
+  return { rows, itemsWithRows, itemsDropped };
+}
+
+// Internal export for unit smoke tests only — not part of the public API.
+export const __testExtract = extractKeywordInterestRowsWithStats;
+
+export async function ingestGoogleTrendsRun(
+  run: TpActorRun,
+  datasetItems: unknown[]
+): Promise<{ usable: number; dropped: number }> {
+  const claimed = await storage.claimIngestion(run.id);
+  if (!claimed) {
+    logger.info({ runId: run.id }, "Ingestion already claimed by another worker — skipping");
+    return { usable: 0, dropped: 0 };
+  }
+
+  try {
+    const { rows: extracted, itemsDropped } = extractKeywordInterestRowsWithStats(datasetItems);
+
+    const rows: InsertTpKeywordInterest[] = extracted.map((e) => ({
+      companyId: run.companyId,
+      actorRunId: run.id,
+      keyword: e.keyword,
+      geo: e.geo,
+      bucketDate: e.bucketDate,
+      interestValue: e.interestValue,
+    }));
+
+    const { upserted } = await storage.bulkUpsertKeywordInterest(rows);
+    const usable = upserted;
+    // Count dropped at the *dataset-item* level so the metric stays
+    // comparable across runs that produce many time-buckets per item.
+    const dropped = itemsDropped;
+
+    const dates = extracted.map((e) => new Date(e.bucketDate).getTime()).filter((n) => Number.isFinite(n));
+    const oldestPostedAt = dates.length ? new Date(Math.min(...dates)) : null;
+    const newestPostedAt = dates.length ? new Date(Math.max(...dates)) : null;
+
+    await storage.markIngestionDone(run.id, { usable, dropped, oldestPostedAt, newestPostedAt });
+
+    if (run.scoutQueryId) {
+      await storage.incrementScoutQueryCounters(run.scoutQueryId, {
+        fetched: datasetItems.length,
+        usable,
+      });
+    }
+
+    logger.info(
+      { runId: run.id, platform: run.platform, usable, dropped },
+      "Google Trends ingestion complete"
+    );
+    return { usable, dropped };
+  } catch (err: any) {
+    await storage.markIngestionFailed(run.id, err.message ?? "Unknown ingestion error");
+    logger.error({ err, runId: run.id }, "Google Trends ingestion failed");
+    throw err;
   }
 }
 
@@ -346,8 +548,6 @@ function passesNoiseFloor(
   signal: NormalizedSignal,
   config: TpPipelineConfig
 ): boolean {
-  // Google Trends data always passes — it has no engagement threshold concept
-  if (signal.platform === "google_trends") return true;
   return (signal.engagementScore ?? 0) >= config.noiseFloor;
 }
 

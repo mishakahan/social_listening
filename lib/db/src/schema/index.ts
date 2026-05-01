@@ -314,6 +314,35 @@ export const tpEntityTimeseries = pgTable(
   (t) => [uniqueIndex("tp_entity_timeseries_bucket_idx").on(t.entityId, t.platform, t.geography, t.bucketDate)]
 );
 
+// tp_keyword_interest — Google Trends search-interest time series.
+// Stored separately from tp_raw_signals so aggregated 0-100 values don't
+// pollute social-mentions counts.
+export const tpKeywordInterest = pgTable(
+  "tp_keyword_interest",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    actorRunId: integer("actor_run_id").references(() => tpActorRuns.id, {
+      onDelete: "set null",
+    }),
+    keyword: text("keyword").notNull(),
+    geo: text("geo").notNull().default(""),
+    bucketDate: date("bucket_date").notNull(),
+    interestValue: integer("interest_value").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_keyword_interest_dedup_idx").on(
+      t.companyId,
+      t.keyword,
+      t.geo,
+      t.bucketDate
+    ),
+  ]
+);
+
 // tp_entity_state
 export const tpEntityState = pgTable(
   "tp_entity_state",
@@ -800,6 +829,15 @@ export const insertTpEntityStateSchema = createInsertSchema(
 ).omit({ id: true });
 export type TpEntityState = typeof tpEntityState.$inferSelect;
 export type InsertTpEntityState = z.infer<typeof insertTpEntityStateSchema>;
+
+// tpKeywordInterest
+export const insertTpKeywordInterestSchema = createInsertSchema(
+  tpKeywordInterest
+).omit({ id: true });
+export type TpKeywordInterest = typeof tpKeywordInterest.$inferSelect;
+export type InsertTpKeywordInterest = z.infer<
+  typeof insertTpKeywordInterestSchema
+>;
 
 // tpEntitySynonyms
 export const insertTpEntitySynonymSchema = createInsertSchema(

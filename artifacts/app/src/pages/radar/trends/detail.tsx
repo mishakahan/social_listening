@@ -17,6 +17,7 @@ import {
   BarChart2,
 } from "lucide-react";
 import { SignalScoreInfo } from "./signal-score-info";
+import { TrendTimeseriesChart } from "./trend-timeseries-chart";
 
 interface EvidenceItem {
   id: number;
@@ -331,20 +332,9 @@ export default function TrendDetailPage() {
         </Card>
       </div>
 
-      {/* Sparkline placeholder */}
-      <Card className="mb-6">
-        <CardHeader className="pb-2 pt-4 px-5">
-          <h2 className="text-sm font-semibold text-foreground">Signal Over Time</h2>
-        </CardHeader>
-        <CardContent className="px-5 pb-4">
-          <div className="h-32 flex items-center justify-center rounded-lg bg-muted/30 border border-dashed border-border">
-            <div className="text-center">
-              <BarChart2 className="h-6 w-6 mx-auto mb-1 text-muted-foreground opacity-40" />
-              <p className="text-xs text-muted-foreground">Sparkline coming soon</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Mentions vs search-interest time-series */}
+      <TrendTimeseriesChart trendId={trend.id} />
+
 
       {/* Evidence cards */}
       {trend.evidence && trend.evidence.length > 0 && (

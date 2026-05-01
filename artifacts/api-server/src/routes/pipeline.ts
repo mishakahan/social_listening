@@ -14,7 +14,7 @@ import {
   getActorMemoryMb,
   mapApifyStatus,
 } from "../services/apify.js";
-import { ingestActorRun } from "../services/ingestion.js";
+import { ingestActorRun, ingestGoogleTrendsRun } from "../services/ingestion.js";
 import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
@@ -932,6 +932,13 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
   const items = await getApifyClient().dataset(datasetId).listItems({ limit: 1000 });
   const data = items.items ?? [];
 
+  // Google Trends has its own narrow target table; everything else flows
+  // through the standard social-mention ingestion + entity extraction path.
+  if (run.platform === "google_trends") {
+    await ingestGoogleTrendsRun(run, data);
+    return;
+  }
+
   await ingestActorRun(run, data);
 
   // After ingestion, run entity extraction for this company
@@ -1191,6 +1198,34 @@ router.get("/companies/:id/trends/:trendId", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/trends/:trendId/timeseries
+// Returns combined social-mentions + Google-Trends interest series for the
+// trend's primary entity. Both series are aligned by date.
+// ---------------------------------------------------------------------------
+router.get(
+  "/companies/:id/trends/:trendId/timeseries",
+  async (req, res) => {
+    try {
+      const companyId = parseInt(req.params.id!, 10);
+      const trendId = parseInt(req.params.trendId!, 10);
+      const windowDays = Math.min(
+        Math.max(Number(req.query.windowDays ?? 90), 7),
+        365
+      );
+      const series = await storage.getTrendTimeseries(
+        companyId,
+        trendId,
+        windowDays
+      );
+      res.json(series);
+    } catch (err: any) {
+      req.log.error({ err }, "Failed to get trend timeseries");
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // PATCH /api/pipeline/trends/:id/status

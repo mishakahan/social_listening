@@ -8,7 +8,7 @@ import {
   buildActorInput,
   mapApifyStatus,
 } from "./services/apify.js";
-import { ingestActorRun } from "./services/ingestion.js";
+import { ingestActorRun, ingestGoogleTrendsRun } from "./services/ingestion.js";
 import { runEntityExtraction } from "./services/entity-extraction.js";
 import { runTimeseriesAggregation } from "./services/timeseries.js";
 import { runStateMachine } from "./services/state-machine.js";
@@ -173,8 +173,12 @@ async function syncRunningActorRuns() {
                 const freshRun = await storage.getActorRun(runId);
                 if (!freshRun) return;
                 const items = await client.dataset(datasetId).listItems({ limit: 1000 });
-                await ingestActorRun(freshRun, items.items ?? []);
-                await runEntityExtraction(companyId, { actorRunId: runId });
+                if (freshRun.platform === "google_trends") {
+                  await ingestGoogleTrendsRun(freshRun, items.items ?? []);
+                } else {
+                  await ingestActorRun(freshRun, items.items ?? []);
+                  await runEntityExtraction(companyId, { actorRunId: runId });
+                }
               } catch (e) {
                 logger.error({ err: e, runId }, "Poll-triggered ingestion failed");
               }
