@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Loader2, AlertCircle, RefreshCw, XCircle, CheckSquare, Square, Trash2, ExternalLink } from "lucide-react";
+import { Loader2, AlertCircle, RefreshCw, XCircle, CheckSquare, Square, Trash2, ExternalLink, Database } from "lucide-react";
 import { toast } from "sonner";
 
 interface ActorRun {
@@ -59,6 +59,17 @@ const isActive    = (r: ActorRun) => r.status === "queued" || r.status === "runn
 const isBillingError = (r: ActorRun) => !!r.errorMessage?.toLowerCase().includes("maximum usage");
 const isRetryable = (r: ActorRun) => (r.status === "failed" || r.status === "timeout") && !isBillingError(r);
 const isViewable  = (r: ActorRun) => r.status === "succeeded" && !!r.apifyDatasetId;
+// "Runnable" in the bulk sense: this is the bulk equivalent of the per-row
+// Retry button, just labeled "Run" for consistency with the user's mental
+// model. We deliberately restrict to failed/timeout runs (skipping succeeded
+// ones) because relaunching a succeeded run would require coordinated cleanup
+// of its prior raw_signals — the dedup index on (companyId, platform,
+// sourceId) would otherwise cause the rerun to insert nothing while the run's
+// own counters reset to zero. Same rule as isRetryable.
+const isRunnable  = isRetryable;
+// Re-ingestable = the dataset still exists on Apify, so we can re-process
+// signals from it. Only succeeded runs with a dataset qualify.
+const isIngestable = (r: ActorRun) => r.status === "succeeded" && !!r.apifyDatasetId;
 
 async function fetchRuns(): Promise<ActorRun[]> {
   const res = await fetch("/api/pipeline/companies/1/actor-runs");
@@ -103,6 +114,16 @@ async function bulkRetryApi(runIds: number[]): Promise<{ ok: number; failed: num
   const ok = results.filter((r) => r.status === "fulfilled").length;
   const failed = results.length - ok;
   return { ok, failed };
+}
+
+async function bulkReIngestApi(runIds: number[]): Promise<{ ok: number; failed: number; okIds: number[] }> {
+  // No bulk re-ingest endpoint — fan out to the per-run ingestion trigger.
+  const results = await Promise.allSettled(runIds.map((id) => reIngestRunApi(id)));
+  const okIds: number[] = [];
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") okIds.push(runIds[i]!);
+  });
+  return { ok: okIds.length, failed: runIds.length - okIds.length, okIds };
 }
 
 async function fetchRunOutput(id: number): Promise<{ items: unknown[]; total: number }> {
@@ -292,12 +313,38 @@ export default function RunsAuditPage() {
       queryClient.invalidateQueries({ queryKey: ["actor-runs"] });
       setSelectedIds(new Set());
       if (failed === 0) {
-        toast.success(`Retried ${ok} run${ok !== 1 ? "s" : ""}`);
+        toast.success(`Re-launched ${ok} run${ok !== 1 ? "s" : ""}`);
       } else {
-        toast.warning(`Retried ${ok}; ${failed} failed to queue`);
+        toast.warning(`Re-launched ${ok}; ${failed} failed to queue`);
       }
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to retry runs"),
+    onError: (err: Error) => toast.error(err.message || "Failed to re-launch runs"),
+  });
+
+  const bulkReIngestMutation = useMutation({
+    mutationFn: (ids: number[]) => bulkReIngestApi(ids),
+    onSuccess: ({ ok, failed, okIds }) => {
+      // Optimistically mark only the runs whose re-ingest request actually
+      // succeeded so the row chip updates immediately. Any failures are
+      // reconciled by a forced refetch (otherwise the row would stay frozen
+      // on its old status until the next 15s poll).
+      if (okIds.length > 0) {
+        const okSet = new Set(okIds);
+        queryClient.setQueryData<ActorRun[]>(["actor-runs"], (old = []) =>
+          old.map((r) => (okSet.has(r.id) ? { ...r, ingestionStatus: "pending" } : r))
+        );
+      }
+      if (failed > 0) {
+        queryClient.invalidateQueries({ queryKey: ["actor-runs"] });
+      }
+      setSelectedIds(new Set());
+      if (failed === 0) {
+        toast.success(`Re-ingestion triggered for ${ok} run${ok !== 1 ? "s" : ""}`);
+      } else {
+        toast.warning(`Re-ingestion triggered for ${ok}; ${failed} failed`);
+      }
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to trigger re-ingestion"),
   });
 
   const handleSelect = (id: number, checked: boolean) => {
@@ -327,10 +374,14 @@ export default function RunsAuditPage() {
   const allActiveIds    = activeRuns.map((r) => r.id);
   const allTerminalIds  = terminalRuns.map((r) => r.id);
   const failedIds       = runs.filter((r) => r.status === "failed" || r.status === "timeout").map((r) => r.id);
+  // Same as failedIds but excludes billing-cap aborts — used for the "Retry
+  // all failed" shortcut so we don't fan out requests the server will 409.
+  const retryableIds    = runs.filter(isRetryable).map((r) => r.id);
 
   const selectedRuns      = runs.filter((r) => selectedIds.has(r.id));
   const selectedActiveIds = selectedRuns.filter(isActive).map((r) => r.id);
-  const selectedRetryableIds = selectedRuns.filter(isRetryable).map((r) => r.id);
+  const selectedRunnableIds   = selectedRuns.filter(isRunnable).map((r) => r.id);
+  const selectedIngestableIds = selectedRuns.filter(isIngestable).map((r) => r.id);
   const selectedTerminalIds = selectedRuns.filter((r) => !isActive(r)).map((r) => r.id);
 
   const allRowsSelected  = allRunIds.length > 0 && allRunIds.every((id) => selectedIds.has(id));
@@ -475,18 +526,34 @@ export default function RunsAuditPage() {
 
           {selectedIds.size > 0 ? (
             <>
-              {selectedRetryableIds.length > 0 && (
+              {selectedRunnableIds.length > 0 && (
                 <Button
                   size="sm"
                   variant="outline"
                   className="text-xs h-7 px-2 gap-1"
                   disabled={bulkRetryMutation.isPending}
-                  onClick={() => bulkRetryMutation.mutate(selectedRetryableIds)}
+                  onClick={() => bulkRetryMutation.mutate(selectedRunnableIds)}
+                  title="Re-launch the actor for every selected failed or timed-out run. Skips already-running runs, succeeded runs, and runs blocked by Apify billing limits."
                 >
                   {bulkRetryMutation.isPending
                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     : <RefreshCw className="h-3.5 w-3.5" />}
-                  Retry {selectedRetryableIds.length}
+                  Run {selectedRunnableIds.length}
+                </Button>
+              )}
+              {selectedIngestableIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2 gap-1"
+                  disabled={bulkReIngestMutation.isPending}
+                  onClick={() => bulkReIngestMutation.mutate(selectedIngestableIds)}
+                  title="Re-process the dataset for every selected succeeded run. Use this if ingestion failed or signals look stale."
+                >
+                  {bulkReIngestMutation.isPending
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Database className="h-3.5 w-3.5" />}
+                  Ingest {selectedIngestableIds.length}
                 </Button>
               )}
               {selectedActiveIds.length > 0 && (
@@ -548,18 +615,18 @@ export default function RunsAuditPage() {
                   Kill all running ({runningCount})
                 </Button>
               )}
-              {failedIds.length > 0 && (
+              {retryableIds.length > 0 && (
                 <Button
                   size="sm"
                   variant="outline"
                   className="text-xs h-7 px-2 gap-1"
                   disabled={bulkRetryMutation.isPending}
-                  onClick={() => bulkRetryMutation.mutate(failedIds)}
+                  onClick={() => bulkRetryMutation.mutate(retryableIds)}
                 >
                   {bulkRetryMutation.isPending
                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     : <RefreshCw className="h-3.5 w-3.5" />}
-                  Retry all failed ({failedIds.length})
+                  Retry all failed ({retryableIds.length})
                 </Button>
               )}
             </>

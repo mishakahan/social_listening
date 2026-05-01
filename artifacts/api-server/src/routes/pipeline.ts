@@ -569,7 +569,31 @@ router.post("/actor-runs/:id/retry", async (req, res) => {
       return;
     }
 
-    // Reset record first
+    // Defense-in-depth: only allow retry for genuinely retryable runs.
+    // Re-launching a succeeded run reuses the same row and runs into the
+    // dedup index on raw_signals; re-launching an active run fights with
+    // the in-flight Apify call. Billing-cap failures will just fail again
+    // until the user upgrades their Apify plan, so block those too.
+    if (run.status !== "failed" && run.status !== "timeout") {
+      res.status(409).json({
+        error: `Run is ${run.status}; only failed or timed-out runs can be retried.`,
+      });
+      return;
+    }
+    if (run.errorMessage?.toLowerCase().includes("maximum usage")) {
+      res.status(409).json({
+        error:
+          "Run was aborted by Apify's billing cap; retrying will not help. Upgrade your Apify plan or wait for the cycle reset.",
+      });
+      return;
+    }
+
+    // Reset record first.
+    // We also reset ingestionStatus to "pending" so that when the relaunched
+    // run finishes, claimIngestion() can succeed. Without this, any retry of a
+    // run whose previous attempt had already ingested (status='done') or
+    // explicitly failed ingestion (status='failed') would skip ingestion of
+    // the new dataset and silently leave recordsUsable stale.
     await storage.updateActorRun(id, {
       status: "queued",
       apifyRunId: null,
@@ -581,7 +605,8 @@ router.post("/actor-runs/:id/retry", async (req, res) => {
       recordsUsable: 0,
       recordsDropped: 0,
       costUsd: null,
-    });
+      ingestionStatus: "pending",
+    } as any);
 
     const webhookBaseUrl = getWebhookBaseUrl();
     const webhookUrl = webhookBaseUrl

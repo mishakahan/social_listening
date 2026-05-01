@@ -129,3 +129,24 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   `GET /api/pipeline/companies/:id/trends/:trendId/timeseries?windowDays=N`,
   which resolves the trend's primary entity via `tp_entity_state` and uses
   `canonicalLabel + aliases` as the keyword set.
+- **Runs Audit bulk actions** (`pages/radar/audit/runs.tsx`): the toolbar
+  supports cross-status select-all and contextual bulk buttons keyed off the
+  selection. Predicates: `isActive` = queued|running, `isRetryable` =
+  failed|timeout && !billing-error, `isIngestable` = succeeded && hasDataset,
+  `isRunnable` is an alias for `isRetryable` (the bulk "Run N" button is the
+  bulk equivalent of per-row "Retry", relabeled but with identical
+  eligibility — relaunching a succeeded run would clash with the
+  `tp_raw_signals_dedup_idx` and is intentionally not exposed). Bulk fan-out
+  helpers (`bulkRetryApi`, `bulkReIngestApi`, `bulkCancelApi`,
+  `bulkDeleteApi`) hit the per-id endpoints via `Promise.allSettled` and
+  surface ok/failed counts in toasts. `bulkReIngestMutation` returns `okIds`
+  and only marks those rows `ingestionStatus='pending'` optimistically;
+  partial failures trigger an immediate `invalidateQueries(['actor-runs'])`
+  so failed rows are reconciled without waiting for the 15s poll.
+- **Retry endpoint contract** (`POST /api/pipeline/actor-runs/:id/retry`):
+  guards on `status IN ('failed','timeout')` and `!billing-error` (returns
+  409 otherwise — defense-in-depth for the UI gating), and resets
+  `ingestionStatus='pending'` alongside the row reset so `claimIngestion()`
+  can succeed on the relaunched run (without this, retries of rows whose
+  prior attempt had reached `done` or `failed` ingestion would silently skip
+  the new dataset).
