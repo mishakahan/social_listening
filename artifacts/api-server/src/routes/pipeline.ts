@@ -18,6 +18,7 @@ import { ingestActorRun, ingestGoogleTrendsRun } from "../services/ingestion.js"
 import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
+import { launchBatch, finalizeBatchIfDone } from "../services/launch-batch.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -435,131 +436,22 @@ router.post("/companies/:id/scout-queries/launch", async (req, res) => {
     const companyId = parseInt(req.params.id!, 10);
     const { queryIds } = (req.body ?? {}) as { queryIds?: number[] };
 
-    // Get queries to launch: selected IDs if provided, otherwise all active
-    const allQueries = await storage.getScoutQueries(companyId);
-    const queries =
-      queryIds && queryIds.length > 0
-        ? allQueries.filter((q) => queryIds.includes(q.id))
-        : allQueries.filter((q) => q.active);
+    const result = await launchBatch(companyId, {
+      kind: "manual",
+      queryIds,
+    });
 
-    if (queries.length === 0) {
-      res.status(400).json({ error: "No queries to launch" });
+    res.json({
+      success: true,
+      batchId: result.batchId,
+      actorRunIds: result.actorRunIds,
+      queriesLaunched: result.queriesLaunched,
+    });
+  } catch (err: any) {
+    if (err.message === "No queries to launch") {
+      res.status(400).json({ error: err.message });
       return;
     }
-
-    const apifyClient = getApifyClient();
-    const webhookBaseUrl = getWebhookBaseUrl();
-    const webhookUrl = webhookBaseUrl
-      ? `${webhookBaseUrl}/api/pipeline/webhooks/apify`
-      : null;
-
-    if (webhookUrl) {
-      logger.info({ webhookUrl }, "Apify webhooks will be registered");
-    } else {
-      logger.warn("No SERVER_URL or REPLIT_DOMAINS set — Apify webhooks disabled; runs will be polled for status");
-    }
-
-    const actorRunIds: number[] = [];
-
-    for (const query of queries) {
-      if (!query.active) {
-        await storage.updateScoutQuery(query.id, { active: true });
-      }
-
-      const queryInput = {
-        keywords: query.keywords,
-        hashtags: query.hashtags,
-        language: query.language,
-        geography: query.geography,
-        topicLabel: query.topicLabel,
-      };
-
-      const platforms: { platform: string; runMode: string; actorSlug: string }[] = [];
-
-      platforms.push({ platform: "instagram", runMode: "backfill:ig_posts",  actorSlug: "apify/instagram-scraper" });
-      platforms.push({ platform: "instagram", runMode: "backfill:ig_reels",  actorSlug: "apify/instagram-scraper" });
-      platforms.push({ platform: "tiktok",    runMode: "backfill:tiktok",    actorSlug: "clockworks/tiktok-scraper" });
-
-      if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
-        platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
-      }
-      if (query.language === "zh-CN") {
-        platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search",   actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
-      }
-      if (query.geography !== "CN") {
-        platforms.push({ platform: "google_trends", runMode: "backfill:google_trends", actorSlug: "apify/google-trends-scraper" });
-      }
-
-      for (const p of platforms) {
-        const actorInput = buildActorInput(p.actorSlug, p.runMode, queryInput);
-
-        // Create the DB record first so we have an ID
-        const run = await storage.createActorRun({
-          companyId,
-          scoutQueryId: query.id,
-          actorSlug: p.actorSlug,
-          platform: p.platform,
-          runMode: p.runMode,
-          status: "queued",
-          inputPayload: queryInput,
-        });
-
-        // Fire the Apify actor
-        try {
-          const webhooks = webhookUrl
-            ? [
-                {
-                  eventTypes: [
-                    "ACTOR.RUN.SUCCEEDED",
-                    "ACTOR.RUN.FAILED",
-                    "ACTOR.RUN.TIMED_OUT",
-                    "ACTOR.RUN.ABORTED",
-                  ] as any,
-                  requestUrl: webhookUrl,
-                  payloadTemplate: JSON.stringify({
-                    eventType: "{{eventType}}",
-                    resource: "{{resource}}",
-                    internalRunId: run.id,
-                  }),
-                },
-              ]
-            : undefined;
-
-          const apifyRun = await apifyClient
-            .actor(p.actorSlug)
-            .start(actorInput, { memory: getActorMemoryMb(p.actorSlug), webhooks });
-
-          await storage.updateActorRun(run.id, {
-            apifyRunId: apifyRun.id,
-            apifyDatasetId: apifyRun.defaultDatasetId ?? null,
-            status: "running",
-            startedAt: new Date(),
-          });
-
-          logger.info(
-            { runId: run.id, apifyRunId: apifyRun.id, actor: p.actorSlug },
-            "Apify actor started"
-          );
-        } catch (apifyErr: any) {
-          logger.error(
-            { err: apifyErr, runId: run.id, actor: p.actorSlug },
-            "Failed to start Apify actor"
-          );
-          await storage.updateActorRun(run.id, {
-            status: "failed",
-            errorMessage: apifyErr.message ?? "Failed to start actor",
-          });
-        }
-
-        actorRunIds.push(run.id);
-
-        // Stagger launches to avoid bursting the Apify concurrent memory limit
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-    }
-
-    res.json({ success: true, actorRunIds });
-  } catch (err: any) {
     logger.error({ err }, "Failed to launch scout queries");
     res.status(500).json({ error: err.message });
   }
@@ -771,6 +663,26 @@ router.post("/actor-runs/:id/cancel", async (req, res) => {
       errorMessage: "Cancelled by user",
       completedAt: new Date(),
     });
+
+    // Cancellation may be the last terminal transition for a launch batch.
+    // Mark ingestion done (no dataset to process) and try to finalize so the
+    // post-batch chain still runs.
+    if (run.launchBatchId) {
+      try {
+        await storage.markIngestionDone(id, {
+          usable: 0,
+          dropped: 0,
+          oldestPostedAt: null,
+          newestPostedAt: null,
+        });
+      } catch (e) {
+        logger.warn({ err: e, runId: id }, "markIngestionDone after cancel failed");
+      }
+      finalizeBatchIfDone(run.launchBatchId).catch((e) =>
+        logger.error({ err: e, runId: id }, "Batch finalize after cancel failed")
+      );
+    }
+
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to cancel actor run");
@@ -790,6 +702,7 @@ router.post("/companies/:id/actor-runs/bulk-cancel", async (req, res) => {
       return;
     }
 
+    const batchIdsToFinalize = new Set<string>();
     const results = await Promise.allSettled(
       runIds.map(async (id) => {
         const run = await storage.getActorRun(id);
@@ -803,13 +716,37 @@ router.post("/companies/:id/actor-runs/bulk-cancel", async (req, res) => {
           }
         }
 
-        return storage.updateActorRun(id, {
+        const updated = await storage.updateActorRun(id, {
           status: "failed",
           errorMessage: "Cancelled by user",
           completedAt: new Date(),
         });
+
+        if (run.launchBatchId) {
+          try {
+            await storage.markIngestionDone(id, {
+              usable: 0,
+              dropped: 0,
+              oldestPostedAt: null,
+              newestPostedAt: null,
+            });
+          } catch (e) {
+            logger.warn({ err: e, runId: id }, "markIngestionDone after bulk-cancel failed");
+          }
+          batchIdsToFinalize.add(run.launchBatchId);
+        }
+
+        return updated;
       })
     );
+
+    // Try to finalize each affected batch once (deduped) so the post-batch
+    // chain runs after a bulk cancel terminates the last in-flight runs.
+    for (const batchId of batchIdsToFinalize) {
+      finalizeBatchIfDone(batchId).catch((e) =>
+        logger.error({ err: e, batchId }, "Batch finalize after bulk-cancel failed")
+      );
+    }
 
     const cancelled = results.filter((r) => r.status === "fulfilled" && r.value).length;
     res.json({ success: true, cancelled });
@@ -910,11 +847,59 @@ router.post("/webhooks/apify", async (req, res) => {
     await storage.updateActorRun(run.id, update as any);
     logger.info({ runId: run.id, apifyRunId, newStatus }, "Actor run updated from webhook");
 
-    // Kick off ingestion asynchronously for succeeded runs
+    // Kick off ingestion asynchronously for succeeded runs. Ingestion will
+    // call finalizeBatchIfDone when it's done so the post-batch chain
+    // (timeseries -> state machine) sees this run's freshly-extracted entities.
+    // Use try/finally so finalize runs even if ingestion throws — the run
+    // is already terminal in DB, so the batch must still get to finalize.
     if (newStatus === "succeeded" && body.resource?.defaultDatasetId) {
-      triggerIngestion(run.id, body.resource.defaultDatasetId).catch((e) =>
-        logger.error({ err: e, runId: run.id }, "Ingestion trigger failed")
-      );
+      const launchBatchId = run.launchBatchId;
+      const datasetId = body.resource.defaultDatasetId;
+      const runIdForLog = run.id;
+      void (async () => {
+        try {
+          await triggerIngestion(runIdForLog, datasetId);
+        } catch (e) {
+          logger.error({ err: e, runId: runIdForLog }, "Ingestion trigger failed");
+        } finally {
+          try {
+            await finalizeBatchIfDone(launchBatchId);
+          } catch (e) {
+            logger.error(
+              { err: e, runId: runIdForLog },
+              "Batch finalize after ingestion failed"
+            );
+          }
+        }
+      })();
+    } else if (isTerminal && run.launchBatchId) {
+      // Terminal-without-ingestion: failed/timeout, OR succeeded-with-no-dataset.
+      // These never go through triggerIngestion, so mark ingestion as done
+      // (with zero counts) before attempting finalize — otherwise the SQL
+      // guard (succeeded => ingestion_status IN done|failed) would block the
+      // batch forever.
+      const launchBatchId = run.launchBatchId;
+      const runIdForLog = run.id;
+      void (async () => {
+        try {
+          await storage.markIngestionDone(runIdForLog, {
+            usable: 0,
+            dropped: 0,
+            oldestPostedAt: null,
+            newestPostedAt: null,
+          });
+        } catch (e) {
+          logger.warn(
+            { err: e, runId: runIdForLog },
+            "markIngestionDone for terminal-no-ingestion run failed"
+          );
+        }
+        try {
+          await finalizeBatchIfDone(launchBatchId);
+        } catch (e) {
+          logger.error({ err: e, runId: runIdForLog }, "Batch finalize on failure failed");
+        }
+      })();
     }
   } catch (err: any) {
     logger.error({ err }, "Failed to process Apify webhook");
@@ -939,10 +924,38 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
     return;
   }
 
-  await ingestActorRun(run, data);
+  // Defer markIngestionDone until AFTER entity extraction completes. Otherwise
+  // a sibling failed-run's finalizeBatchIfDone could pass the SQL guard
+  // (ingestion_status='done') while extraction is still running, causing the
+  // post-batch chain to run on stale entities.
+  const stats = await ingestActorRun(run, data, { skipMarkDone: true });
 
-  // After ingestion, run entity extraction for this company
-  await runEntityExtraction(run.companyId, { actorRunId: runId });
+  // If we lost the race to claim ingestion, another worker owns this run's
+  // post-processing — do not run extraction or mark done here, or we'd
+  // release the finalize guard early while the real owner is still working.
+  if (!stats.claimed) return;
+
+  // Run entity extraction. If it throws, mark ingestion FAILED so the
+  // finalize SQL guard ('done'|'failed') can still release. Without this,
+  // extraction errors would leave ingestion_status='processing' forever and
+  // the batch would never finalize.
+  try {
+    await runEntityExtraction(run.companyId, { actorRunId: runId });
+  } catch (err) {
+    await storage.markIngestionFailed(
+      runId,
+      `Entity extraction failed: ${(err as Error).message ?? "unknown"}`
+    );
+    throw err;
+  }
+
+  // Now mark ingestion done — this is what releases the finalize SQL guard.
+  await storage.markIngestionDone(runId, {
+    usable: stats.usable,
+    dropped: stats.dropped,
+    oldestPostedAt: stats.oldestPostedAt,
+    newestPostedAt: stats.newestPostedAt,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +998,11 @@ const patchConfigSchema = z
         { message: "Entity type ids must be unique" }
       )
       .optional(),
+    scoutPullCadence: z
+      .enum(["manual", "weekly", "biweekly", "monthly"])
+      .optional(),
+    scoutPullDow: z.number().int().min(0).max(6).optional(),
+    scoutPullHourUtc: z.number().int().min(0).max(23).optional(),
   })
   .passthrough();
 
@@ -1438,9 +1456,11 @@ router.post("/companies/:id/run-timeseries", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
     res.json({ ok: true, message: "Timeseries aggregation started" });
-    runTimeseriesAggregation(companyId).catch((e) =>
-      logger.error({ err: e, companyId }, "Manual timeseries aggregation failed")
-    );
+    runTimeseriesAggregation(companyId)
+      .then(() => storage.setLastTimeseriesRunAt(companyId))
+      .catch((e) =>
+        logger.error({ err: e, companyId }, "Manual timeseries aggregation failed")
+      );
   } catch (err: any) {
     logger.error({ err }, "Failed to start timeseries aggregation");
     res.status(500).json({ error: err.message });
@@ -1455,9 +1475,11 @@ router.post("/companies/:id/run-state-machine", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
     res.json({ ok: true, message: "State machine started" });
-    runStateMachine(companyId).catch((e) =>
-      logger.error({ err: e, companyId }, "Manual state machine failed")
-    );
+    runStateMachine(companyId)
+      .then(() => storage.setLastStateMachineRunAt(companyId))
+      .catch((e) =>
+        logger.error({ err: e, companyId }, "Manual state machine failed")
+      );
   } catch (err: any) {
     logger.error({ err }, "Failed to start state machine");
     res.status(500).json({ error: err.message });

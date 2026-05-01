@@ -199,7 +199,25 @@ export const tpActorRuns = pgTable("tp_actor_runs", {
     .default([]),
   parentActorRunId: integer("parent_actor_run_id"),
   isTestFire: boolean("is_test_fire").notNull().default(false),
+  // Groups runs created from a single Launch click (or cron-triggered launch).
+  // Null for test fires and legacy/orphaned runs. See tp_launch_batches.
+  launchBatchId: text("launch_batch_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Tracks each "launch batch" — a group of actor runs created together from a
+// single Launch click (kind='manual') or a scheduled cron tick (kind='cron').
+// Used to fire the post-batch chain (timeseries -> state machine) exactly once
+// when all runs in the batch reach a terminal status.
+export const tpLaunchBatches = pgTable("tp_launch_batches", {
+  id: text("id").primaryKey(), // UUID generated app-side
+  companyId: integer("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("manual"), // 'manual' | 'cron'
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finalizedAt: timestamp("finalized_at"),
+  runsTotal: integer("runs_total").notNull().default(0),
 });
 
 // tp_raw_signals
@@ -630,6 +648,17 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
     .notNull()
     .$type<EntityTypeConfig[]>()
     .default(DEFAULT_ENTITY_TYPES),
+  // Scout-pull cron schedule (per company)
+  // cadence: 'manual' | 'weekly' | 'biweekly' | 'monthly'
+  scoutPullCadence: text("scout_pull_cadence").notNull().default("weekly"),
+  // 0 = Sunday, 1 = Monday, ..., 6 = Saturday (UTC)
+  scoutPullDow: integer("scout_pull_dow").notNull().default(1),
+  scoutPullHourUtc: integer("scout_pull_hour_utc").notNull().default(6),
+  // Last time the scout-launch fired for this company (manual or cron)
+  lastScoutPullAt: timestamp("last_scout_pull_at"),
+  // Last time runTimeseriesAggregation / runStateMachine completed for this company
+  lastTimeseriesRunAt: timestamp("last_timeseries_run_at"),
+  lastStateMachineRunAt: timestamp("last_state_machine_run_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -792,6 +821,11 @@ export const insertTpActorRunSchema = createInsertSchema(tpActorRuns).omit({
 });
 export type TpActorRun = typeof tpActorRuns.$inferSelect;
 export type InsertTpActorRun = z.infer<typeof insertTpActorRunSchema>;
+
+// tpLaunchBatches
+export const insertTpLaunchBatchSchema = createInsertSchema(tpLaunchBatches);
+export type TpLaunchBatch = typeof tpLaunchBatches.$inferSelect;
+export type InsertTpLaunchBatch = z.infer<typeof insertTpLaunchBatchSchema>;
 
 // tpRawSignals
 export const insertTpRawSignalSchema = createInsertSchema(tpRawSignals).omit({

@@ -9,7 +9,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, CheckCircle2, X, Plus, Loader2 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock } from "lucide-react";
 import { toast } from "sonner";
 
 interface EntityTypeConfig {
@@ -39,7 +46,43 @@ interface PipelineConfig {
   // Other
   authorAllowlist: string[];
   entityTypes: EntityTypeConfig[];
+  // Scout pull schedule
+  scoutPullCadence: "manual" | "weekly" | "biweekly" | "monthly";
+  scoutPullDow: number;
+  scoutPullHourUtc: number;
+  lastScoutPullAt: string | null;
   [key: string]: unknown;
+}
+
+const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function formatNextPull(
+  cadence: PipelineConfig["scoutPullCadence"],
+  dow: number,
+  hourUtc: number,
+  lastPullAt: string | null
+): string {
+  if (cadence === "manual") return "Manual only";
+  const cadenceDays = cadence === "weekly" ? 7 : cadence === "biweekly" ? 14 : 30;
+  const now = new Date();
+  // Earliest moment cron is allowed to fire again, based on lastScoutPullAt + cadence.
+  const earliest = lastPullAt
+    ? new Date(new Date(lastPullAt).getTime() + (cadenceDays * 24 - 0.5) * 3600_000)
+    : now;
+  // Walk forward day-by-day in UTC until we hit the configured DOW + hour at/after `earliest`.
+  const candidate = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    hourUtc, 0, 0, 0,
+  ));
+  for (let i = 0; i < 60; i++) {
+    if (candidate.getUTCDay() === dow && candidate.getTime() >= earliest.getTime() && candidate.getTime() >= now.getTime()) {
+      return `${DOW_LABELS[dow]} ${String(hourUtc).padStart(2, "0")}:00 UTC (${candidate.toISOString().slice(0, 10)})`;
+    }
+    candidate.setUTCDate(candidate.getUTCDate() + 1);
+  }
+  return `${DOW_LABELS[dow]} ${String(hourUtc).padStart(2, "0")}:00 UTC`;
 }
 
 // Tailwind colour palette for the entity-type chip picker.
@@ -630,6 +673,107 @@ export default function ControlPanelPage() {
           )}
         </div>
       </div>
+
+      {/* Scout pull schedule */}
+      <Card className="mb-4">
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-foreground">Scout pull schedule</h2>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When this fires, every active scout query is launched. After all runs
+            finish, timeseries and state machine run automatically.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-2 pb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Cadence</Label>
+              <Select
+                value={cfg.scoutPullCadence ?? "weekly"}
+                onValueChange={(v) => {
+                  setField("scoutPullCadence", v as PipelineConfig["scoutPullCadence"]);
+                  handleSave("scoutPullCadence", v);
+                }}
+              >
+                <SelectTrigger className="h-9 mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">Manual only</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="biweekly">Biweekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Day of week (UTC)</Label>
+              <Select
+                value={String(cfg.scoutPullDow ?? 1)}
+                onValueChange={(v) => {
+                  const n = Number(v);
+                  setField("scoutPullDow", n);
+                  handleSave("scoutPullDow", n);
+                }}
+              >
+                <SelectTrigger className="h-9 mt-1" disabled={cfg.scoutPullCadence === "manual"}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DOW_LABELS.map((label, i) => (
+                    <SelectItem key={i} value={String(i)}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Hour (UTC)</Label>
+              <Select
+                value={String(cfg.scoutPullHourUtc ?? 6)}
+                onValueChange={(v) => {
+                  const n = Number(v);
+                  setField("scoutPullHourUtc", n);
+                  handleSave("scoutPullHourUtc", n);
+                }}
+              >
+                <SelectTrigger className="h-9 mt-1" disabled={cfg.scoutPullCadence === "manual"}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <SelectItem key={h} value={String(h)}>
+                      {String(h).padStart(2, "0")}:00
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            <span className="text-muted-foreground">
+              Next scheduled pull:{" "}
+              <span className="text-foreground font-medium">
+                {formatNextPull(
+                  cfg.scoutPullCadence ?? "weekly",
+                  cfg.scoutPullDow ?? 1,
+                  cfg.scoutPullHourUtc ?? 6,
+                  cfg.lastScoutPullAt ?? null,
+                )}
+              </span>
+            </span>
+            {cfg.lastScoutPullAt && (
+              <span className="text-muted-foreground">
+                Last pull:{" "}
+                <span className="text-foreground">
+                  {new Date(cfg.lastScoutPullAt).toLocaleString()}
+                </span>
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Accordion type="multiple" defaultValue={["tier1", "tier2", "tier3"]} className="space-y-3">
         {/* Tier 1 */}

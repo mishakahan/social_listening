@@ -67,6 +67,58 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   fallback (`src/index.ts`) honor the branch. The parser handles all observed
   Apify google-trends-scraper shapes (flat one-row-per-item, `interestOverTime`
   with tagged objects, parallel arrays, scalar-per-point, keyed-map).
+- **Scout pull schedule + auto-chained pipeline** (`services/launch-batch.ts`):
+  Every launch — manual via `POST /api/pipeline/companies/:id/scout-queries/launch`
+  or cron-driven — goes through `launchBatch(companyId, {kind, queryIds?})`. It
+  creates a `tp_launch_batches` row (id text PK, kind = "manual"|"cron",
+  runs_total), tags every fired actor run with `launch_batch_id`, and stamps
+  `lastScoutPullAt`. A `try/finally` reconciles `runs_total` to the actual
+  number of `tp_actor_runs` rows written, so finalize works even on mid-loop
+  errors. When every run in a batch reaches a terminal state AND every
+  succeeded run has finished post-processing (ingestion + entity extraction),
+  `finalizeBatchIfDone(batchId)` does an atomic SQL `UPDATE ... WHERE
+  finalized_at IS NULL AND runs_total = COUNT(actor_runs) AND NOT EXISTS
+  (non-terminal runs OR succeeded-but-ingestion-not-terminal)` — terminal
+  status vocabulary `succeeded|failed|timeout` matches what `mapApifyStatus`
+  writes; terminal ingestion vocabulary is `done|failed`. On success the
+  chain runs `runTimeseriesAggregation` then `runStateMachine`, stamping
+  `lastTimeseriesRunAt` / `lastStateMachineRunAt`. `finalizeBatchIfDone` is
+  invoked from the Apify webhook (in a `try/finally` so it still fires when
+  ingestion throws), the orphan-run poll fallback in `src/index.ts`, manual
+  cancel/bulk-cancel handlers, and one defensive call inside `launchBatch`'s
+  own `finally` block for batches whose spawn loop throws.
+- **Ingestion ordering & ownership** (`services/ingestion.ts`,
+  `routes/pipeline.ts triggerIngestion`, polling fallback in `src/index.ts`):
+  `ingestActorRun` accepts `{ skipMarkDone?: boolean }` and returns
+  `{ claimed, usable, dropped, oldestPostedAt, newestPostedAt }`. Both
+  webhook and poll callers pass `skipMarkDone:true`, then check
+  `stats.claimed` (skipping downstream work if another worker already owns
+  the run), then run entity extraction, then explicitly call
+  `markIngestionDone`. If extraction throws they call `markIngestionFailed`
+  before re-throwing. This guarantees: (a) the finalize SQL guard only
+  releases AFTER extraction is done, so the post-batch chain never sees
+  half-extracted entities; (b) duplicate webhook+poll triggers cannot race
+  to release the guard early; (c) extraction failures still let the batch
+  finalize. Runs that bypass ingestion (failed, timeout, succeeded-with-no-
+  dataset, manual cancels) explicitly call `markIngestionDone` with zero
+  counts before `finalizeBatchIfDone` so the guard can pass.
+- **Cron jobs** (`src/index.ts`): hourly `0 * * * *` checks every company with
+  active scout queries; if `scoutPullCadence != 'manual'` and the current UTC
+  hour matches `scoutPullDow` + `scoutPullHourUtc` and `lastScoutPullAt`
+  is older than `cadenceDays * 24h - 30min` (cadence map weekly=7,
+  biweekly=14, monthly=30), it calls `launchBatch(companyId, {kind:'cron'})`.
+  Nightly `0 2 * * *` runs timeseries per company **only when**
+  `hasFreshActorRunsSince(lastTimeseriesRunAt)` returns true (gated on freshness
+  to avoid wasted work). Nightly `30 2 * * *` runs the state machine
+  unconditionally (cheap, and a daily lifecycle re-eval is desirable even with
+  no new signals). Both nightly jobs stamp their respective `lastRunAt` columns,
+  as do the manual `run-timeseries` / `run-state-machine` endpoints.
+- **Schedule UI**: `/radar/control-panel` has a "Scout pull schedule" card at the
+  top with cadence/day-of-week/hour-UTC selects (auto-saved via PATCH
+  `/api/pipeline/companies/:id/pipeline-config`; `patchConfigSchema` validates
+  the cadence enum + 0–6 dow + 0–23 hour) plus a computed "Next scheduled pull"
+  preview line. The Entities Audit Pipeline panel shows an italic "Auto: ..."
+  subtitle on each step describing its automatic trigger.
 - The Trend Detail page (`/radar/trends/:id`) shows a "Signal Over Time" chart
   (`pages/radar/trends/trend-timeseries-chart.tsx`) — bars for absolute social
   mentions (left axis, summed across platforms/geographies from

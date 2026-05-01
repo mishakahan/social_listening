@@ -582,12 +582,19 @@ function passesLanguageFilter(
 
 export async function ingestActorRun(
   run: TpActorRun,
-  datasetItems: unknown[]
-): Promise<{ usable: number; dropped: number }> {
+  datasetItems: unknown[],
+  options: { skipMarkDone?: boolean } = {}
+): Promise<{
+  claimed: boolean;
+  usable: number;
+  dropped: number;
+  oldestPostedAt: Date | null;
+  newestPostedAt: Date | null;
+}> {
   const claimed = await storage.claimIngestion(run.id);
   if (!claimed) {
     logger.info({ runId: run.id }, "Ingestion already claimed by another worker — skipping");
-    return { usable: 0, dropped: 0 };
+    return { claimed: false, usable: 0, dropped: 0, oldestPostedAt: null, newestPostedAt: null };
   }
 
   try {
@@ -628,7 +635,9 @@ export async function ingestActorRun(
     const oldestPostedAt = dates.length ? new Date(Math.min(...dates)) : null;
     const newestPostedAt = dates.length ? new Date(Math.max(...dates)) : null;
 
-    await storage.markIngestionDone(run.id, { usable, dropped, oldestPostedAt, newestPostedAt });
+    if (!options.skipMarkDone) {
+      await storage.markIngestionDone(run.id, { usable, dropped, oldestPostedAt, newestPostedAt });
+    }
 
     // Update scout query counters
     if (run.scoutQueryId) {
@@ -639,10 +648,10 @@ export async function ingestActorRun(
     }
 
     logger.info(
-      { runId: run.id, platform: run.platform, usable, dropped },
+      { runId: run.id, platform: run.platform, usable, dropped, deferred: !!options.skipMarkDone },
       "Ingestion complete"
     );
-    return { usable, dropped };
+    return { claimed: true, usable, dropped, oldestPostedAt, newestPostedAt };
   } catch (err: any) {
     await storage.markIngestionFailed(run.id, err.message ?? "Unknown ingestion error");
     logger.error({ err, runId: run.id }, "Ingestion failed");

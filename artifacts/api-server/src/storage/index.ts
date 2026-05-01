@@ -15,6 +15,7 @@ import {
   tpEntityState,
   tpEntitySynonyms,
   tpKeywordInterest,
+  tpLaunchBatches,
   tpPipelineConfig,
   type Company,
   type InsertCompany,
@@ -40,6 +41,8 @@ import {
   type InsertTpEntityState,
   type TpKeywordInterest,
   type InsertTpKeywordInterest,
+  type TpLaunchBatch,
+  type InsertTpLaunchBatch,
   type TpPipelineConfig,
   type KnowledgeItem,
   type InsertKnowledgeItem,
@@ -403,6 +406,168 @@ export async function updateActorRun(
 export async function deleteActorRuns(ids: number[]): Promise<void> {
   if (ids.length === 0) return;
   await db.delete(tpActorRuns).where(inArray(tpActorRuns.id, ids));
+}
+
+// ---------------------------------------------------------------------------
+// Launch batches
+// ---------------------------------------------------------------------------
+
+export async function createLaunchBatch(
+  data: InsertTpLaunchBatch
+): Promise<TpLaunchBatch> {
+  const rows = await db.insert(tpLaunchBatches).values(data).returning();
+  return rows[0]!;
+}
+
+export async function getLaunchBatch(
+  id: string
+): Promise<TpLaunchBatch | undefined> {
+  const rows = await db
+    .select()
+    .from(tpLaunchBatches)
+    .where(eq(tpLaunchBatches.id, id))
+    .limit(1);
+  return rows[0];
+}
+
+/**
+ * Atomically mark a launch batch finalized iff:
+ *   - finalized_at IS NULL, AND
+ *   - every planned actor_run for the batch has been recorded with
+ *     launch_batch_id (count = runs_total — guards against early
+ *     finalization while launchBatch() is still spawning runs), AND
+ *   - every actor_run is in a terminal status, AND
+ *   - every *succeeded* run has finished (or failed) ingestion. Without
+ *     this, a failed sibling could finalize the batch while a succeeded
+ *     run's entity extraction is still in flight, so the post-batch
+ *     timeseries/state-machine would run on stale entities.
+ *
+ * Terminal status vocabulary matches what mapApifyStatus() writes:
+ * succeeded | failed | timeout. (ABORTED maps to "failed".)
+ * Terminal ingestion_status: done | failed (set by storage.completeIngestion /
+ * failIngestion). Failed/timeout runs do not go through ingestion so their
+ * ingestion_status stays "pending" — the OR-clause below only enforces
+ * ingestion completion when status='succeeded'.
+ *
+ * Returns the updated batch row if this call performed the finalization,
+ * or null if the batch is either already finalized, still launching,
+ * still has runs in a non-terminal state, or is awaiting ingestion. This
+ * guarantees the post-batch chain runs at most once even when multiple
+ * terminal events fire concurrently.
+ */
+export async function tryFinalizeLaunchBatch(
+  batchId: string
+): Promise<TpLaunchBatch | null> {
+  const rows = await db.execute<{
+    id: string;
+    company_id: number;
+    kind: string;
+    started_at: Date;
+    finalized_at: Date | null;
+    runs_total: number;
+  }>(sql`
+    UPDATE tp_launch_batches
+    SET finalized_at = NOW()
+    WHERE id = ${batchId}
+      AND finalized_at IS NULL
+      AND runs_total = (
+        SELECT COUNT(*)::int FROM tp_actor_runs
+        WHERE launch_batch_id = ${batchId}
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM tp_actor_runs
+        WHERE launch_batch_id = ${batchId}
+          AND (
+            status NOT IN ('succeeded','failed','timeout')
+            OR (status = 'succeeded' AND ingestion_status NOT IN ('done','failed'))
+          )
+      )
+    RETURNING id, company_id, kind, started_at, finalized_at, runs_total
+  `);
+  const row = (rows as any).rows?.[0] ?? (rows as any)[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    kind: row.kind,
+    startedAt: row.started_at,
+    finalizedAt: row.finalized_at,
+    runsTotal: row.runs_total,
+  } as TpLaunchBatch;
+}
+
+export async function setLastScoutPullAt(
+  companyId: number,
+  at: Date = new Date()
+): Promise<void> {
+  await db
+    .update(tpPipelineConfig)
+    .set({ lastScoutPullAt: at })
+    .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
+/**
+ * Reconcile a launch batch's runs_total to the actual number of actor_run
+ * rows that ended up tagged with this batch id. Called from launchBatch()'s
+ * finally block so finalize cardinality check (runs_total = COUNT) holds
+ * even when the spawn loop is interrupted mid-flight (DB error, etc.).
+ */
+export async function setLaunchBatchActualRunsTotal(
+  batchId: string
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE tp_launch_batches
+    SET runs_total = (
+      SELECT COUNT(*)::int FROM tp_actor_runs
+      WHERE launch_batch_id = ${batchId}
+    )
+    WHERE id = ${batchId}
+      AND finalized_at IS NULL
+  `);
+}
+
+export async function setLastTimeseriesRunAt(
+  companyId: number,
+  at: Date = new Date()
+): Promise<void> {
+  await db
+    .update(tpPipelineConfig)
+    .set({ lastTimeseriesRunAt: at })
+    .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
+export async function setLastStateMachineRunAt(
+  companyId: number,
+  at: Date = new Date()
+): Promise<void> {
+  await db
+    .update(tpPipelineConfig)
+    .set({ lastStateMachineRunAt: at })
+    .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
+/**
+ * Returns true if any actor_run for this company has succeeded since the
+ * given timestamp (or since ever, if `since` is null). Used to gate the
+ * nightly timeseries cron — there's no point re-aggregating when no new
+ * data has arrived.
+ */
+export async function hasFreshActorRunsSince(
+  companyId: number,
+  since: Date | null
+): Promise<boolean> {
+  const conds = [
+    eq(tpActorRuns.companyId, companyId),
+    eq(tpActorRuns.status, "succeeded"),
+  ];
+  if (since) {
+    conds.push(gte(tpActorRuns.completedAt, since));
+  }
+  const rows = await db
+    .select({ c: count() })
+    .from(tpActorRuns)
+    .where(and(...conds));
+  return (rows[0]?.c ?? 0) > 0;
 }
 
 export async function getActorRunSummary(

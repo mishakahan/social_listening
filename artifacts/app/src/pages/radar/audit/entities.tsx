@@ -162,6 +162,7 @@ interface PipelineStepRowProps {
   description: string;
   step: StepEstimate;
   lastRunAt: string | null;
+  autoTrigger: string;
   pending: boolean;
   primary?: boolean;
   onRun: () => void;
@@ -173,6 +174,7 @@ function PipelineStepRow({
   description,
   step,
   lastRunAt,
+  autoTrigger,
   pending,
   primary,
   onRun,
@@ -193,6 +195,9 @@ function PipelineStepRow({
           )}
         </div>
         <p className="text-muted-foreground mt-1 text-xs">{description}</p>
+        <p className="text-muted-foreground/80 mt-1 text-xs italic">
+          Auto: {autoTrigger}
+        </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <span className="text-foreground font-medium">{step.scope}</span>
           <span className="text-muted-foreground">·</span>
@@ -317,6 +322,7 @@ function PipelinePanel({
           description="Pulls named entities (trends, ingredients, products, places) out of raw signals using the LLM."
           step={ext}
           lastRunAt={status.extraction.lastExtractionAt}
+          autoTrigger="runs continuously as ingestion delivers new signals"
           pending={tracker.isRunning("extraction")}
           onRun={onRunExtraction}
         />
@@ -326,6 +332,7 @@ function PipelinePanel({
           description="Buckets signals into daily mention counts per entity / platform / geography over the last 90 days."
           step={ts}
           lastRunAt={status.timeseries.lastComputedAt}
+          autoTrigger="after every scout pull + nightly 02:00 UTC when new signals exist"
           pending={tracker.isRunning("timeseries")}
           onRun={onRunTimeseries}
         />
@@ -335,6 +342,7 @@ function PipelinePanel({
           description="Advances entities through their lifecycle (candidate → emerging → confirmed → peaking → declining → dormant)."
           step={sm}
           lastRunAt={status.stateMachine.lastComputedAt}
+          autoTrigger="after every scout pull + nightly 02:30 UTC"
           pending={tracker.isRunning("stateMachine")}
           primary
           onRun={onRunStateMachine}
