@@ -16,6 +16,7 @@ import {
   Tag,
   BarChart2,
 } from "lucide-react";
+import { SignalScoreInfo } from "./signal-score-info";
 
 interface EvidenceItem {
   id: number;
@@ -245,7 +246,10 @@ export default function TrendDetailPage() {
             <span className={`text-3xl font-bold tabular-nums ${signalColor}`}>
               {trend.signalStrength}
             </span>
-            <span className="text-xs text-muted-foreground">Signal</span>
+            <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              Signal
+              <SignalScoreInfo />
+            </span>
           </CardContent>
         </Card>
 

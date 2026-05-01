@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, TrendingUp, TrendingDown, Minus, ChevronRight } from "lucide-react";
+import { SignalScoreInfo } from "./signal-score-info";
 
 interface Trend {
   id: number;
@@ -151,7 +152,10 @@ export default function TrendsListPage() {
           {/* Column headers */}
           <div className="grid grid-cols-[2fr_auto_auto_auto_auto_auto_auto] gap-4 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
             <div>Title</div>
-            <div className="text-center w-16">Signal</div>
+            <div className="text-center w-16 flex items-center justify-center gap-1">
+              <span>Signal</span>
+              <SignalScoreInfo align="start" />
+            </div>
             <div className="text-right w-20">WoW</div>
             <div className="w-28">State</div>
             <div className="w-32">Platforms</div>
