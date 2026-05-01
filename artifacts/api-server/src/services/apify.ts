@@ -80,14 +80,19 @@ export function buildActorInput(
         ...(geo ? { countryCode: geo } : {}),
       };
 
-    case "trudax/reddit-scraper-lite":
-      // Reddit doesn't use hashtags; "site:reddit.com" is Google syntax and breaks native Reddit search.
-      // Join all keywords into one focused query rather than running a separate search per term.
+    case "trudax/reddit-scraper-lite": {
+      // Reddit doesn't use hashtags. Run one search per keyword instead of joining
+      // them into a literal multi-word phrase, which on Reddit's relevance search
+      // typically returns near-zero results.
+      const searches = kws.map((k) => k.trim()).filter((k) => k.length > 0);
+      // Cap maxItems per search so total budget across N searches stays sane (~100 items).
+      const perSearchCap = Math.max(10, Math.floor(100 / Math.max(1, searches.length)));
       return {
-        searches: [kws.join(" ")].filter(Boolean),
-        maxItems: 100,
+        searches,
+        maxItems: perSearchCap,
         sort: "relevance",
       };
+    }
 
     case "easyapi/all-in-one-rednote-xiaohongshu-scraper":
       return {
