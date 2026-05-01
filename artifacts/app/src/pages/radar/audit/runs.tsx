@@ -97,6 +97,14 @@ async function bulkDeleteApi(runIds: number[]): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
+async function bulkRetryApi(runIds: number[]): Promise<{ ok: number; failed: number }> {
+  // No bulk retry endpoint — fan out to the single-run retry endpoint.
+  const results = await Promise.allSettled(runIds.map((id) => retryRunApi(id)));
+  const ok = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.length - ok;
+  return { ok, failed };
+}
+
 async function fetchRunOutput(id: number): Promise<{ items: unknown[]; total: number }> {
   const res = await fetch(`/api/pipeline/actor-runs/${id}/output`);
   if (!res.ok) throw new Error(await res.text());
@@ -276,6 +284,22 @@ export default function RunsAuditPage() {
     onError: (err: Error) => toast.error(err.message || "Failed to trigger re-ingestion"),
   });
 
+  const bulkRetryMutation = useMutation({
+    mutationFn: (ids: number[]) => bulkRetryApi(ids),
+    onSuccess: ({ ok, failed }) => {
+      // Refetch to pick up new statuses for the retried runs (they get
+      // re-queued server-side, so the cache rewrite is non-trivial).
+      queryClient.invalidateQueries({ queryKey: ["actor-runs"] });
+      setSelectedIds(new Set());
+      if (failed === 0) {
+        toast.success(`Retried ${ok} run${ok !== 1 ? "s" : ""}`);
+      } else {
+        toast.warning(`Retried ${ok}; ${failed} failed to queue`);
+      }
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to retry runs"),
+  });
+
   const handleSelect = (id: number, checked: boolean) => {
     setSelectedIds((prev) => {
       const n = new Set(prev);
@@ -299,14 +323,18 @@ export default function RunsAuditPage() {
 
   const activeRuns      = runs.filter(isActive);
   const terminalRuns    = runs.filter((r) => !isActive(r));
+  const allRunIds       = runs.map((r) => r.id);
   const allActiveIds    = activeRuns.map((r) => r.id);
   const allTerminalIds  = terminalRuns.map((r) => r.id);
   const failedIds       = runs.filter((r) => r.status === "failed" || r.status === "timeout").map((r) => r.id);
 
-  const selectedActiveIds = allActiveIds.filter((id) => selectedIds.has(id));
+  const selectedRuns      = runs.filter((r) => selectedIds.has(r.id));
+  const selectedActiveIds = selectedRuns.filter(isActive).map((r) => r.id);
+  const selectedRetryableIds = selectedRuns.filter(isRetryable).map((r) => r.id);
+  const selectedTerminalIds = selectedRuns.filter((r) => !isActive(r)).map((r) => r.id);
 
-  const allActiveSelected = allActiveIds.length > 0 && allActiveIds.every((id) => selectedIds.has(id));
-  const someActiveSelected = allActiveIds.some((id) => selectedIds.has(id)) && !allActiveSelected;
+  const allRowsSelected  = allRunIds.length > 0 && allRunIds.every((id) => selectedIds.has(id));
+  const someRowsSelected = allRunIds.some((id) => selectedIds.has(id)) && !allRowsSelected;
 
   if (isLoading) {
     return (
@@ -415,38 +443,81 @@ export default function RunsAuditPage() {
         <Badge variant="outline" className="text-xs">{runs.length} total</Badge>
       </div>
 
-      {/* Bulk actions toolbar — only shown when there are active runs */}
-      {activeRuns.length > 0 && (
+      {/* Bulk actions toolbar — visible whenever there are runs. Supports
+          selecting every row across statuses and exposes contextual actions
+          (cancel for active, retry for failed/timeout, delete for terminal)
+          based on what's currently selected. */}
+      {runs.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap mb-4 p-2 bg-muted/40 rounded-lg border border-border">
           <button
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors"
-            onClick={() => handleSelectAll(allActiveIds, !allActiveSelected)}
+            onClick={() => handleSelectAll(allRunIds, !allRowsSelected)}
           >
-            {allActiveSelected ? (
+            {allRowsSelected ? (
               <CheckSquare className="h-3.5 w-3.5" />
-            ) : someActiveSelected ? (
+            ) : someRowsSelected ? (
               <CheckSquare className="h-3.5 w-3.5 opacity-50" />
             ) : (
               <Square className="h-3.5 w-3.5" />
             )}
-            {allActiveSelected ? "Deselect all active" : "Select all active"}
+            {allRowsSelected
+              ? `Deselect all (${runs.length})`
+              : `Select all (${runs.length})`}
           </button>
+
+          {selectedIds.size > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {selectedIds.size} selected
+            </span>
+          )}
 
           <div className="w-px h-4 bg-border mx-1" />
 
-          {selectedActiveIds.length > 0 ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-xs h-7 px-2 text-red-600 border-red-300 hover:bg-red-50 hover:border-red-400 gap-1"
-              disabled={bulkCancelMutation.isPending}
-              onClick={() => bulkCancelMutation.mutate(selectedActiveIds)}
-            >
-              {bulkCancelMutation.isPending
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <XCircle className="h-3.5 w-3.5" />}
-              Kill {selectedActiveIds.length} selected
-            </Button>
+          {selectedIds.size > 0 ? (
+            <>
+              {selectedRetryableIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2 gap-1"
+                  disabled={bulkRetryMutation.isPending}
+                  onClick={() => bulkRetryMutation.mutate(selectedRetryableIds)}
+                >
+                  {bulkRetryMutation.isPending
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RefreshCw className="h-3.5 w-3.5" />}
+                  Retry {selectedRetryableIds.length}
+                </Button>
+              )}
+              {selectedActiveIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2 text-red-600 border-red-300 hover:bg-red-50 hover:border-red-400 gap-1"
+                  disabled={bulkCancelMutation.isPending}
+                  onClick={() => bulkCancelMutation.mutate(selectedActiveIds)}
+                >
+                  {bulkCancelMutation.isPending
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <XCircle className="h-3.5 w-3.5" />}
+                  Kill {selectedActiveIds.length}
+                </Button>
+              )}
+              {selectedTerminalIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2 text-red-600 border-red-300 hover:bg-red-50 hover:border-red-400 gap-1"
+                  disabled={bulkDeleteMutation.isPending}
+                  onClick={() => bulkDeleteMutation.mutate(selectedTerminalIds)}
+                >
+                  {bulkDeleteMutation.isPending
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Trash2 className="h-3.5 w-3.5" />}
+                  Delete {selectedTerminalIds.length}
+                </Button>
+              )}
+            </>
           ) : (
             <>
               {queuedCount > 0 && (
@@ -477,6 +548,20 @@ export default function RunsAuditPage() {
                   Kill all running ({runningCount})
                 </Button>
               )}
+              {failedIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2 gap-1"
+                  disabled={bulkRetryMutation.isPending}
+                  onClick={() => bulkRetryMutation.mutate(failedIds)}
+                >
+                  {bulkRetryMutation.isPending
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RefreshCw className="h-3.5 w-3.5" />}
+                  Retry all failed ({failedIds.length})
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -494,9 +579,10 @@ export default function RunsAuditPage() {
               <TableRow className="bg-muted/30">
                 <TableHead className="w-10 pl-4">
                   <Checkbox
-                    checked={allActiveSelected}
-                    onCheckedChange={(v) => handleSelectAll(allActiveIds, !!v)}
-                    disabled={allActiveIds.length === 0}
+                    checked={allRowsSelected ? true : someRowsSelected ? "indeterminate" : false}
+                    onCheckedChange={(v) => handleSelectAll(allRunIds, !!v)}
+                    disabled={allRunIds.length === 0}
+                    aria-label="Select all runs"
                   />
                 </TableHead>
                 <TableHead className="w-16">Platform</TableHead>
@@ -525,12 +611,11 @@ export default function RunsAuditPage() {
                     title={viewable ? "Click to view output" : undefined}
                   >
                     <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
-                      {active && (
-                        <Checkbox
-                          checked={selectedIds.has(run.id)}
-                          onCheckedChange={(v) => handleSelect(run.id, !!v)}
-                        />
-                      )}
+                      <Checkbox
+                        checked={selectedIds.has(run.id)}
+                        onCheckedChange={(v) => handleSelect(run.id, !!v)}
+                        aria-label={`Select run ${run.id}`}
+                      />
                     </TableCell>
                     <TableCell>
                       <PlatformBadge platform={run.platform} />
