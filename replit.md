@@ -129,6 +129,24 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   `GET /api/pipeline/companies/:id/trends/:trendId/timeseries?windowDays=N`,
   which resolves the trend's primary entity via `tp_entity_state` and uses
   `canonicalLabel + aliases` as the keyword set.
+- **Runs Audit page model** (`pages/radar/audit/runs.tsx`): each row in the
+  table is **one Apify actor invocation = one (Platform, Mode) for one
+  scout query**. A single query fans out to multiple rows per launch via
+  `planPlatformsForQuery` in `services/launch-batch.ts`. The exact gating:
+  Instagram (`backfill:ig_posts` + `backfill:ig_reels`) and TikTok always
+  run; Reddit runs when `keywords.length > 0 && language !== 'zh-CN'`;
+  Xiaohongshu runs when `language === 'zh-CN'`; Google Trends runs when
+  `geography !== 'CN'`. Net range: 3–5 rows per query per launch. The launcher copies the scout
+  query's `topicLabel`, `geography`, `language`, `keywords`, and
+  `hashtags` into `tp_actor_runs.input_payload` at launch time, so each row
+  carries a self-contained snapshot of which query it ran (used by the
+  "Query" column even if the source query is later edited or deleted). The
+  page subtitle explains this; the table column order is Platform → Query
+  → Mode → Status → Fetched → Usable → Cost → Ingestion → Started →
+  actions. The Query cell falls back to `(query deleted)` when
+  `scoutQueryId IS NULL` and to `(no snapshot)` when `scoutQueryId` is set
+  but `input_payload.topicLabel` is missing (i.e. legacy rows that pre-date
+  the input_payload snapshot convention).
 - **Runs Audit bulk actions** (`pages/radar/audit/runs.tsx`): the toolbar
   supports cross-status select-all and contextual bulk buttons keyed off the
   selection. Predicates: `isActive` = queued|running, `isRetryable` =
@@ -142,7 +160,10 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   surface ok/failed counts in toasts. `bulkReIngestMutation` returns `okIds`
   and only marks those rows `ingestionStatus='pending'` optimistically;
   partial failures trigger an immediate `invalidateQueries(['actor-runs'])`
-  so failed rows are reconciled without waiting for the 15s poll.
+  so failed rows are reconciled without waiting for the 15s poll. Per-row
+  controls have been pruned to Kill (active), Retry (failed/timeout), and
+  Delete (terminal); re-ingestion is bulk-only since it's a rare batch
+  operation.
 - **Retry endpoint contract** (`POST /api/pipeline/actor-runs/:id/retry`):
   guards on `status IN ('failed','timeout')` and `!billing-error` (returns
   409 otherwise — defense-in-depth for the UI gating), and resets

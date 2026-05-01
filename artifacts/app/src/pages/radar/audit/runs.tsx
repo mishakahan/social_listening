@@ -37,6 +37,18 @@ interface ActorRun {
   completedAt?: string;
   errorMessage?: string;
   ingestionStatus?: string;
+  scoutQueryId?: number | null;
+  // The launcher copies the scout query's topic / geo / language / keywords /
+  // hashtags into inputPayload at the moment of launch, so each row carries a
+  // self-contained snapshot of which query it ran (even if the query is later
+  // edited or deleted).
+  inputPayload?: {
+    topicLabel?: string;
+    geography?: string;
+    language?: string;
+    keywords?: string[];
+    hashtags?: string[];
+  };
 }
 
 const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
@@ -294,17 +306,6 @@ export default function RunsAuditPage() {
     onError: (err: Error) => toast.error(err.message || "Failed to delete runs"),
   });
 
-  const reIngestMutation = useMutation({
-    mutationFn: (id: number) => reIngestRunApi(id),
-    onSuccess: (_, id) => {
-      queryClient.setQueryData<ActorRun[]>(["actor-runs"], (old = []) =>
-        old.map((r) => r.id === id ? { ...r, ingestionStatus: "pending" } : r)
-      );
-      toast.success("Re-ingestion triggered");
-    },
-    onError: (err: Error) => toast.error(err.message || "Failed to trigger re-ingestion"),
-  });
-
   const bulkRetryMutation = useMutation({
     mutationFn: (ids: number[]) => bulkRetryApi(ids),
     onSuccess: ({ ok, failed }) => {
@@ -425,14 +426,24 @@ export default function RunsAuditPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Runs Audit</h1>
           <p className="text-muted-foreground text-sm max-w-3xl">
-            Step 3 of 5 — Each row is a single Apify actor run: one platform-scraper firing against one
-            scout query. Runs progress through Queued → Running → Succeeded / Failed. When a run
-            succeeds, its data is automatically fetched from Apify and ingested into raw signals.
-            "Fetched" is the total records the scraper returned; "Usable" is how many passed the noise
-            floor and language filter; the rest are dropped. "Ingestion" tracks whether records have been
-            written to the signals table (pending → done). If a run failed, use Retry to relaunch it. If
-            it succeeded but ingestion is stuck, use Re-ingest. Click a succeeded row to inspect the raw
-            Apify output. Cost reflects real Apify billing. The list auto-refreshes every 15 seconds.
+            Step 3 of 5 — Each row is one Apify actor invocation: one (Platform, Mode)
+            combination firing against one scout query. A single query fans out to
+            multiple rows per launch: Instagram (posts + reels) and TikTok always run;
+            Reddit runs when the query has keywords and is not Chinese; Xiaohongshu
+            runs when the query language is Chinese (zh-CN); Google Trends runs for
+            every geography except CN — so a query yields 3 to 5 rows depending on
+            keywords, language, and geography. The "Query" column shows the topic and geography
+            behind each row, the "Platform" badge shows which scraper ran, and "Mode"
+            tells you which sub-actor variant (e.g. `backfill:ig_reels`). Runs move through Queued → Running →
+            Succeeded / Failed. On success, Apify data is automatically pulled and
+            ingested into raw signals: "Fetched" is everything the scraper returned,
+            "Usable" is what passed the noise + language filter, the rest are dropped.
+            The "Ingestion" chip tracks whether records have been written to the signals
+            table (pending → done). For one-off recovery use the per-row Retry button on
+            a failed run; for batch operations select rows and use the toolbar above to
+            Run, Ingest, Kill, or Delete. Click a succeeded row to inspect the raw Apify
+            output. Cost reflects real Apify billing. The list auto-refreshes every 15
+            seconds.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -653,6 +664,7 @@ export default function RunsAuditPage() {
                   />
                 </TableHead>
                 <TableHead className="w-16">Platform</TableHead>
+                <TableHead>Query</TableHead>
                 <TableHead>Mode</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Fetched</TableHead>
@@ -686,6 +698,38 @@ export default function RunsAuditPage() {
                     </TableCell>
                     <TableCell>
                       <PlatformBadge platform={run.platform} />
+                    </TableCell>
+                    <TableCell className="max-w-[220px]">
+                      {run.inputPayload?.topicLabel ? (
+                        <>
+                          <div
+                            className="text-sm font-medium truncate"
+                            title={run.inputPayload.topicLabel}
+                          >
+                            {run.inputPayload.topicLabel}
+                          </div>
+                          {(run.inputPayload.geography || run.inputPayload.language) && (
+                            <div className="text-xs text-muted-foreground">
+                              {[run.inputPayload.geography, run.inputPayload.language]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span
+                          className="text-xs text-muted-foreground italic"
+                          title={
+                            run.scoutQueryId == null
+                              ? "The scout query that launched this run has been deleted; the run is preserved for audit."
+                              : "This run was created without a topic snapshot in input_payload (legacy data)."
+                          }
+                        >
+                          {run.scoutQueryId == null
+                            ? "(query deleted)"
+                            : "(no snapshot)"}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className="text-sm font-medium">{run.runMode}</div>
@@ -752,21 +796,6 @@ export default function RunsAuditPage() {
                               ? <Loader2 className="h-3 w-3 animate-spin" />
                               : <RefreshCw className="h-3 w-3" />}
                             Retry
-                          </Button>
-                        )}
-                        {!active && !isRetryable(run) && run.status === "succeeded" && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 px-2 text-xs gap-1"
-                            title="Re-ingest signals from this run"
-                            onClick={(e) => { e.stopPropagation(); reIngestMutation.mutate(run.id); }}
-                            disabled={reIngestMutation.isPending || run.ingestionStatus === "processing"}
-                          >
-                            {reIngestMutation.isPending
-                              ? <Loader2 className="h-3 w-3 animate-spin" />
-                              : <RefreshCw className="h-3 w-3" />}
-                            Re-ingest
                           </Button>
                         )}
                         {!active && !isRetryable(run) && (
