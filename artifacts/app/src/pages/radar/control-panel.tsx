@@ -1,4 +1,4 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Slider } from "@/components/ui/slider";
@@ -688,10 +688,16 @@ export default function ControlPanelPage() {
     if (config && !local) setLocal(config);
   }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const queryClient = useQueryClient();
   const saveMutation = useMutation({
     mutationFn: patchConfig,
     onSuccess: (updated) => {
       setLocal(updated);
+      // Keep the react-query cache in sync so navigating away and back
+      // within the configured staleTime doesn't re-hydrate `local` from a
+      // stale snapshot (which would silently hide just-saved fields like
+      // coreVocabulary, authorAllowlist, etc.).
+      queryClient.setQueryData(["pipeline-config"], updated);
     },
     onError: (err: Error) => {
       toast.error(err.message || "Failed to save");
