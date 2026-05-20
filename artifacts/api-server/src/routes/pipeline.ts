@@ -1023,6 +1023,10 @@ const patchConfigSchema = z
         { message: "Entity type ids must be unique" }
       )
       .optional(),
+    coreVocabulary: z
+      .array(z.string().trim().min(1).max(120))
+      .max(500)
+      .optional(),
     scoutPullCadence: z
       .enum(["manual", "weekly", "biweekly", "monthly"])
       .optional(),

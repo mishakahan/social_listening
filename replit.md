@@ -39,6 +39,25 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   builds the LLM system prompt per-company from this config. Unknown LLM
   outputs fall back to "other" if present, otherwise the entity is dropped
   rather than misclassified.
+- **Anti-generic guards** in entity extraction (combat the "Chocolate /
+  Gelato / Milano are not trends" problem):
+  1. The system prompt has two always-on negative rules — drop bare common
+     category nouns ("chocolate", "pizza", "coffee", …) unless qualified;
+     drop bare location names ("Milano", "Toscana", …) as provenance unless
+     they qualify a product.
+  2. Per-company **core vocabulary** stoplist (`tp_pipeline_config.core_vocabulary`
+     JSONB string[]) is injected into the prompt as an explicit exclusion
+     list AND enforced as a hard post-extraction filter (case-insensitive
+     exact match on both the raw LLM label and the post-synonym canonical
+     label). The same list is also applied at the radar layer in
+     `getTrendsEnriched` so existing knowledge items whose canonical
+     label/topic matches vanish from `/radar` immediately, without waiting
+     for the state machine to retire them. Editable from
+     `/radar/control-panel` ("Core vocabulary (never a trend)" card under
+     the Author Allowlist), auto-saved via the same PATCH
+     `/api/pipeline/companies/:id/pipeline-config` endpoint
+     (`patchConfigSchema` validates `coreVocabulary: string[] (1–120 chars
+     each, max 500 entries)`).
 - The Control Panel auto-saves with a 600ms debounce. PATCH payloads to
   `/api/pipeline/companies/:id/pipeline-config` are validated by a Zod schema
   in `artifacts/api-server/src/routes/pipeline.ts` (id format, required label,

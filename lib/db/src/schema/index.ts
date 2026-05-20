@@ -631,6 +631,14 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
     .notNull()
     .$type<string[]>()
     .default([]),
+  // Core vocabulary — generic category words for this company that should
+  // NEVER be surfaced as a trend (e.g. "chocolate", "pizza", "gelato" for a
+  // confectionery client). Filtered at extraction time AND hidden from the
+  // radar list. Case-insensitive exact-match on the entity's canonical label.
+  coreVocabulary: jsonb("core_vocabulary")
+    .notNull()
+    .$type<string[]>()
+    .default([]),
   // Platform enables
   platforms: jsonb("platforms")
     .notNull()

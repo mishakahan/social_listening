@@ -1275,6 +1275,28 @@ export interface EnrichedTrend {
   updatedAt: string;
 }
 
+/**
+ * Build a case-insensitive matcher against the company's core-vocabulary
+ * stoplist. Returns a function `(s) => boolean` that returns true when the
+ * trimmed-lowercased string matches a configured core-vocabulary term.
+ *
+ * Used by every trend-surfacing storage function to hide existing knowledge
+ * items whose canonical label is in the stoplist, without needing to re-run
+ * the state machine. Loads `tp_pipeline_config.coreVocabulary` once per call.
+ */
+async function getCoreVocabularyMatcher(
+  companyId: number
+): Promise<(s: string | null | undefined) => boolean> {
+  const cfg = await getPipelineConfig(companyId);
+  const set = new Set(
+    (cfg.coreVocabulary ?? [])
+      .map((s) => (typeof s === "string" ? s.trim().toLowerCase() : ""))
+      .filter(Boolean)
+  );
+  if (set.size === 0) return () => false;
+  return (s) => !!s && set.has(s.trim().toLowerCase());
+}
+
 export async function getTrendsEnriched(
   companyId: number,
   filters?: { archived?: boolean }
@@ -1296,10 +1318,17 @@ export async function getTrendsEnriched(
     .where(and(...conditions))
     .orderBy(desc(tpEntityState.volume7d));
 
+  // Apply the per-company core-vocabulary stoplist at the radar layer so that
+  // existing knowledge items whose canonical label is generic vocab disappear
+  // from the radar immediately — without needing to re-run the state machine
+  // or wait for them to time out into dormant.
+  const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+
   return rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
     )
+    .filter((r) => !isCoreVocab(r.ki.title) && !isCoreVocab(r.ki.topicLabel))
     .map((r) => ({
       id: r.ki.id,
       title: r.ki.title,
@@ -1345,6 +1374,11 @@ export async function getTrendDetail(
     .where(and(...conditions))
     .limit(1);
 
+  // Apply the per-company core-vocabulary stoplist so that detail/timeseries
+  // surfaces stay consistent with the list endpoint — a bookmarked trend whose
+  // label is in the company's stoplist becomes a 404.
+  const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
     const kiRows = await db.select().from(knowledgeItems).where(
@@ -1352,6 +1386,7 @@ export async function getTrendDetail(
     ).limit(1);
     if (kiRows.length === 0) return null;
     const ki = kiRows[0]!;
+    if (isCoreVocab(ki.title) || isCoreVocab(ki.topicLabel)) return null;
     return {
       id: ki.id,
       title: ki.title,
@@ -1374,6 +1409,8 @@ export async function getTrendDetail(
   }
 
   const { ki, es } = rows[0]!;
+
+  if (isCoreVocab(ki.title) || isCoreVocab(ki.topicLabel)) return null;
 
   // Fetch raw signals for this entity as evidence (most recent, limit 20)
   const evidenceRows = await db
@@ -1462,18 +1499,28 @@ export async function getTrendTimeseries(
     )
     .limit(1);
 
+  const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+  const emptySeries: TrendTimeseriesResponse = {
+    entityId: null,
+    keywords: [],
+    windowDays,
+    hasInterest: false,
+    hasMentions: false,
+    points: [],
+  };
+
   if (stateRows.length === 0) {
-    return {
-      entityId: null,
-      keywords: [],
-      windowDays,
-      hasInterest: false,
-      hasMentions: false,
-      points: [],
-    };
+    return emptySeries;
   }
 
   const { es, ent } = stateRows[0]!;
+
+  // Stay consistent with the list/detail endpoints: if this trend's canonical
+  // label is in the company's core-vocabulary stoplist, return an empty series
+  // rather than leaking the underlying signal data.
+  if (isCoreVocab(ent.canonicalLabel)) {
+    return emptySeries;
+  }
 
   // Build keyword set from canonical label + aliases (defensive against null).
   const keywords = Array.from(

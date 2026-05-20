@@ -47,7 +47,27 @@ async function getEntityTypesForCompany(
   }
 }
 
-function buildSystemPrompt(types: EntityTypeConfig[]): string {
+/**
+ * Read the per-company core vocabulary — terms that should NEVER be extracted
+ * as a trend because they are part of the company's everyday category language
+ * (e.g. "chocolate", "pizza", "gelato" for a confectionery client).
+ */
+async function getCoreVocabularyForCompany(
+  companyId: number
+): Promise<string[]> {
+  try {
+    const cfg = await storage.getPipelineConfig(companyId);
+    return (cfg.coreVocabulary ?? []).filter((s) => typeof s === "string" && s.trim().length > 0);
+  } catch (err) {
+    logger.warn({ err, companyId }, "Failed to load core vocabulary; treating as empty");
+    return [];
+  }
+}
+
+function buildSystemPrompt(
+  types: EntityTypeConfig[],
+  coreVocabulary: string[]
+): string {
   const guideLines = types
     .map((t) => {
       const examples = t.examples ? ` (e.g. ${t.examples})` : "";
@@ -56,6 +76,15 @@ function buildSystemPrompt(types: EntityTypeConfig[]): string {
     })
     .join("\n");
   const idList = types.map((t) => t.id).join(" | ");
+
+  // Inject the company-specific core vocabulary as an explicit exclusion list,
+  // and always include the generic "no bare category words / no bare locations"
+  // rules. These two rules are the single biggest lever against the pipeline
+  // surfacing things like "Chocolate", "Pizza", or "Milano" as trends.
+  const coreVocabClause = coreVocabulary.length > 0
+    ? `\n- CORE VOCABULARY EXCLUSION: do NOT extract any of these bare category words (they are this company's everyday vocabulary, not trends): ${coreVocabulary.join(", ")}. They are only meaningful as part of a multi-word, qualified entity (e.g. "dubai chocolate" is OK, "chocolate" alone is not).`
+    : "";
+
   return `You are a trend-extraction assistant for a consumer-goods trend radar. For each social media post provided, identify the salient entities and classify them using the taxonomy below.
 
 Entity type taxonomy:
@@ -73,6 +102,8 @@ Rules:
 - Only extract entities explicitly or strongly implied by the text.
 - Normalize labels: title case (or original casing for proper nouns and aesthetic tags), no hashtag symbols, singular form.
 - Pick the most specific type that fits. Use the most-generic / catch-all type only as a last resort.
+- AVOID GENERIC CATEGORY WORDS: do NOT extract bare common nouns like "chocolate", "pizza", "coffee", "pasta", "pastry", "cake", "cookie", "ice cream", "dessert", "snack", "drink" unless they appear with a distinguishing qualifier (e.g. "dubai chocolate", "cottage cheese pasta", "miso brownie"). If the only candidate is a bare category word, return nothing for that signal.
+- AVOID BARE LOCATION NAMES: do NOT extract a bare city, region, or country name (e.g. "Milano", "Toscana", "Paris") as a provenance entity. Only extract a provenance when it qualifies a specific product (e.g. "Piedmontese hazelnut", "single-origin Madagascar chocolate"). Travel/lifestyle mentions of a place alone are not trends.${coreVocabClause}
 - Max 5 entities per signal.
 - If no entities found, use "entities": [].
 - Do not add commentary, only valid JSON.`;
@@ -137,7 +168,12 @@ export async function extractEntitiesForBatch(
   // outputs; otherwise we drop unknown entities rather than silently
   // misclassifying them into an arbitrary user category.
   const fallbackTypeId = allowedTypeIds.has("other") ? "other" : null;
-  const systemPrompt = buildSystemPrompt(entityTypes);
+  // Load the per-company core vocabulary and build a normalized Set for
+  // case-insensitive exact-match filtering. The same list is also injected
+  // into the prompt as a soft instruction; this Set is the hard guarantee.
+  const coreVocabulary = await getCoreVocabularyForCompany(companyId);
+  const coreVocabSet = new Set(coreVocabulary.map((s) => s.trim().toLowerCase()));
+  const systemPrompt = buildSystemPrompt(entityTypes, coreVocabulary);
 
   let results: ExtractionResult[] = [];
   let attempts = 0;
@@ -170,6 +206,12 @@ export async function extractEntitiesForBatch(
     for (const entity of result.entities) {
       if (!entity.label || !entity.type) continue;
 
+      // Hard core-vocabulary filter: drop bare matches against the company's
+      // configured stoplist regardless of what type the LLM assigned. This is
+      // the belt-and-braces complement to the prompt-level instruction.
+      const labelNorm = entity.label.trim().toLowerCase();
+      if (coreVocabSet.has(labelNorm)) continue;
+
       // Coerce unexpected types to the configured fallback so a single bad
       // LLM output (or a type the user removed) doesn't poison the entity
       // table. If the user removed the catch-all "other" type, drop unknown
@@ -185,6 +227,10 @@ export async function extractEntitiesForBatch(
 
       // Resolve synonym if one exists in the synonym table
       const canonicalLabel = await storage.resolveSynonym(companyId, entity.label, safeType);
+
+      // Re-check core vocab against the canonical (post-synonym) label too,
+      // in case a synonym maps an alias onto a core-vocab term.
+      if (coreVocabSet.has(canonicalLabel.trim().toLowerCase())) continue;
 
       // Upsert the entity
       const entityRecord = await storage.upsertEntity(
