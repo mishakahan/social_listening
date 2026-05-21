@@ -424,51 +424,22 @@ export async function getActorRuns(
     conditions.push(eq(tpActorRuns.scoutQueryId, filters.scoutQueryId));
   }
 
-  // Per-row "last signal captured" = the most recent persistence timestamp
-  // attributable to this actor run. Pulls from BOTH storage tables so all
-  // platforms are covered:
-  //   - tp_raw_signals.captured_at for social platforms (IG/TT/RD/XHS)
-  //   - tp_keyword_interest.fetched_at for google_trends (which never writes
-  //     to tp_raw_signals)
-  // Note: captured_at / fetched_at reflect WHEN a row was persisted, which is
-  // close to but not exactly "ingestion completed". Because bulkInsertRawSignals
-  // uses onConflictDoNothing on the social dedup key, re-ingesting an
-  // identical dataset will NOT advance captured_at; the timestamp only moves
-  // when genuinely new rows are inserted. Surface this nuance in the UI with
-  // a tooltip that says "Last signal captured" rather than "Last ingestion".
-  // Left join so runs with no persisted rows still appear (lastIngestedAt = null).
-  const lastIngestionSub = db
-    .select({
-      actorRunId: sql<number>`actor_run_id`.as("actor_run_id"),
-      lastIngestedAt: sql<Date | null>`MAX(captured_at)`.as("last_ingested_at"),
-    })
-    .from(
-      sql`(
-        SELECT actor_run_id, captured_at
-          FROM ${tpRawSignals}
-         WHERE company_id = ${companyId} AND actor_run_id IS NOT NULL
-        UNION ALL
-        SELECT actor_run_id, fetched_at AS captured_at
-          FROM ${tpKeywordInterest}
-         WHERE company_id = ${companyId} AND actor_run_id IS NOT NULL
-      ) AS combined_ingestion`
-    )
-    .groupBy(sql`actor_run_id`)
-    .as("last_ingestion");
-
+  // "Last ingestion" = ingestionCompletedAt, which markIngestionDone/Failed
+  // stamps every time ingestion finishes for this run — including
+  // re-ingestions that dedup to zero new rows (the user-visible symptom that
+  // motivated this column). This is the authoritative answer to "did my
+  // re-ingest do anything?".
   const rows = await db
-    .select({
-      r: tpActorRuns,
-      lastIngestedAt: lastIngestionSub.lastIngestedAt,
-    })
+    .select()
     .from(tpActorRuns)
-    .leftJoin(lastIngestionSub, eq(lastIngestionSub.actorRunId, tpActorRuns.id))
     .where(and(...conditions))
     .orderBy(desc(tpActorRuns.createdAt));
 
-  return rows.map((row) => ({
-    ...row.r,
-    lastIngestedAt: row.lastIngestedAt ? new Date(row.lastIngestedAt).toISOString() : null,
+  return rows.map((r) => ({
+    ...r,
+    lastIngestedAt: r.ingestionCompletedAt
+      ? new Date(r.ingestionCompletedAt).toISOString()
+      : null,
   }));
 }
 
@@ -954,6 +925,7 @@ export async function markIngestionDone(
     .update(tpActorRuns)
     .set({
       ingestionStatus: "done",
+      ingestionCompletedAt: new Date(),
       recordsUsable: stats.usable,
       recordsDropped: stats.dropped,
       oldestPostedAt: stats.oldestPostedAt ?? undefined,
@@ -968,7 +940,11 @@ export async function markIngestionFailed(
 ): Promise<void> {
   await db
     .update(tpActorRuns)
-    .set({ ingestionStatus: "failed", errorMessage: error } as any)
+    .set({
+      ingestionStatus: "failed",
+      ingestionCompletedAt: new Date(),
+      errorMessage: error,
+    } as any)
     .where(eq(tpActorRuns.id, runId));
 }
 

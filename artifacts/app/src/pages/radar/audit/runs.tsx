@@ -770,7 +770,7 @@ export default function RunsAuditPage() {
                       {run.lastIngestedAt && (
                         <div
                           className="text-[10px] text-muted-foreground mt-0.5 tabular-nums"
-                          title={`Last signal captured: ${new Date(run.lastIngestedAt).toLocaleString()}`}
+                          title={`Last ingestion completed: ${new Date(run.lastIngestedAt).toLocaleString()}`}
                         >
                           {fmt.time(run.lastIngestedAt)}
                         </div>

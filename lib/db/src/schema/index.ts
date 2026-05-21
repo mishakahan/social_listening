@@ -194,6 +194,12 @@ export const tpActorRuns = pgTable("tp_actor_runs", {
   costUsd: doublePrecision("cost_usd"),
   errorMessage: text("error_message"),
   ingestionStatus: text("ingestion_status").notNull().default("pending"),
+  // Stamped by markIngestionDone / markIngestionFailed every time ingestion
+  // finishes — including re-ingestions that dedup to zero new rows. This is
+  // the authoritative "when did we last process this run" timestamp; do NOT
+  // confuse it with completedAt (Apify finish time, never re-set) or with
+  // MAX(tp_raw_signals.captured_at) (only advances when NEW rows insert).
+  ingestionCompletedAt: timestamp("ingestion_completed_at"),
   rawLog: jsonb("raw_log")
     .$type<Array<{ ts: string; level: string; msg: string }>>()
     .default([]),
