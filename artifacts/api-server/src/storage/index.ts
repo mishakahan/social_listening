@@ -1017,16 +1017,24 @@ export async function getKeywordInterestSeries(
     .orderBy(asc(tpKeywordInterest.bucketDate));
 }
 
-export async function getRawSignalsByCompany(
-  companyId: number,
-  filters?: {
-    actorRunId?: number;
-    platform?: string;
-    entityExtractionStatus?: string;
-    limit?: number;
-    offset?: number;
-  }
-): Promise<TpRawSignal[]> {
+export type RawSignalSortBy = "capturedAt" | "postedAt" | "engagementScore";
+export type SortDir = "asc" | "desc";
+
+export type RawSignalFilters = {
+  actorRunId?: number;
+  platform?: string;
+  entityExtractionStatus?: string;
+  // Filter by capturedAt (a.k.a. "date extracted" in the UI — the moment we
+  // persisted the signal from the Apify dataset).
+  extractedAfter?: Date;
+  extractedBefore?: Date;
+  sortBy?: RawSignalSortBy;
+  sortDir?: SortDir;
+  limit?: number;
+  offset?: number;
+};
+
+function rawSignalConditions(companyId: number, filters?: RawSignalFilters) {
   const conditions = [eq(tpRawSignals.companyId, companyId)];
   if (filters?.actorRunId !== undefined) {
     conditions.push(eq(tpRawSignals.actorRunId, filters.actorRunId));
@@ -1037,30 +1045,48 @@ export async function getRawSignalsByCompany(
   if (filters?.entityExtractionStatus) {
     conditions.push(eq(tpRawSignals.entityExtractionStatus, filters.entityExtractionStatus));
   }
-  const q = db
+  if (filters?.extractedAfter) {
+    conditions.push(gte(tpRawSignals.capturedAt, filters.extractedAfter));
+  }
+  if (filters?.extractedBefore) {
+    conditions.push(lte(tpRawSignals.capturedAt, filters.extractedBefore));
+  }
+  return conditions;
+}
+
+export async function getRawSignalsByCompany(
+  companyId: number,
+  filters?: RawSignalFilters
+): Promise<TpRawSignal[]> {
+  const conditions = rawSignalConditions(companyId, filters);
+  const sortDir = filters?.sortDir ?? "desc";
+  const sortCol =
+    filters?.sortBy === "postedAt"
+      ? tpRawSignals.postedAt
+      : filters?.sortBy === "engagementScore"
+        ? tpRawSignals.engagementScore
+        : tpRawSignals.capturedAt;
+  // Stable secondary sort by id so paginated results don't shuffle when many
+  // rows share the same timestamp (common for engagementScore ties and for
+  // signals ingested in the same batch).
+  const order =
+    sortDir === "asc"
+      ? [asc(sortCol), asc(tpRawSignals.id)]
+      : [desc(sortCol), desc(tpRawSignals.id)];
+  return db
     .select()
     .from(tpRawSignals)
     .where(and(...conditions))
-    .orderBy(desc(tpRawSignals.capturedAt))
+    .orderBy(...order)
     .limit(filters?.limit ?? 100)
     .offset(filters?.offset ?? 0);
-  return q;
 }
 
 export async function getRawSignalCount(
   companyId: number,
-  filters?: { actorRunId?: number; platform?: string; entityExtractionStatus?: string }
+  filters?: RawSignalFilters
 ): Promise<number> {
-  const conditions = [eq(tpRawSignals.companyId, companyId)];
-  if (filters?.actorRunId !== undefined) {
-    conditions.push(eq(tpRawSignals.actorRunId, filters.actorRunId));
-  }
-  if (filters?.platform) {
-    conditions.push(eq(tpRawSignals.platform, filters.platform));
-  }
-  if (filters?.entityExtractionStatus) {
-    conditions.push(eq(tpRawSignals.entityExtractionStatus, filters.entityExtractionStatus));
-  }
+  const conditions = rawSignalConditions(companyId, filters);
   const rows = await db
     .select({ cnt: count() })
     .from(tpRawSignals)

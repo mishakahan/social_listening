@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Trash2, Loader2 } from "lucide-react";
+import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Trash2, Loader2, ArrowUp, ArrowDown, ArrowUpDown, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   fetchPipelineRunStatus,
@@ -44,17 +44,41 @@ const PLATFORM_OPTIONS = ["all", "instagram", "tiktok", "reddit", "xiaohongshu",
 const EXTRACTION_OPTIONS = ["all", "pending", "done", "failed"];
 const PAGE_SIZE = 50;
 
+type SortBy = "capturedAt" | "postedAt" | "engagementScore";
+type SortDir = "asc" | "desc";
+
+interface FetchArgs {
+  platform: string;
+  extractionStatus: string;
+  page: number;
+  sortBy: SortBy;
+  sortDir: SortDir;
+  extractedAfter: string;
+  extractedBefore: string;
+}
+
 async function fetchSignals(
-  platform: string,
-  extractionStatus: string,
-  page: number
+  args: FetchArgs
 ): Promise<{ signals: RawSignal[]; total: number }> {
   const params = new URLSearchParams({
     limit: String(PAGE_SIZE),
-    offset: String(page * PAGE_SIZE),
+    offset: String(args.page * PAGE_SIZE),
+    sortBy: args.sortBy,
+    sortDir: args.sortDir,
   });
-  if (platform !== "all") params.set("platform", platform);
-  if (extractionStatus !== "all") params.set("entityExtractionStatus", extractionStatus);
+  if (args.platform !== "all") params.set("platform", args.platform);
+  if (args.extractionStatus !== "all") params.set("entityExtractionStatus", args.extractionStatus);
+  // Date inputs are local YYYY-MM-DD; convert to ISO timestamps covering the
+  // full day on each end so users get inclusive results without needing to
+  // think about timezones.
+  if (args.extractedAfter) {
+    const d = new Date(args.extractedAfter + "T00:00:00");
+    if (!isNaN(d.getTime())) params.set("extractedAfter", d.toISOString());
+  }
+  if (args.extractedBefore) {
+    const d = new Date(args.extractedBefore + "T23:59:59.999");
+    if (!isNaN(d.getTime())) params.set("extractedBefore", d.toISOString());
+  }
   const res = await fetch(`/api/pipeline/companies/1/signals?${params}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -104,12 +128,56 @@ export default function SignalsAuditPage() {
   const [extractionStatus, setExtractionStatus] = useState("all");
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [sortBy, setSortBy] = useState<SortBy>("capturedAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [extractedAfter, setExtractedAfter] = useState("");
+  const [extractedBefore, setExtractedBefore] = useState("");
+
+  const fetchArgs: FetchArgs = {
+    platform,
+    extractionStatus,
+    page,
+    sortBy,
+    sortDir,
+    extractedAfter,
+    extractedBefore,
+  };
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["signals", platform, extractionStatus, page],
-    queryFn: () => fetchSignals(platform, extractionStatus, page),
+    queryKey: [
+      "signals",
+      platform,
+      extractionStatus,
+      page,
+      sortBy,
+      sortDir,
+      extractedAfter,
+      extractedBefore,
+    ],
+    queryFn: () => fetchSignals(fetchArgs),
     refetchOnWindowFocus: false,
   });
+
+  // Clicking a sortable header: toggle direction if same column, otherwise
+  // switch to the new column with a sensible default direction (desc for
+  // dates and engagement — newest/biggest first).
+  function handleSort(col: SortBy) {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+    setPage(0);
+    setSelected(new Set());
+  }
+
+  function SortIcon({ col }: { col: SortBy }) {
+    if (sortBy !== col) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-40" />;
+    return sortDir === "asc"
+      ? <ArrowUp className="inline h-3 w-3 ml-1" />
+      : <ArrowDown className="inline h-3 w-3 ml-1" />;
+  }
 
   const { data: pipelineStatus } = useQuery<PipelineRunStatus>({
     queryKey: ["pipeline-run-status", 1],
@@ -329,6 +397,49 @@ export default function SignalsAuditPage() {
           </SelectContent>
         </Select>
 
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Extracted:</span>
+          <input
+            type="date"
+            value={extractedAfter}
+            onChange={(e) => {
+              setExtractedAfter(e.target.value);
+              setPage(0);
+              setSelected(new Set());
+            }}
+            className="h-8 text-xs border border-input bg-background rounded-md px-2"
+            title="Show signals extracted on or after this date"
+          />
+          <span className="text-xs text-muted-foreground">to</span>
+          <input
+            type="date"
+            value={extractedBefore}
+            onChange={(e) => {
+              setExtractedBefore(e.target.value);
+              setPage(0);
+              setSelected(new Set());
+            }}
+            className="h-8 text-xs border border-input bg-background rounded-md px-2"
+            title="Show signals extracted on or before this date"
+          />
+          {(extractedAfter || extractedBefore) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0"
+              onClick={() => {
+                setExtractedAfter("");
+                setExtractedBefore("");
+                setPage(0);
+                setSelected(new Set());
+              }}
+              title="Clear extracted date filter"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+
         <span className="text-xs text-muted-foreground ml-auto">
           {total.toLocaleString()} signal{total !== 1 ? "s" : ""}
         </span>
@@ -386,10 +497,29 @@ export default function SignalsAuditPage() {
                   </th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground w-8">ID</th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground">Platform</th>
-                  <th className="px-3 py-2.5 font-medium text-muted-foreground">Posted</th>
+                  <th
+                    className="px-3 py-2.5 font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground"
+                    onClick={() => handleSort("postedAt")}
+                    title="Sort by post date"
+                  >
+                    Posted<SortIcon col="postedAt" />
+                  </th>
+                  <th
+                    className="px-3 py-2.5 font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground"
+                    onClick={() => handleSort("capturedAt")}
+                    title="Sort by date extracted (when we ingested the signal)"
+                  >
+                    Extracted<SortIcon col="capturedAt" />
+                  </th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground">Author</th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground w-24">Lang</th>
-                  <th className="px-3 py-2.5 font-medium text-muted-foreground w-20">Eng.</th>
+                  <th
+                    className="px-3 py-2.5 font-medium text-muted-foreground w-20 cursor-pointer select-none hover:text-foreground"
+                    onClick={() => handleSort("engagementScore")}
+                    title="Sort by engagement score"
+                  >
+                    Eng.<SortIcon col="engagementScore" />
+                  </th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground">Text preview</th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground">Extraction</th>
                 </tr>
@@ -420,6 +550,12 @@ export default function SignalsAuditPage() {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{fmtDate(s.postedAt)}</td>
+                    <td
+                      className="px-3 py-2 text-muted-foreground"
+                      title={s.capturedAt ? new Date(s.capturedAt).toLocaleString() : ""}
+                    >
+                      {fmtDate(s.capturedAt)}
+                    </td>
                     <td className="px-3 py-2 font-mono text-muted-foreground max-w-[120px] truncate">
                       {s.authorHandle ?? "—"}
                     </td>

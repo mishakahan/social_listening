@@ -1311,6 +1311,26 @@ router.get("/companies/:id/signals", async (req, res) => {
     if (req.query.platform) filters.platform = req.query.platform as string;
     if (req.query.actorRunId) filters.actorRunId = Number(req.query.actorRunId);
     if (req.query.entityExtractionStatus) filters.entityExtractionStatus = req.query.entityExtractionStatus as string;
+    // Sort: capturedAt | postedAt | engagementScore; dir: asc | desc
+    const allowedSort = new Set(["capturedAt", "postedAt", "engagementScore"]);
+    if (req.query.sortBy && allowedSort.has(String(req.query.sortBy))) {
+      filters.sortBy = req.query.sortBy as string;
+    }
+    if (req.query.sortDir === "asc" || req.query.sortDir === "desc") {
+      filters.sortDir = req.query.sortDir;
+    }
+    // "Date extracted" range filter — applies to capturedAt. Accepts ISO
+    // strings; invalid values are silently ignored so a malformed query
+    // string returns results rather than 500.
+    const parseDate = (v: unknown): Date | undefined => {
+      if (typeof v !== "string" || !v) return undefined;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? undefined : d;
+    };
+    const after = parseDate(req.query.extractedAfter);
+    const before = parseDate(req.query.extractedBefore);
+    if (after) filters.extractedAfter = after;
+    if (before) filters.extractedBefore = before;
 
     const [signals, total] = await Promise.all([
       storage.getRawSignalsByCompany(companyId, filters),
