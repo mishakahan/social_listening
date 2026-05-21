@@ -289,25 +289,25 @@ export async function getScoutQueries(
     conditions.push(eq(tpScoutQueries.seedItemId, filters.seedItemId));
   }
 
-  // Join the most-recent ingestion timestamp per scout query.
-  // "Latest ingestion" = MAX(tp_raw_signals.captured_at) for this scout
-  // query — i.e. when rows last actually landed in our pipeline. We
-  // deliberately do NOT use tp_actor_runs.completed_at: that's the Apify
-  // run completion time, which doesn't change when an existing run is
-  // re-ingested. captured_at reflects when WE persisted the row, so it
-  // correctly advances after re-ingestion / retry / bulk re-ingest.
-  // Left join so queries with zero ingested signals still appear with
-  // lastIngestedAt = null.
+  // "Latest ingestion" per scout query = MAX(ingestionCompletedAt) across
+  // all actor runs launched from this query. ingestionCompletedAt is stamped
+  // by markIngestionDone/Failed on every ingestion finish — including
+  // re-ingestions that dedup to zero new rows — so this advances correctly
+  // on retry / bulk re-ingest. (Previously we used MAX(tp_raw_signals.
+  // captured_at), but that only moves when NEW rows insert, making a no-op
+  // re-ingest look like nothing happened.) Left join so queries with no
+  // runs still appear with lastIngestedAt = null.
   const lastIngestionSub = db
     .select({
-      scoutQueryId: tpRawSignals.scoutQueryId,
-      lastIngestedAt: sql<Date | null>`MAX(${tpRawSignals.capturedAt})`.as(
-        "last_ingested_at"
-      ),
+      scoutQueryId: tpActorRuns.scoutQueryId,
+      lastIngestedAt:
+        sql<Date | null>`MAX(${tpActorRuns.ingestionCompletedAt})`.as(
+          "last_ingested_at"
+        ),
     })
-    .from(tpRawSignals)
-    .where(eq(tpRawSignals.companyId, companyId))
-    .groupBy(tpRawSignals.scoutQueryId)
+    .from(tpActorRuns)
+    .where(eq(tpActorRuns.companyId, companyId))
+    .groupBy(tpActorRuns.scoutQueryId)
     .as("last_ingestion");
 
   const rows = await db
