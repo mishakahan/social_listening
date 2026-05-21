@@ -405,10 +405,14 @@ export async function getActorRunByApifyRunId(
   return rows[0];
 }
 
+export type ActorRunWithIngestion = TpActorRun & {
+  lastIngestedAt: string | null;
+};
+
 export async function getActorRuns(
   companyId: number,
   filters?: { platform?: string; status?: string; scoutQueryId?: number }
-): Promise<TpActorRun[]> {
+): Promise<ActorRunWithIngestion[]> {
   const conditions = [eq(tpActorRuns.companyId, companyId)];
   if (filters?.platform) {
     conditions.push(eq(tpActorRuns.platform, filters.platform));
@@ -419,11 +423,53 @@ export async function getActorRuns(
   if (filters?.scoutQueryId !== undefined) {
     conditions.push(eq(tpActorRuns.scoutQueryId, filters.scoutQueryId));
   }
-  return db
-    .select()
+
+  // Per-row "last signal captured" = the most recent persistence timestamp
+  // attributable to this actor run. Pulls from BOTH storage tables so all
+  // platforms are covered:
+  //   - tp_raw_signals.captured_at for social platforms (IG/TT/RD/XHS)
+  //   - tp_keyword_interest.fetched_at for google_trends (which never writes
+  //     to tp_raw_signals)
+  // Note: captured_at / fetched_at reflect WHEN a row was persisted, which is
+  // close to but not exactly "ingestion completed". Because bulkInsertRawSignals
+  // uses onConflictDoNothing on the social dedup key, re-ingesting an
+  // identical dataset will NOT advance captured_at; the timestamp only moves
+  // when genuinely new rows are inserted. Surface this nuance in the UI with
+  // a tooltip that says "Last signal captured" rather than "Last ingestion".
+  // Left join so runs with no persisted rows still appear (lastIngestedAt = null).
+  const lastIngestionSub = db
+    .select({
+      actorRunId: sql<number>`actor_run_id`.as("actor_run_id"),
+      lastIngestedAt: sql<Date | null>`MAX(captured_at)`.as("last_ingested_at"),
+    })
+    .from(
+      sql`(
+        SELECT actor_run_id, captured_at
+          FROM ${tpRawSignals}
+         WHERE company_id = ${companyId} AND actor_run_id IS NOT NULL
+        UNION ALL
+        SELECT actor_run_id, fetched_at AS captured_at
+          FROM ${tpKeywordInterest}
+         WHERE company_id = ${companyId} AND actor_run_id IS NOT NULL
+      ) AS combined_ingestion`
+    )
+    .groupBy(sql`actor_run_id`)
+    .as("last_ingestion");
+
+  const rows = await db
+    .select({
+      r: tpActorRuns,
+      lastIngestedAt: lastIngestionSub.lastIngestedAt,
+    })
     .from(tpActorRuns)
+    .leftJoin(lastIngestionSub, eq(lastIngestionSub.actorRunId, tpActorRuns.id))
     .where(and(...conditions))
     .orderBy(desc(tpActorRuns.createdAt));
+
+  return rows.map((row) => ({
+    ...row.r,
+    lastIngestedAt: row.lastIngestedAt ? new Date(row.lastIngestedAt).toISOString() : null,
+  }));
 }
 
 export async function updateActorRun(

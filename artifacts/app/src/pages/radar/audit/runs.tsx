@@ -37,6 +37,7 @@ interface ActorRun {
   completedAt?: string;
   errorMessage?: string;
   ingestionStatus?: string;
+  lastIngestedAt?: string | null;
   scoutQueryId?: number | null;
   // The launcher copies the scout query's topic / geo / language / keywords /
   // hashtags into inputPayload at the moment of launch, so each row carries a
@@ -765,6 +766,14 @@ export default function RunsAuditPage() {
                         ].join(" ")}>
                           {run.ingestionStatus}
                         </span>
+                      )}
+                      {run.lastIngestedAt && (
+                        <div
+                          className="text-[10px] text-muted-foreground mt-0.5 tabular-nums"
+                          title={`Last signal captured: ${new Date(run.lastIngestedAt).toLocaleString()}`}
+                        >
+                          {fmt.time(run.lastIngestedAt)}
+                        </div>
                       )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
