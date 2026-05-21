@@ -32,6 +32,25 @@ interface ScoutQuery {
   hashtags: string[];
   scrapeCadence: string;
   active: boolean;
+  lastIngestedAt: string | null;
+}
+
+// Compact relative-time formatter for the per-query "last ingested" stamp.
+// Falls back to a short ISO date for anything older than ~30 days.
+function formatRelative(iso: string | null): string {
+  if (!iso) return "never";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "never";
+  const diffMs = Date.now() - then;
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toISOString().slice(0, 10);
 }
 
 async function fetchQueries(): Promise<ScoutQuery[]> {
@@ -90,6 +109,7 @@ function CellEntry({ query, selected, onSelect, onToggle, onDelete, isToggling, 
     query.keywords?.length ? `Keywords: ${query.keywords.join(", ")}` : null,
     query.hashtags?.length ? `Hashtags: ${query.hashtags.map(h => h.startsWith("#") ? h : `#${h}`).join(", ")}` : null,
     query.scrapeCadence ? `Cadence: ${query.scrapeCadence}` : null,
+    `Last ingested: ${query.lastIngestedAt ? new Date(query.lastIngestedAt).toLocaleString() : "never"}`,
   ].filter(Boolean).join("\n");
 
   return (
@@ -124,6 +144,23 @@ function CellEntry({ query, selected, onSelect, onToggle, onDelete, isToggling, 
             : "bg-gray-300 dark:bg-gray-600 hover:bg-gray-400"
         }`}
       />
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className={`text-[10px] tabular-nums flex-shrink-0 cursor-default ${
+                query.lastIngestedAt ? "text-muted-foreground" : "text-muted-foreground/40 italic"
+              }`}
+            >
+              {formatRelative(query.lastIngestedAt)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            Last successful ingestion:{" "}
+            {query.lastIngestedAt ? new Date(query.lastIngestedAt).toLocaleString() : "never"}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <button
         title="Delete query"
         disabled={isDeleting}

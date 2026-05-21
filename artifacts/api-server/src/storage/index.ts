@@ -262,6 +262,10 @@ export async function createScoutQuery(
   return rows[0]!;
 }
 
+export type ScoutQueryWithIngestion = TpScoutQuery & {
+  lastIngestedAt: string | null;
+};
+
 export async function getScoutQueries(
   companyId: number,
   filters?: {
@@ -270,7 +274,7 @@ export async function getScoutQueries(
     active?: boolean;
     seedItemId?: number;
   }
-): Promise<TpScoutQuery[]> {
+): Promise<ScoutQueryWithIngestion[]> {
   const conditions = [eq(tpScoutQueries.companyId, companyId)];
   if (filters?.geography) {
     conditions.push(eq(tpScoutQueries.geography, filters.geography));
@@ -284,11 +288,43 @@ export async function getScoutQueries(
   if (filters?.seedItemId !== undefined) {
     conditions.push(eq(tpScoutQueries.seedItemId, filters.seedItemId));
   }
-  return db
-    .select()
+
+  // Join the most-recent successful ingestion timestamp per scout query.
+  // "Latest ingestion" = the newest `completed_at` on a tp_actor_runs row for
+  // this scout query whose ingestion has reached 'done'. We use a left join on
+  // an aggregated subquery so queries with no successful ingestion still
+  // appear (with lastIngestedAt = null).
+  const lastIngestionSub = db
+    .select({
+      scoutQueryId: tpActorRuns.scoutQueryId,
+      lastIngestedAt: sql<Date | null>`MAX(${tpActorRuns.completedAt})`.as(
+        "last_ingested_at"
+      ),
+    })
+    .from(tpActorRuns)
+    .where(
+      and(
+        eq(tpActorRuns.companyId, companyId),
+        eq(tpActorRuns.ingestionStatus, "done")
+      )
+    )
+    .groupBy(tpActorRuns.scoutQueryId)
+    .as("last_ingestion");
+
+  const rows = await db
+    .select({
+      q: tpScoutQueries,
+      lastIngestedAt: lastIngestionSub.lastIngestedAt,
+    })
     .from(tpScoutQueries)
+    .leftJoin(lastIngestionSub, eq(lastIngestionSub.scoutQueryId, tpScoutQueries.id))
     .where(and(...conditions))
     .orderBy(asc(tpScoutQueries.createdAt));
+
+  return rows.map((r) => ({
+    ...r.q,
+    lastIngestedAt: r.lastIngestedAt ? new Date(r.lastIngestedAt).toISOString() : null,
+  }));
 }
 
 export async function getScoutQuery(
