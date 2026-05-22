@@ -486,12 +486,89 @@ interface CompositeCandidate {
   windowStart: string;
   windowEnd: string;
   jointCount: number;
+  priorJointCount: number;
   countA: number;
   countB: number;
   totalSignals: number;
   expectedCount: number;
   lift: number;
+  sparkline: number[];
   computedAt: string;
+}
+
+// Tiny inline sparkline — SVG polyline scaled to its container. Empty or
+// all-zero series renders a flat axis line so users see a baseline rather
+// than nothing at all.
+function Sparkline({ data }: { data: number[] }) {
+  const w = 96;
+  const h = 28;
+  const pad = 2;
+  if (!data || data.length === 0) {
+    return (
+      <svg width={w} height={h} className="text-muted-foreground/40">
+        <line
+          x1={pad}
+          y1={h / 2}
+          x2={w - pad}
+          y2={h / 2}
+          stroke="currentColor"
+          strokeWidth={1}
+          strokeDasharray="2,2"
+        />
+      </svg>
+    );
+  }
+  const max = Math.max(1, ...data);
+  const step = data.length > 1 ? (w - pad * 2) / (data.length - 1) : 0;
+  const points = data
+    .map((v, i) => {
+      const x = pad + i * step;
+      const y = h - pad - (v / max) * (h - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg width={w} height={h} className="text-foreground">
+      <polyline
+        points={points}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PriorDelta({
+  current,
+  prior,
+}: {
+  current: number;
+  prior: number;
+}) {
+  if (prior === 0) {
+    return (
+      <span className="text-[10px] text-muted-foreground tabular-nums">
+        new
+      </span>
+    );
+  }
+  const pct = ((current - prior) / prior) * 100;
+  const isPos = pct > 0;
+  const isNeg = pct < 0;
+  const color = isPos
+    ? "text-green-600"
+    : isNeg
+      ? "text-red-500"
+      : "text-muted-foreground";
+  return (
+    <span className={`text-[10px] tabular-nums ${color}`}>
+      {isPos ? "+" : ""}
+      {pct.toFixed(0)}% vs prior
+    </span>
+  );
 }
 
 interface CompositeResponse {
@@ -566,8 +643,9 @@ function CompositeTrendsTab() {
         </div>
       ) : (
         <div className="rounded-xl border border-border overflow-hidden">
-          <div className="grid grid-cols-[3fr_88px_88px_88px_120px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          <div className="grid grid-cols-[3fr_104px_88px_88px_88px_120px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
             <div>Pair</div>
+            <div className="text-right">Trend</div>
             <div className="text-right">Joint</div>
             <div className="text-right">Expected</div>
             <div className="text-right">Lift</div>
@@ -576,40 +654,69 @@ function CompositeTrendsTab() {
           </div>
           <div className="divide-y divide-border">
             {candidates.map((c) => (
-              <div
-                key={c.id}
-                className="grid grid-cols-[3fr_88px_88px_88px_120px_140px] gap-3 px-5 py-3 items-center text-sm"
-              >
-                <div>
-                  <div className="font-medium text-foreground leading-tight">
-                    {c.entityALabel}{" "}
-                    <span className="text-muted-foreground">×</span>{" "}
-                    {c.entityBLabel}
-                  </div>
-                  {(c.entityAType || c.entityBType) && (
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {[c.entityAType, c.entityBType].filter(Boolean).join(" · ")}
-                    </div>
-                  )}
-                </div>
-                <div className="text-right tabular-nums">{c.jointCount}</div>
-                <div className="text-right tabular-nums text-muted-foreground">
-                  {c.expectedCount.toFixed(2)}
-                </div>
-                <div className="text-right tabular-nums font-medium text-foreground">
-                  {c.lift.toFixed(1)}×
-                </div>
-                <div className="text-right tabular-nums text-muted-foreground text-xs">
-                  {c.countA} / {c.countB}
-                </div>
-                <div className="text-right text-xs text-muted-foreground">
-                  {c.windowStart} → {c.windowEnd}
-                </div>
-              </div>
+              <CompositeRow key={c.id} c={c} />
             ))}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function CompositeRow({ c }: { c: CompositeCandidate }) {
+  const [, navigate] = useLocation();
+  const goEntity = (id: number) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Deep-link into the entities audit page; both labels are clickable so
+    // users can jump straight to either side of the pair.
+    navigate(`/radar/audit/entities?entityId=${id}`);
+  };
+  return (
+    <div className="grid grid-cols-[3fr_104px_88px_88px_88px_120px_140px] gap-3 px-5 py-3 items-center text-sm">
+      <div>
+        <div className="font-medium leading-tight">
+          <button
+            type="button"
+            onClick={goEntity(c.entityAId)}
+            className="text-foreground hover:text-primary hover:underline underline-offset-2"
+          >
+            {c.entityALabel}
+          </button>{" "}
+          <span className="text-muted-foreground">×</span>{" "}
+          <button
+            type="button"
+            onClick={goEntity(c.entityBId)}
+            className="text-foreground hover:text-primary hover:underline underline-offset-2"
+          >
+            {c.entityBLabel}
+          </button>
+        </div>
+        {(c.entityAType || c.entityBType) && (
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {[c.entityAType, c.entityBType].filter(Boolean).join(" · ")}
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end">
+        <Sparkline data={c.sparkline} />
+      </div>
+      <div className="text-right">
+        <div className="tabular-nums">{c.jointCount}</div>
+        <PriorDelta current={c.jointCount} prior={c.priorJointCount} />
+      </div>
+      <div className="text-right tabular-nums text-muted-foreground">
+        {c.expectedCount.toFixed(2)}
+      </div>
+      <div className="text-right tabular-nums font-medium text-foreground">
+        {c.lift.toFixed(1)}×
+      </div>
+      <div className="text-right tabular-nums text-muted-foreground text-xs">
+        {c.countA} / {c.countB}
+      </div>
+      <div className="text-right text-xs text-muted-foreground">
+        {c.windowStart} → {c.windowEnd}
+      </div>
     </div>
   );
 }

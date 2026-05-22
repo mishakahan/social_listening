@@ -735,11 +735,13 @@ export interface CompositeCandidateRow {
   windowStart: string;
   windowEnd: string;
   jointCount: number;
+  priorJointCount: number;
   countA: number;
   countB: number;
   totalSignals: number;
   expectedCount: number;
   lift: number;
+  sparkline: number[];
   computedAt: string;
 }
 
@@ -764,11 +766,13 @@ export async function getCompositeTrendCandidates(
       c.window_start  AS "windowStart",
       c.window_end    AS "windowEnd",
       c.joint_count   AS "jointCount",
+      c.prior_joint_count AS "priorJointCount",
       c.count_a       AS "countA",
       c.count_b       AS "countB",
       c.total_signals AS "totalSignals",
       c.expected_count AS "expectedCount",
       c.lift          AS "lift",
+      c.sparkline     AS "sparkline",
       c.computed_at   AS "computedAt"
     FROM ${tpCompositeTrendCandidates} c
     INNER JOIN ${tpEntities} ent_a ON ent_a.id = c.entity_a_id
@@ -789,11 +793,15 @@ export async function getCompositeTrendCandidates(
     windowStart: String(r.windowStart),
     windowEnd: String(r.windowEnd),
     jointCount: Number(r.jointCount),
+    priorJointCount: Number(r.priorJointCount ?? 0),
     countA: Number(r.countA),
     countB: Number(r.countB),
     totalSignals: Number(r.totalSignals),
     expectedCount: Number(r.expectedCount),
     lift: Number(r.lift),
+    sparkline: Array.isArray(r.sparkline)
+      ? (r.sparkline as unknown[]).map((v) => Number(v) || 0)
+      : [],
     computedAt: r.computedAt instanceof Date
       ? r.computedAt.toISOString()
       : String(r.computedAt),
@@ -812,11 +820,13 @@ export async function replaceCompositeTrendCandidates(
     windowStart: string;
     windowEnd: string;
     jointCount: number;
+    priorJointCount: number;
     countA: number;
     countB: number;
     totalSignals: number;
     expectedCount: number;
     lift: number;
+    sparkline: number[];
   }>,
   computedAt: Date = new Date()
 ): Promise<void> {

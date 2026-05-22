@@ -796,11 +796,23 @@ export const tpCompositeTrendCandidates = pgTable(
     windowStart: text("window_start").notNull(),
     windowEnd: text("window_end").notNull(),
     jointCount: integer("joint_count").notNull(),
+    // Prior-window joint count for the same pair (window immediately
+    // preceding `windowStart`, same length). Used by the UI to show a
+    // current-vs-prior delta. Zero when the pair didn't co-occur in the
+    // prior window.
+    priorJointCount: integer("prior_joint_count").notNull().default(0),
     countA: integer("count_a").notNull(),
     countB: integer("count_b").notNull(),
     totalSignals: integer("total_signals").notNull(),
     expectedCount: doublePrecision("expected_count").notNull(),
     lift: doublePrecision("lift").notNull(),
+    // Daily joint-count series across the current window (oldest → newest,
+    // length = compositeWindowDays). Stored as JSON to keep the read path a
+    // single query — re-deriving on every GET would be wasteful.
+    sparkline: jsonb("sparkline")
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     computedAt: timestamp("computed_at").defaultNow().notNull(),
   },
   (t) => [

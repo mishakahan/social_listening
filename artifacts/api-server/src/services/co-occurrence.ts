@@ -60,6 +60,13 @@ export async function runCoOccurrenceAggregation(
   const now = new Date();
   const windowEndDate = now;
   const windowStartDate = new Date(now.getTime() - windowDays * 86400_000);
+  // Prior baseline = the window of equal length immediately preceding the
+  // current one. Required by the task spec so the UI can show
+  // current-vs-prior joint counts alongside lift.
+  const priorWindowEndDate = windowStartDate;
+  const priorWindowStartDate = new Date(
+    priorWindowEndDate.getTime() - windowDays * 86400_000
+  );
   const windowStart = toDateStr(windowStartDate);
   const windowEnd = toDateStr(windowEndDate);
 
@@ -82,6 +89,21 @@ export async function runCoOccurrenceAggregation(
     id: number;
     label: string;
     deletedAt: Date | null;
+  }> = [];
+  // Prior-window joint count per pair. Pairs absent from the prior window
+  // simply don't appear here (treated as 0 by the lookup).
+  let priorPairRows: Array<{
+    entityAId: number;
+    entityBId: number;
+    joint: number;
+  }> = [];
+  // Per-pair daily joint counts across the current window. Each row is one
+  // (a, b, day) bucket; we re-shape into fixed-length arrays after the tx.
+  let dailyRows: Array<{
+    entityAId: number;
+    entityBId: number;
+    day: string;
+    joint: number;
   }> = [];
 
   await db.transaction(async (tx) => {
@@ -183,6 +205,58 @@ export async function runCoOccurrenceAggregation(
       label: string;
       deletedAt: Date | null;
     }>;
+
+    // Prior-window joint counts for the same candidate pairs. No HAVING
+    // floor here — a pair that surfaces this window but had zero prior
+    // mentions should still get priorJointCount=0 (lookup miss handles it).
+    priorPairRows = (await tx
+      .select({
+        entityAId: tpEntityCoOccurrences.entityAId,
+        entityBId: tpEntityCoOccurrences.entityBId,
+        joint: sql<number>`COUNT(DISTINCT ${tpEntityCoOccurrences.rawSignalId})::int`,
+      })
+      .from(tpEntityCoOccurrences)
+      .where(
+        and(
+          eq(tpEntityCoOccurrences.companyId, companyId),
+          gte(tpEntityCoOccurrences.postedAt, priorWindowStartDate),
+          lte(tpEntityCoOccurrences.postedAt, priorWindowEndDate)
+        )
+      )
+      .groupBy(
+        tpEntityCoOccurrences.entityAId,
+        tpEntityCoOccurrences.entityBId
+      )) as Array<{ entityAId: number; entityBId: number; joint: number }>;
+
+    // Daily joint counts for sparkline. Bucket on date_trunc('day', posted_at)
+    // and DISTINCT raw_signal_id so a post mentioning the pair multiple
+    // times still counts as one for that day. We re-shape into a fixed-length
+    // array (oldest → newest) below, indexed by day offset from windowStart.
+    dailyRows = (await tx
+      .select({
+        entityAId: tpEntityCoOccurrences.entityAId,
+        entityBId: tpEntityCoOccurrences.entityBId,
+        day: sql<string>`to_char(date_trunc('day', ${tpEntityCoOccurrences.postedAt}), 'YYYY-MM-DD')`,
+        joint: sql<number>`COUNT(DISTINCT ${tpEntityCoOccurrences.rawSignalId})::int`,
+      })
+      .from(tpEntityCoOccurrences)
+      .where(
+        and(
+          eq(tpEntityCoOccurrences.companyId, companyId),
+          gte(tpEntityCoOccurrences.postedAt, windowStartDate),
+          lte(tpEntityCoOccurrences.postedAt, windowEndDate)
+        )
+      )
+      .groupBy(
+        tpEntityCoOccurrences.entityAId,
+        tpEntityCoOccurrences.entityBId,
+        sql`date_trunc('day', ${tpEntityCoOccurrences.postedAt})`
+      )) as Array<{
+      entityAId: number;
+      entityBId: number;
+      day: string;
+      joint: number;
+    }>;
   });
 
   if (totalSignals === 0) {
@@ -227,6 +301,35 @@ export async function runCoOccurrenceAggregation(
     labelByEntity.set(Number(r.id), r.label);
     if (r.deletedAt) deletedEntity.add(Number(r.id));
   }
+  const priorByPair = new Map<string, number>();
+  for (const r of priorPairRows) {
+    priorByPair.set(
+      `${Number(r.entityAId)}:${Number(r.entityBId)}`,
+      Number(r.joint) || 0
+    );
+  }
+  // Build a fixed-length sparkline (length = windowDays) per pair, indexed
+  // by day-offset from windowStartDate. Missing days are 0.
+  const sparkByPair = new Map<string, number[]>();
+  const startMs = Date.UTC(
+    windowStartDate.getUTCFullYear(),
+    windowStartDate.getUTCMonth(),
+    windowStartDate.getUTCDate()
+  );
+  for (const r of dailyRows) {
+    const key = `${Number(r.entityAId)}:${Number(r.entityBId)}`;
+    let arr = sparkByPair.get(key);
+    if (!arr) {
+      arr = new Array<number>(windowDays).fill(0);
+      sparkByPair.set(key, arr);
+    }
+    const dayMs = Date.parse(`${r.day}T00:00:00Z`);
+    if (!Number.isFinite(dayMs)) continue;
+    const offset = Math.floor((dayMs - startMs) / 86400_000);
+    if (offset >= 0 && offset < windowDays) {
+      arr[offset] = Number(r.joint) || 0;
+    }
+  }
 
   const computedAt = new Date();
   let filteredCoreVocab = 0;
@@ -236,11 +339,13 @@ export async function runCoOccurrenceAggregation(
     windowStart: string;
     windowEnd: string;
     jointCount: number;
+    priorJointCount: number;
     countA: number;
     countB: number;
     totalSignals: number;
     expectedCount: number;
     lift: number;
+    sparkline: number[];
   }> = [];
 
   for (const p of pairRows) {
@@ -267,17 +372,21 @@ export async function runCoOccurrenceAggregation(
     const lift = joint / expected;
     if (lift < minLift) continue;
 
+    const pairKey = `${a}:${b}`;
     qualifying.push({
       entityAId: a,
       entityBId: b,
       windowStart,
       windowEnd,
       jointCount: joint,
+      priorJointCount: priorByPair.get(pairKey) ?? 0,
       countA,
       countB,
       totalSignals,
       expectedCount: expected,
       lift,
+      sparkline:
+        sparkByPair.get(pairKey) ?? new Array<number>(windowDays).fill(0),
     });
   }
 
