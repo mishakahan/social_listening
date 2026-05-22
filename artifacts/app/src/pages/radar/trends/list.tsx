@@ -385,7 +385,7 @@ export default function TrendsListPage() {
                         current={trend.yoyCurrent}
                         prior={trend.yoyPrior}
                         windowLabel="Last 90 days vs same 90 days last year"
-                        insufficientNote="Not enough history for YoY — need at least 30 days of activity in the same 90-day window one year ago."
+                        insufficientNote="No mentions in the same 90-day window one year ago — no YoY baseline."
                       />
                     </div>
 

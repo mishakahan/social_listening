@@ -329,7 +329,7 @@ export default function TrendDetailPage() {
             label="YoY"
             tooltip={
               trend.yoyGrowthPct == null
-                ? "Not enough history for YoY — need at least 30 days of activity in the same 90-day window one year ago."
+                ? "No mentions in the same 90-day window one year ago — no YoY baseline."
                 : `Last 90 days vs same 90 days last year: ${trend.yoyCurrent ?? 0} mentions vs ${trend.yoyPrior ?? 0}.`
             }
           />

@@ -17,8 +17,9 @@ import { eq, and, gte, lte, sql, isNull } from "drizzle-orm";
 //   null if momPrior == 0 OR insufficient history (entity has < 30 distinct
 //   bucket-days across the combined 60-day MoM window).
 // yoyGrowthPct = yoyCurrent / yoyPrior - 1
-//   null if yoyPrior == 0 OR insufficient history (entity has < 30 distinct
-//   bucket-days in the prior-year 90-day window — no real baseline).
+//   null only if yoyPrior == 0. YoY tolerates a sparse prior-year window
+//   (even a handful of days is meaningful evidence the entity existed a
+//   year ago), so it does not apply the 30-day coverage gate that MoM does.
 //
 // Stored as a fraction (0.31 == +31%) to stay consistent with the existing
 // growthWow / growthMom columns. UI multiplies by 100 for the badge label.
@@ -74,7 +75,6 @@ export async function computeDeltasForCompany(
       // only meaningful when the entity has been observed on a reasonable
       // fraction of days in the relevant span.
       momCoverageDays: sql<number>`count(distinct case when ${tpEntityTimeseries.bucketDate} between ${momPriorStart} and ${today} then ${tpEntityTimeseries.bucketDate} else null end)::int`,
-      yoyPriorCoverageDays: sql<number>`count(distinct case when ${tpEntityTimeseries.bucketDate} between ${yoyPriorStart} and ${yoyPriorEnd} then ${tpEntityTimeseries.bucketDate} else null end)::int`,
     })
     .from(tpEntityTimeseries)
     .innerJoin(tpEntities, eq(tpEntities.id, tpEntityTimeseries.entityId))
@@ -90,11 +90,13 @@ export async function computeDeltasForCompany(
     )
     .groupBy(tpEntityTimeseries.entityId);
 
-  // Insufficient-history gating: require at least 30 distinct bucket-days
-  // spanning the relevant comparison window before we trust a delta. Without
-  // this, a brand-new entity with one mention yesterday and one mention 30
-  // days ago would show a misleading "0%" / "+inf%" MoM.
-  const MIN_COVERAGE_DAYS = 30;
+  // MoM insufficient-history gate: require at least 30 distinct bucket-days
+  // spanning the 60-day comparison window before we trust the MoM delta.
+  // Without this, a brand-new entity with one mention yesterday and one 30
+  // days ago would show a misleading "0%" / "+inf%" MoM. YoY uses a weaker
+  // gate (just yoyPrior > 0) because any data exactly one year ago is itself
+  // strong evidence and the prior-year window is rarely densely covered.
+  const MIN_MOM_COVERAGE_DAYS = 30;
 
   return rows.map((r) => {
     const momCurrent = Number(r.momCurrent) || 0;
@@ -102,10 +104,9 @@ export async function computeDeltasForCompany(
     const yoyCurrent = Number(r.yoyCurrent) || 0;
     const yoyPrior = Number(r.yoyPrior) || 0;
     const momCoverage = Number(r.momCoverageDays) || 0;
-    const yoyPriorCoverage = Number(r.yoyPriorCoverageDays) || 0;
 
-    const momEligible = momPrior > 0 && momCoverage >= MIN_COVERAGE_DAYS;
-    const yoyEligible = yoyPrior > 0 && yoyPriorCoverage >= MIN_COVERAGE_DAYS;
+    const momEligible = momPrior > 0 && momCoverage >= MIN_MOM_COVERAGE_DAYS;
+    const yoyEligible = yoyPrior > 0;
 
     return {
       entityId: r.entityId,
