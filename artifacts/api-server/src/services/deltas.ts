@@ -13,8 +13,12 @@ import { eq, and, gte, lte, sql, isNull } from "drizzle-orm";
 //   yoyCurrent  = sum(mentions) in last 90 days
 //   yoyPrior    = sum(mentions) in days 365..455 ago  (matched 90-day window)
 //
-// momGrowthPct = momCurrent / momPrior - 1  (null if momPrior == 0)
-// yoyGrowthPct = yoyCurrent / yoyPrior - 1  (null if yoyPrior == 0)
+// momGrowthPct = momCurrent / momPrior - 1
+//   null if momPrior == 0 OR insufficient history (entity has < 30 distinct
+//   bucket-days across the combined 60-day MoM window).
+// yoyGrowthPct = yoyCurrent / yoyPrior - 1
+//   null if yoyPrior == 0 OR insufficient history (entity has < 30 distinct
+//   bucket-days in the prior-year 90-day window — no real baseline).
 //
 // Stored as a fraction (0.31 == +31%) to stay consistent with the existing
 // growthWow / growthMom columns. UI multiplies by 100 for the badge label.
@@ -66,6 +70,11 @@ export async function computeDeltasForCompany(
       momPrior: sql<number>`coalesce(sum(case when ${tpEntityTimeseries.bucketDate} between ${momPriorStart} and ${momPriorEnd} then ${tpEntityTimeseries.mentions} else 0 end), 0)::int`,
       yoyCurrent: sql<number>`coalesce(sum(case when ${tpEntityTimeseries.bucketDate} between ${yoyCurStart} and ${today} then ${tpEntityTimeseries.mentions} else 0 end), 0)::int`,
       yoyPrior: sql<number>`coalesce(sum(case when ${tpEntityTimeseries.bucketDate} between ${yoyPriorStart} and ${yoyPriorEnd} then ${tpEntityTimeseries.mentions} else 0 end), 0)::int`,
+      // Distinct-day coverage for insufficient-history gating. A delta is
+      // only meaningful when the entity has been observed on a reasonable
+      // fraction of days in the relevant span.
+      momCoverageDays: sql<number>`count(distinct case when ${tpEntityTimeseries.bucketDate} between ${momPriorStart} and ${today} then ${tpEntityTimeseries.bucketDate} else null end)::int`,
+      yoyPriorCoverageDays: sql<number>`count(distinct case when ${tpEntityTimeseries.bucketDate} between ${yoyPriorStart} and ${yoyPriorEnd} then ${tpEntityTimeseries.bucketDate} else null end)::int`,
     })
     .from(tpEntityTimeseries)
     .innerJoin(tpEntities, eq(tpEntities.id, tpEntityTimeseries.entityId))
@@ -81,19 +90,31 @@ export async function computeDeltasForCompany(
     )
     .groupBy(tpEntityTimeseries.entityId);
 
+  // Insufficient-history gating: require at least 30 distinct bucket-days
+  // spanning the relevant comparison window before we trust a delta. Without
+  // this, a brand-new entity with one mention yesterday and one mention 30
+  // days ago would show a misleading "0%" / "+inf%" MoM.
+  const MIN_COVERAGE_DAYS = 30;
+
   return rows.map((r) => {
     const momCurrent = Number(r.momCurrent) || 0;
     const momPrior = Number(r.momPrior) || 0;
     const yoyCurrent = Number(r.yoyCurrent) || 0;
     const yoyPrior = Number(r.yoyPrior) || 0;
+    const momCoverage = Number(r.momCoverageDays) || 0;
+    const yoyPriorCoverage = Number(r.yoyPriorCoverageDays) || 0;
+
+    const momEligible = momPrior > 0 && momCoverage >= MIN_COVERAGE_DAYS;
+    const yoyEligible = yoyPrior > 0 && yoyPriorCoverage >= MIN_COVERAGE_DAYS;
+
     return {
       entityId: r.entityId,
       momCurrent,
       momPrior,
       yoyCurrent,
       yoyPrior,
-      momGrowthPct: momPrior > 0 ? momCurrent / momPrior - 1 : null,
-      yoyGrowthPct: yoyPrior > 0 ? yoyCurrent / yoyPrior - 1 : null,
+      momGrowthPct: momEligible ? momCurrent / momPrior - 1 : null,
+      yoyGrowthPct: yoyEligible ? yoyCurrent / yoyPrior - 1 : null,
     };
   });
 }

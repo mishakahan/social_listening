@@ -318,7 +318,7 @@ export default function TrendDetailPage() {
             label="MoM"
             tooltip={
               trend.momGrowthPct == null
-                ? "No mentions in the prior 30-day window — not enough history for MoM."
+                ? "Not enough history for MoM — need at least 30 days of activity in the 60-day comparison window."
                 : `Last 30 days vs prior 30 days: ${trend.momCurrent ?? 0} mentions vs ${trend.momPrior ?? 0}.`
             }
           />
@@ -329,7 +329,7 @@ export default function TrendDetailPage() {
             label="YoY"
             tooltip={
               trend.yoyGrowthPct == null
-                ? "No mentions in the same 90-day window one year ago — not enough history for YoY."
+                ? "Not enough history for YoY — need at least 30 days of activity in the same 90-day window one year ago."
                 : `Last 90 days vs same 90 days last year: ${trend.yoyCurrent ?? 0} mentions vs ${trend.yoyPrior ?? 0}.`
             }
           />

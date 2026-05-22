@@ -191,7 +191,9 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   Stored as **fractions** on `tp_entity_state.mom_growth_pct` /
   `yoy_growth_pct` (e.g. 0.31 = +31%) alongside `mom_current` / `mom_prior` /
   `yoy_current` / `yoy_prior` integer snapshots. `null` when the prior window
-  sums to zero (no baseline). `runStateMachine` calls
+  sums to zero OR when the entity has fewer than 30 distinct bucket-days of
+  activity in the relevant comparison span (insufficient-history gate, so
+  brand-new entities don't get misleading deltas). `runStateMachine` calls
   `computeDeltasForCompany` once per company and writes the entity-wide deltas
   to every `(entity, geography)` `tp_entity_state` row. Storage layer
   (`getTrendsEnriched` / `getTrendDetail`) multiplies fractions by 100

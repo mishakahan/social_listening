@@ -374,7 +374,7 @@ export default function TrendsListPage() {
                         current={trend.momCurrent}
                         prior={trend.momPrior}
                         windowLabel="Last 30 days vs prior 30 days"
-                        insufficientNote="No mentions in the prior 30-day window — not enough history for MoM."
+                        insufficientNote="Not enough history for MoM — need at least 30 days of activity in the 60-day comparison window."
                       />
                     </div>
 
@@ -385,7 +385,7 @@ export default function TrendsListPage() {
                         current={trend.yoyCurrent}
                         prior={trend.yoyPrior}
                         windowLabel="Last 90 days vs same 90 days last year"
-                        insufficientNote="No mentions in the same 90-day window one year ago — not enough history for YoY."
+                        insufficientNote="Not enough history for YoY — need at least 30 days of activity in the same 90-day window one year ago."
                       />
                     </div>
 
