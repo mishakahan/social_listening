@@ -389,6 +389,19 @@ export const tpEntityState = pgTable(
   velocity: doublePrecision("velocity").notNull().default(0),
   growthWow: doublePrecision("growth_wow").notNull().default(0),
   growthMom: doublePrecision("growth_mom").notNull().default(0),
+  // Fixed-window deltas computed off tp_entity_timeseries on every state-machine
+  // run. Stored as a fraction (0.31 = +31%); UI multiplies by 100 for display.
+  // Null when there is insufficient prior-window history (see services/deltas.ts).
+  // - momGrowthPct: sum(mentions, last 30d) / sum(prior 30d) - 1
+  // - yoyGrowthPct: sum(mentions, last 90d) / sum(365–455d ago) - 1
+  momGrowthPct: doublePrecision("mom_growth_pct"),
+  yoyGrowthPct: doublePrecision("yoy_growth_pct"),
+  // Numerator/denominator snapshots so the UI tooltip can show the underlying
+  // counts ("412 mentions in last 90d vs 165 in May 2025") without re-querying.
+  momCurrent: integer("mom_current"),
+  momPrior: integer("mom_prior"),
+  yoyCurrent: integer("yoy_current"),
+  yoyPrior: integer("yoy_prior"),
   volatility: doublePrecision("volatility").notNull().default(0),
   platformsSeen: jsonb("platforms_seen").notNull().$type<string[]>().default([]),
   knowledgeItemId: integer("knowledge_item_id").references(

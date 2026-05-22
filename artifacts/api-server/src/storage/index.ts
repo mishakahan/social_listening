@@ -1348,6 +1348,14 @@ export interface EnrichedTrend {
   state: string;
   signalStrength: number;
   wowGrowthPct: number;
+  // Fixed-window deltas (percentage points, e.g. 31 = +31%). Null when prior
+  // window had no observations. See services/deltas.ts.
+  momGrowthPct: number | null;
+  yoyGrowthPct: number | null;
+  momCurrent: number | null;
+  momPrior: number | null;
+  yoyCurrent: number | null;
+  yoyPrior: number | null;
   platforms: string[];
   evidenceCount: number;
   geography: string;
@@ -1357,6 +1365,13 @@ export interface EnrichedTrend {
   topicLabel: string | null;
   updatedAt: string;
 }
+
+export type TrendSortBy =
+  | "signal"
+  | "wow"
+  | "momGrowthPct"
+  | "yoyGrowthPct"
+  | "evidence";
 
 /**
  * Build a case-insensitive matcher against the company's core-vocabulary
@@ -1382,7 +1397,7 @@ async function getCoreVocabularyMatcher(
 
 export async function getTrendsEnriched(
   companyId: number,
-  filters?: { archived?: boolean }
+  filters?: { archived?: boolean; sortBy?: TrendSortBy; sortDir?: SortDir }
 ): Promise<EnrichedTrend[]> {
   const conditions = [
     eq(tpEntityState.companyId, companyId),
@@ -1407,7 +1422,7 @@ export async function getTrendsEnriched(
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
 
-  return rows
+  const mapped = rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
     )
@@ -1418,6 +1433,14 @@ export async function getTrendsEnriched(
       state: r.es.state,
       signalStrength: r.ki.signalStrength ?? 0,
       wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
+      momGrowthPct:
+        r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
+      yoyGrowthPct:
+        r.es.yoyGrowthPct == null ? null : Math.round(r.es.yoyGrowthPct * 1000) / 10,
+      momCurrent: r.es.momCurrent ?? null,
+      momPrior: r.es.momPrior ?? null,
+      yoyCurrent: r.es.yoyCurrent ?? null,
+      yoyPrior: r.es.yoyPrior ?? null,
       platforms: r.es.platformsSeen ?? [],
       evidenceCount: r.ki.evidenceCount ?? 0,
       geography: r.es.geography,
@@ -1427,6 +1450,29 @@ export async function getTrendsEnriched(
       topicLabel: r.ki.topicLabel ?? null,
       updatedAt: r.ki.updatedAt.toISOString(),
     }));
+
+  const sortBy = filters?.sortBy ?? "signal";
+  const dir = filters?.sortDir ?? "desc";
+  const mul = dir === "asc" ? 1 : -1;
+  // Nulls always sort last regardless of direction. In desc (mul=-1) the
+  // largest value comes first, so a null must compare as the smallest
+  // (-Infinity). In asc (mul=+1) the smallest comes first, so null must
+  // compare as the largest (+Infinity).
+  const NULL_LAST = dir === "desc" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+  const key = (v: number | null) => (v == null ? NULL_LAST : v);
+  mapped.sort((a, b) => {
+    let av: number; let bv: number;
+    switch (sortBy) {
+      case "wow":          av = a.wowGrowthPct;        bv = b.wowGrowthPct;        break;
+      case "momGrowthPct": av = key(a.momGrowthPct);   bv = key(b.momGrowthPct);   break;
+      case "yoyGrowthPct": av = key(a.yoyGrowthPct);   bv = key(b.yoyGrowthPct);   break;
+      case "evidence":     av = a.evidenceCount;       bv = b.evidenceCount;       break;
+      case "signal":
+      default:             av = a.signalStrength;      bv = b.signalStrength;      break;
+    }
+    return (av - bv) * mul;
+  });
+  return mapped;
 }
 
 export interface TrendEvidence {
@@ -1444,7 +1490,15 @@ export interface TrendEvidence {
 export async function getTrendDetail(
   companyId: number,
   knowledgeItemId: number
-): Promise<(EnrichedTrend & { evidence: TrendEvidence[]; growthMomPct: number; volume7d: number; volume30d: number }) | null> {
+): Promise<
+  | (EnrichedTrend & {
+      evidence: TrendEvidence[];
+      growthMomPct: number;
+      volume7d: number;
+      volume30d: number;
+    })
+  | null
+> {
   const conditions = [
     eq(tpEntityState.companyId, companyId),
     eq(tpEntityState.knowledgeItemId, knowledgeItemId),
@@ -1477,6 +1531,12 @@ export async function getTrendDetail(
       signalStrength: ki.signalStrength ?? 0,
       wowGrowthPct: 0,
       growthMomPct: 0,
+      momGrowthPct: null,
+      yoyGrowthPct: null,
+      momCurrent: null,
+      momPrior: null,
+      yoyCurrent: null,
+      yoyPrior: null,
       platforms: [],
       evidenceCount: ki.evidenceCount ?? 0,
       geography: ki.geographicScope ?? "Global",
@@ -1530,6 +1590,14 @@ export async function getTrendDetail(
     signalStrength: ki.signalStrength ?? 0,
     wowGrowthPct: Math.round(es.growthWow * 1000) / 10,
     growthMomPct: Math.round(es.growthMom * 1000) / 10,
+    momGrowthPct:
+      es.momGrowthPct == null ? null : Math.round(es.momGrowthPct * 1000) / 10,
+    yoyGrowthPct:
+      es.yoyGrowthPct == null ? null : Math.round(es.yoyGrowthPct * 1000) / 10,
+    momCurrent: es.momCurrent ?? null,
+    momPrior: es.momPrior ?? null,
+    yoyCurrent: es.yoyCurrent ?? null,
+    yoyPrior: es.yoyPrior ?? null,
     platforms: es.platformsSeen ?? [],
     evidenceCount: ki.evidenceCount ?? 0,
     geography: es.geography,

@@ -1,5 +1,6 @@
 import { logger } from "../lib/logger.js";
 import * as storage from "../storage/index.js";
+import { computeDeltasForCompany } from "./deltas.js";
 import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
@@ -209,10 +210,12 @@ async function ensureKnowledgeItem(
 export async function runStateMachine(
   companyId: number
 ): Promise<{ processed: number; transitions: number }> {
-  const [entities, config] = await Promise.all([
+  const [entities, config, deltas] = await Promise.all([
     storage.getEntities(companyId),
     storage.getPipelineConfig(companyId),
+    computeDeltasForCompany(companyId),
   ]);
+  const deltaByEntity = new Map(deltas.map((d) => [d.entityId, d]));
   let processed = 0;
   let transitions = 0;
 
@@ -236,6 +239,10 @@ export async function runStateMachine(
       const currentState = entityState.state as TrendState;
       const { state: nextState, reason } = determineNextState(currentState, metrics, config);
 
+      // MoM/YoY deltas are entity-wide (rolled up across platforms/geos for v1).
+      // We assign the same delta values to every (entity, geography) state row.
+      const delta = deltaByEntity.get(entity.id);
+
       const updated = await storage.updateEntityState(entityState.id, {
         state: nextState,
         stateEnteredAt: nextState !== currentState ? new Date() : entityState.stateEnteredAt,
@@ -248,6 +255,12 @@ export async function runStateMachine(
         growthMom: metrics.growthMom,
         volatility: metrics.volatility,
         platformsSeen: [...new Set(rows.map((r) => r.platform))],
+        momGrowthPct: delta?.momGrowthPct ?? null,
+        yoyGrowthPct: delta?.yoyGrowthPct ?? null,
+        momCurrent: delta?.momCurrent ?? null,
+        momPrior: delta?.momPrior ?? null,
+        yoyCurrent: delta?.yoyCurrent ?? null,
+        yoyPrior: delta?.yoyPrior ?? null,
       } as any);
 
       if (nextState !== currentState) {

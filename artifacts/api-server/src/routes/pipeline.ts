@@ -1218,7 +1218,13 @@ router.get("/companies/:id/trends", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
     const archived = req.query.archived !== undefined ? req.query.archived === "true" : undefined;
-    const trends = await storage.getTrendsEnriched(companyId, { archived });
+    const sortByRaw = req.query.sortBy as string | undefined;
+    const allowedSorts = ["signal", "wow", "momGrowthPct", "yoyGrowthPct", "evidence"] as const;
+    const sortBy = allowedSorts.includes(sortByRaw as any)
+      ? (sortByRaw as (typeof allowedSorts)[number])
+      : undefined;
+    const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
+    const trends = await storage.getTrendsEnriched(companyId, { archived, sortBy, sortDir });
     res.json(trends);
   } catch (err: any) {
     logger.error({ err }, "Failed to get trends");

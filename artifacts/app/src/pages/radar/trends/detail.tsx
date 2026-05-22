@@ -16,6 +16,12 @@ import {
   Tag,
   BarChart2,
 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { SignalScoreInfo } from "./signal-score-info";
 import { TrendTimeseriesChart } from "./trend-timeseries-chart";
 
@@ -45,6 +51,12 @@ interface TrendDetail {
   signalStrength: number;
   wowGrowthPct?: number;
   growthMomPct?: number;
+  momGrowthPct?: number | null;
+  yoyGrowthPct?: number | null;
+  momCurrent?: number | null;
+  momPrior?: number | null;
+  yoyCurrent?: number | null;
+  yoyPrior?: number | null;
   volume7d?: number;
   volume30d?: number;
   platforms: string[];
@@ -79,6 +91,44 @@ async function fetchTrend(id: string): Promise<TrendDetail> {
   const res = await fetch(`/api/pipeline/companies/1/trends/${id}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+function GrowthStatCard({
+  pct,
+  label,
+  tooltip,
+}: {
+  pct: number | null;
+  label: string;
+  tooltip: string;
+}) {
+  const hasValue = pct != null;
+  const isPos = hasValue && pct > 0;
+  const isNeg = hasValue && pct < 0;
+  const color = isPos
+    ? "text-green-600"
+    : isNeg
+    ? "text-red-500"
+    : "text-muted-foreground";
+  const Icon = isPos ? TrendingUp : isNeg ? TrendingDown : Minus;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Card className="cursor-help">
+          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
+            <Icon className={`h-5 w-5 ${color}`} />
+            <span className={`text-3xl font-bold tabular-nums ${color}`}>
+              {hasValue ? `${isPos ? "+" : ""}${pct.toFixed(1)}%` : "—"}
+            </span>
+            <span className="text-xs text-muted-foreground">{label}</span>
+          </CardContent>
+        </Card>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[260px] text-xs">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function WoWGrowth({ pct }: { pct?: number }) {
@@ -239,98 +289,65 @@ export default function TrendDetailPage() {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-        {/* Signal strength */}
-        <Card>
-          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
-            <BarChart2 className={`h-5 w-5 ${signalColor}`} />
-            <span className={`text-3xl font-bold tabular-nums ${signalColor}`}>
-              {trend.signalStrength}
-            </span>
-            <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
-              Signal
-              <SignalScoreInfo />
-            </span>
-          </CardContent>
-        </Card>
+      <TooltipProvider delayDuration={150}>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+          {/* Signal strength */}
+          <Card>
+            <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
+              <BarChart2 className={`h-5 w-5 ${signalColor}`} />
+              <span className={`text-3xl font-bold tabular-nums ${signalColor}`}>
+                {trend.signalStrength}
+              </span>
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                Signal
+                <SignalScoreInfo />
+              </span>
+            </CardContent>
+          </Card>
 
-        {/* WoW growth */}
-        <Card>
-          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
-            {trend.wowGrowthPct != null ? (
-              <>
-                {trend.wowGrowthPct > 0 ? (
-                  <TrendingUp className="h-5 w-5 text-green-500" />
-                ) : trend.wowGrowthPct < 0 ? (
-                  <TrendingDown className="h-5 w-5 text-red-500" />
-                ) : (
-                  <Minus className="h-5 w-5 text-muted-foreground" />
-                )}
-                <span
-                  className={`text-3xl font-bold tabular-nums ${
-                    trend.wowGrowthPct > 0
-                      ? "text-green-600"
-                      : trend.wowGrowthPct < 0
-                      ? "text-red-500"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  {trend.wowGrowthPct > 0 ? "+" : ""}
-                  {trend.wowGrowthPct.toFixed(1)}%
-                </span>
-                <span className="text-xs text-muted-foreground">WoW</span>
-              </>
-            ) : (
-              <>
-                <Minus className="h-5 w-5 text-muted-foreground" />
-                <span className="text-3xl font-bold text-muted-foreground">—</span>
-                <span className="text-xs text-muted-foreground">WoW</span>
-              </>
-            )}
-          </CardContent>
-        </Card>
+          {/* WoW growth */}
+          <GrowthStatCard
+            pct={trend.wowGrowthPct ?? null}
+            label="WoW"
+            tooltip="Week over week — this week vs prior week."
+          />
 
-        {/* MoM growth */}
-        <Card>
-          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
-            {trend.growthMomPct != null ? (
-              <>
-                {trend.growthMomPct > 0 ? (
-                  <TrendingUp className="h-5 w-5 text-green-400" />
-                ) : trend.growthMomPct < 0 ? (
-                  <TrendingDown className="h-5 w-5 text-red-400" />
-                ) : (
-                  <Minus className="h-5 w-5 text-muted-foreground" />
-                )}
-                <span className={`text-3xl font-bold tabular-nums ${trend.growthMomPct > 0 ? "text-green-600" : trend.growthMomPct < 0 ? "text-red-500" : "text-muted-foreground"}`}>
-                  {trend.growthMomPct > 0 ? "+" : ""}
-                  {trend.growthMomPct.toFixed(1)}%
-                </span>
-                <span className="text-xs text-muted-foreground">MoM</span>
-              </>
-            ) : (
-              <>
-                <Minus className="h-5 w-5 text-muted-foreground" />
-                <span className="text-3xl font-bold text-muted-foreground">—</span>
-                <span className="text-xs text-muted-foreground">MoM</span>
-              </>
-            )}
-          </CardContent>
-        </Card>
+          {/* MoM growth (fixed window) */}
+          <GrowthStatCard
+            pct={trend.momGrowthPct ?? null}
+            label="MoM"
+            tooltip={
+              trend.momGrowthPct == null
+                ? "No mentions in the prior 30-day window — not enough history for MoM."
+                : `Last 30 days vs prior 30 days: ${trend.momCurrent ?? 0} mentions vs ${trend.momPrior ?? 0}.`
+            }
+          />
 
-        {/* Volume */}
-        <Card>
-          <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
-            <div className="h-5 w-5 rounded-full bg-primary/20 flex items-center justify-center">
-              <span className="text-[10px] font-bold text-primary">V</span>
-            </div>
-            <span className="text-3xl font-bold tabular-nums text-foreground">
-              {trend.volume7d ?? trend.evidenceCount ?? 0}
-            </span>
-            <span className="text-xs text-muted-foreground">Vol 7d</span>
-          </CardContent>
-        </Card>
-      </div>
+          {/* YoY growth (fixed window) */}
+          <GrowthStatCard
+            pct={trend.yoyGrowthPct ?? null}
+            label="YoY"
+            tooltip={
+              trend.yoyGrowthPct == null
+                ? "No mentions in the same 90-day window one year ago — not enough history for YoY."
+                : `Last 90 days vs same 90 days last year: ${trend.yoyCurrent ?? 0} mentions vs ${trend.yoyPrior ?? 0}.`
+            }
+          />
+
+          {/* Volume */}
+          <Card>
+            <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
+              <div className="h-5 w-5 rounded-full bg-primary/20 flex items-center justify-center">
+                <span className="text-[10px] font-bold text-primary">V</span>
+              </div>
+              <span className="text-3xl font-bold tabular-nums text-foreground">
+                {trend.volume7d ?? trend.evidenceCount ?? 0}
+              </span>
+              <span className="text-xs text-muted-foreground">Vol 7d</span>
+            </CardContent>
+          </Card>
+        </div>
+      </TooltipProvider>
 
       {/* Mentions vs search-interest time-series */}
       <TrendTimeseriesChart trendId={trend.id} />

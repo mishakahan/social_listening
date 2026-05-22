@@ -183,6 +183,24 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   controls have been pruned to Kill (active), Retry (failed/timeout), and
   Delete (terminal); re-ingestion is bulk-only since it's a rare batch
   operation.
+- **MoM / YoY growth deltas** (`services/deltas.ts`): `computeDeltasForCompany`
+  runs one aggregate SQL pass over `tp_entity_timeseries` with four fully-bounded
+  CASE-WHEN windows (MoM current `[today-29..today]`, prior `[today-59..today-30]`;
+  YoY current `[today-89..today]`, prior `[today-454..today-365]`). The scan is
+  bounded `BETWEEN yoyPriorStart AND today` to skip ancient/future-dated rows.
+  Stored as **fractions** on `tp_entity_state.mom_growth_pct` /
+  `yoy_growth_pct` (e.g. 0.31 = +31%) alongside `mom_current` / `mom_prior` /
+  `yoy_current` / `yoy_prior` integer snapshots. `null` when the prior window
+  sums to zero (no baseline). `runStateMachine` calls
+  `computeDeltasForCompany` once per company and writes the entity-wide deltas
+  to every `(entity, geography)` `tp_entity_state` row. Storage layer
+  (`getTrendsEnriched` / `getTrendDetail`) multiplies fractions by 100
+  (`Math.round(*1000)/10`) before serving as percentage points; UI renders
+  `GrowthPill`/`GrowthCell` (list) and `GrowthStatCard` (detail) with tooltips
+  showing window + numerator/denominator and a fallback message when null.
+  List sort accepts `sortBy=momGrowthPct|yoyGrowthPct` with nulls-last in
+  both directions. Backfill: `pnpm --filter @workspace/api-server exec tsx
+  src/scripts/backfill-mom-yoy-deltas.ts`.
 - **Retry endpoint contract** (`POST /api/pipeline/actor-runs/:id/retry`):
   guards on `status IN ('failed','timeout')` and `!billing-error` (returns
   409 otherwise — defense-in-depth for the UI gating), and resets
