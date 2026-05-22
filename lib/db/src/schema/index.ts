@@ -9,8 +9,10 @@ import {
   date,
   jsonb,
   uniqueIndex,
+  index,
+  check,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -702,8 +704,114 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
     .notNull()
     .default(0.9),
   lastLongTailRunAt: timestamp("last_long_tail_run_at"),
+  // Composite co-occurrence lane (Task #3). Knobs + last-run stamp.
+  // compositeMinJointMentions: minimum number of distinct signals that must
+  //   co-mention both entities in the window to be considered a candidate
+  //   pair (default 5; range 2-100).
+  // compositeMinLift: minimum lift = joint / expected required to surface
+  //   the pair (default 2.0; range 1.0-50.0).
+  // compositeWindowDays: rolling window length for joint/expected/lift
+  //   computation (default 14; range 7-90).
+  compositeMinJointMentions: integer("composite_min_joint_mentions")
+    .notNull()
+    .default(5),
+  compositeMinLift: doublePrecision("composite_min_lift")
+    .notNull()
+    .default(2.0),
+  compositeWindowDays: integer("composite_window_days").notNull().default(14),
+  lastCoOccurrenceRunAt: timestamp("last_co_occurrence_run_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ---------------------------------------------------------------------------
+// tp_entity_co_occurrences — one row per (signal, entityA, entityB) where
+// entityA.id < entityB.id (unordered pair convention enforced at insert).
+// Written from entity-extraction.ts in the same transaction as
+// tp_signal_entities so a failure rolls both back. Cascades on signal /
+// entity delete so cleanup is automatic.
+// ---------------------------------------------------------------------------
+export const tpEntityCoOccurrences = pgTable(
+  "tp_entity_co_occurrences",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    rawSignalId: integer("raw_signal_id")
+      .notNull()
+      .references(() => tpRawSignals.id, { onDelete: "cascade" }),
+    entityAId: integer("entity_a_id")
+      .notNull()
+      .references(() => tpEntities.id, { onDelete: "cascade" }),
+    entityBId: integer("entity_b_id")
+      .notNull()
+      .references(() => tpEntities.id, { onDelete: "cascade" }),
+    // postedAt = signal.postedAt ?? signal.capturedAt at insert time so the
+    // window filter is robust even for platforms with null posted_at.
+    postedAt: timestamp("posted_at").notNull(),
+    capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_entity_co_occurrences_unique_idx").on(
+      t.rawSignalId,
+      t.entityAId,
+      t.entityBId
+    ),
+    // Defense-in-depth: pair ordering is also enforced at insert time by the
+    // sort in bulkInsertSignalEntitiesAndCoOccurrences, but the DB check
+    // guarantees no alternate writer (manual SQL, future job) can split
+    // counts across (a,b) and (b,a) rows and corrupt the lift math.
+    check(
+      "tp_entity_co_occurrences_order_chk",
+      sql`${t.entityAId} < ${t.entityBId}`
+    ),
+    // Hot path for the weekly aggregator: scan by company + window of
+    // posted_at, then group by pair. Without this Postgres falls back to a
+    // full-table scan as the table grows.
+    index("tp_entity_co_occurrences_company_posted_idx").on(
+      t.companyId,
+      t.postedAt
+    ),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// tp_composite_trend_candidates — output of the co-occurrence aggregator.
+// Snapshot-replace pattern (same as tp_long_tail_candidates): the most recent
+// run for a company replaces prior rows in a single transaction.
+// ---------------------------------------------------------------------------
+export const tpCompositeTrendCandidates = pgTable(
+  "tp_composite_trend_candidates",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    entityAId: integer("entity_a_id")
+      .notNull()
+      .references(() => tpEntities.id, { onDelete: "cascade" }),
+    entityBId: integer("entity_b_id")
+      .notNull()
+      .references(() => tpEntities.id, { onDelete: "cascade" }),
+    windowStart: text("window_start").notNull(),
+    windowEnd: text("window_end").notNull(),
+    jointCount: integer("joint_count").notNull(),
+    countA: integer("count_a").notNull(),
+    countB: integer("count_b").notNull(),
+    totalSignals: integer("total_signals").notNull(),
+    expectedCount: doublePrecision("expected_count").notNull(),
+    lift: doublePrecision("lift").notNull(),
+    computedAt: timestamp("computed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_composite_trend_candidates_unique_idx").on(
+      t.companyId,
+      t.entityAId,
+      t.entityBId,
+      t.computedAt
+    ),
+  ]
+);
 
 // ---------------------------------------------------------------------------
 // tp_long_tail_candidates — output of the Beta-Binomial uplift evaluator.
@@ -977,6 +1085,25 @@ export type InsertTpPipelineConfig = z.infer<
 export const insertTpLongTailCandidateSchema = createInsertSchema(
   tpLongTailCandidates
 ).omit({ id: true });
+
+// tpEntityCoOccurrences (Task #3)
+export const insertTpEntityCoOccurrenceSchema = createInsertSchema(
+  tpEntityCoOccurrences
+).omit({ id: true });
+export type TpEntityCoOccurrence = typeof tpEntityCoOccurrences.$inferSelect;
+export type InsertTpEntityCoOccurrence = z.infer<
+  typeof insertTpEntityCoOccurrenceSchema
+>;
+
+// tpCompositeTrendCandidates (Task #3)
+export const insertTpCompositeTrendCandidateSchema = createInsertSchema(
+  tpCompositeTrendCandidates
+).omit({ id: true });
+export type TpCompositeTrendCandidate =
+  typeof tpCompositeTrendCandidates.$inferSelect;
+export type InsertTpCompositeTrendCandidate = z.infer<
+  typeof insertTpCompositeTrendCandidateSchema
+>;
 export type TpLongTailCandidate = typeof tpLongTailCandidates.$inferSelect;
 export type InsertTpLongTailCandidate = z.infer<
   typeof insertTpLongTailCandidateSchema

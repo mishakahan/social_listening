@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -221,52 +222,91 @@ export default function TrendsListPage() {
 
   const tooltipped = useMemo(() => trends, [trends]);
 
-  if (isLoading) {
-    return (
+  return (
+    <TooltipProvider delayDuration={150}>
       <div className="p-8 max-w-6xl mx-auto">
         <div className="mb-6">
-          <Skeleton className="h-7 w-32 mb-2" />
-          <Skeleton className="h-4 w-64" />
+          <h1 className="text-2xl font-bold text-foreground mb-1">Trends</h1>
+          <p className="text-muted-foreground text-sm">
+            Browse all detected trends across platforms and geographies.
+          </p>
         </div>
-        <div className="space-y-2">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <Skeleton key={i} className="h-16 w-full rounded-lg" />
-          ))}
-        </div>
+        <Tabs defaultValue="single">
+          <TabsList>
+            <TabsTrigger value="single">Single-entity</TabsTrigger>
+            <TabsTrigger value="composite">Composite</TabsTrigger>
+          </TabsList>
+          <TabsContent value="single" className="mt-4">
+            <SingleEntityTab
+              trends={trends}
+              isLoading={isLoading}
+              error={error}
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onSort={handleSort}
+              navigate={navigate}
+              tooltipped={tooltipped}
+            />
+          </TabsContent>
+          <TabsContent value="composite" className="mt-4">
+            <CompositeTrendsTab />
+          </TabsContent>
+        </Tabs>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+interface SingleEntityTabProps {
+  trends: Trend[];
+  isLoading: boolean;
+  error: unknown;
+  sortBy: SortKey;
+  sortDir: "asc" | "desc";
+  onSort: (k: SortKey) => void;
+  navigate: (to: string) => void;
+  tooltipped: Trend[];
+}
+
+function SingleEntityTab({
+  trends,
+  isLoading,
+  error,
+  sortBy,
+  sortDir,
+  onSort: handleSort,
+  navigate,
+  tooltipped,
+}: SingleEntityTabProps) {
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <Skeleton key={i} className="h-16 w-full rounded-lg" />
+        ))}
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-8 max-w-6xl mx-auto">
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>
-            {error instanceof Error ? error.message : "Failed to load trends."}
-          </AlertDescription>
-        </Alert>
-      </div>
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>
+          {error instanceof Error ? error.message : "Failed to load trends."}
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <TooltipProvider delayDuration={150}>
-      <div className="p-8 max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="mb-6 flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground mb-1">Trends</h1>
-            <p className="text-muted-foreground text-sm">
-              Browse all detected trends across platforms and geographies.
-            </p>
-          </div>
-          {trends.length > 0 && (
-            <Badge variant="outline">{trends.length} trends</Badge>
-          )}
+    <>
+      {trends.length > 0 && (
+        <div className="mb-3 flex justify-end">
+          <Badge variant="outline">{trends.length} trends</Badge>
         </div>
-
-        {trends.length === 0 ? (
+      )}
+      {trends.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-16 text-center">
             <TrendingUp className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
             <p className="text-sm font-medium text-muted-foreground">No trends detected yet</p>
@@ -427,7 +467,149 @@ export default function TrendsListPage() {
             </div>
           </div>
         )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Composite (co-occurrence) trends tab — Task #3
+// ---------------------------------------------------------------------------
+
+interface CompositeCandidate {
+  id: number;
+  entityAId: number;
+  entityBId: number;
+  entityALabel: string;
+  entityBLabel: string;
+  entityAType: string | null;
+  entityBType: string | null;
+  windowStart: string;
+  windowEnd: string;
+  jointCount: number;
+  countA: number;
+  countB: number;
+  totalSignals: number;
+  expectedCount: number;
+  lift: number;
+  computedAt: string;
+}
+
+interface CompositeResponse {
+  candidates: CompositeCandidate[];
+  lastRunAt: string | null;
+  minJointMentions: number;
+  minLift: number;
+  windowDays: number;
+}
+
+async function fetchComposite(): Promise<CompositeResponse> {
+  const res = await fetch(`/api/pipeline/companies/1/composite-trends`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function CompositeTrendsTab() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["composite-trends"],
+    queryFn: fetchComposite,
+    refetchOnWindowFocus: false,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3, 4].map((i) => (
+          <Skeleton key={i} className="h-14 w-full rounded-lg" />
+        ))}
       </div>
-    </TooltipProvider>
+    );
+  }
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>
+          {error instanceof Error
+            ? error.message
+            : "Failed to load composite trends."}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const candidates = data?.candidates ?? [];
+  const lastRun = data?.lastRunAt
+    ? new Date(data.lastRunAt).toLocaleString()
+    : "never";
+
+  return (
+    <div>
+      <div className="mb-3 flex items-start justify-between text-xs text-muted-foreground">
+        <p className="max-w-2xl">
+          Entity pairs co-mentioned far more often than chance would predict in
+          the last {data?.windowDays ?? 14} days. Joint mentions ≥{" "}
+          {data?.minJointMentions ?? 5}, lift ≥{" "}
+          {(data?.minLift ?? 2).toFixed(1)}×. Last run: {lastRun}.
+        </p>
+        {candidates.length > 0 && (
+          <Badge variant="outline">{candidates.length} pairs</Badge>
+        )}
+      </div>
+      {candidates.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border p-16 text-center">
+          <p className="text-sm font-medium text-muted-foreground">
+            No composite trends yet
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Pairs surface once enough entities co-occur in the rolling window.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-border overflow-hidden">
+          <div className="grid grid-cols-[3fr_88px_88px_88px_120px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div>Pair</div>
+            <div className="text-right">Joint</div>
+            <div className="text-right">Expected</div>
+            <div className="text-right">Lift</div>
+            <div className="text-right">Per-entity</div>
+            <div className="text-right">Window</div>
+          </div>
+          <div className="divide-y divide-border">
+            {candidates.map((c) => (
+              <div
+                key={c.id}
+                className="grid grid-cols-[3fr_88px_88px_88px_120px_140px] gap-3 px-5 py-3 items-center text-sm"
+              >
+                <div>
+                  <div className="font-medium text-foreground leading-tight">
+                    {c.entityALabel}{" "}
+                    <span className="text-muted-foreground">×</span>{" "}
+                    {c.entityBLabel}
+                  </div>
+                  {(c.entityAType || c.entityBType) && (
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {[c.entityAType, c.entityBType].filter(Boolean).join(" · ")}
+                    </div>
+                  )}
+                </div>
+                <div className="text-right tabular-nums">{c.jointCount}</div>
+                <div className="text-right tabular-nums text-muted-foreground">
+                  {c.expectedCount.toFixed(2)}
+                </div>
+                <div className="text-right tabular-nums font-medium text-foreground">
+                  {c.lift.toFixed(1)}×
+                </div>
+                <div className="text-right tabular-nums text-muted-foreground text-xs">
+                  {c.countA} / {c.countB}
+                </div>
+                <div className="text-right text-xs text-muted-foreground">
+                  {c.windowStart} → {c.windowEnd}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

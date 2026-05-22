@@ -196,6 +196,10 @@ export async function extractEntitiesForBatch(
 
   const signalEntityRows: InsertTpSignalEntity[] = [];
   const successfulIds: number[] = [];
+  // Per-signal entity-id lists, used to derive unordered co-occurrence pairs
+  // (Task #3). Kept in the same insertion order as signalEntityRows so the
+  // batch helper can write both tables in a single transaction.
+  const entityIdsBySignal = new Map<number, number[]>();
 
   for (const result of results) {
     const signal = signals[result.signalIndex];
@@ -254,10 +258,26 @@ export async function extractEntitiesForBatch(
         sentiment: entity.sentiment ?? null,
         sentimentConfidence: null,
       });
+
+      const existing = entityIdsBySignal.get(signal.id) ?? [];
+      existing.push(entityRecord.id);
+      entityIdsBySignal.set(signal.id, existing);
     }
   }
 
-  await storage.bulkInsertSignalEntities(signalEntityRows);
+  const perSignalPairs = signals
+    .filter((s) => (entityIdsBySignal.get(s.id) ?? []).length >= 2)
+    .map((s) => ({
+      companyId,
+      rawSignalId: s.id,
+      postedAt: s.postedAt ?? s.capturedAt,
+      entityIds: entityIdsBySignal.get(s.id) ?? [],
+    }));
+
+  await storage.bulkInsertSignalEntitiesAndCoOccurrences(
+    signalEntityRows,
+    perSignalPairs
+  );
 
   // Mark all signals in this batch as extracted (including ones with no entities)
   const allIds = signals.map((s) => s.id);

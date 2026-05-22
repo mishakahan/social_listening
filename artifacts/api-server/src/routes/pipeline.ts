@@ -20,6 +20,7 @@ import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
 import { launchBatch, finalizeBatchIfDone } from "../services/launch-batch.js";
 import { runLongTailEvaluation } from "../services/long-tail.js";
+import { runCoOccurrenceAggregation } from "../services/co-occurrence.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -1036,6 +1037,10 @@ const patchConfigSchema = z
     // Long-tail Bayesian-uplift lane (Task #2).
     longTailMinMentions: z.number().int().min(1).max(100).optional(),
     longTailMinPosterior: z.number().min(0.5).max(0.99).optional(),
+    // Composite co-occurrence lane (Task #3).
+    compositeMinJointMentions: z.number().int().min(2).max(100).optional(),
+    compositeMinLift: z.number().min(1).max(50).optional(),
+    compositeWindowDays: z.number().int().min(7).max(90).optional(),
   })
   .passthrough();
 
@@ -1583,6 +1588,49 @@ router.post("/companies/:id/run-long-tail", async (req, res) => {
     );
   } catch (err: any) {
     logger.error({ err }, "Failed to start long-tail evaluation");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pipeline/companies/:id/composite-trends
+//   Returns the most recent composite-trend snapshot for the company along
+//   with the knobs in effect so the UI can render a header without a second
+//   round-trip. Same shape as the long-tail endpoint.
+router.get("/companies/:id/composite-trends", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const [candidates, cfg] = await Promise.all([
+      storage.getCompositeTrendCandidates(companyId),
+      storage.getPipelineConfig(companyId),
+    ]);
+    res.json({
+      candidates,
+      lastRunAt: cfg?.lastCoOccurrenceRunAt ?? null,
+      minJointMentions: cfg?.compositeMinJointMentions ?? 5,
+      minLift: cfg?.compositeMinLift ?? 2.0,
+      windowDays: cfg?.compositeWindowDays ?? 14,
+    });
+  } catch (err: any) {
+    req.log?.error?.({ err }, "Failed to fetch composite-trend candidates");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/companies/:id/run-co-occurrence
+//   Fire-and-forget re-aggregation. Stamps lastCoOccurrenceRunAt inside the
+//   service's own transaction.
+router.post("/companies/:id/run-co-occurrence", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "Co-occurrence aggregation started" });
+    runCoOccurrenceAggregation(companyId).catch((e) =>
+      logger.error(
+        { err: e, companyId },
+        "Manual co-occurrence aggregation failed"
+      )
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start co-occurrence aggregation");
     res.status(500).json({ error: err.message });
   }
 });

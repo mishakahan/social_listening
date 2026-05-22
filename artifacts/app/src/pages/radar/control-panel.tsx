@@ -1092,6 +1092,63 @@ export default function ControlPanelPage() {
         </CardContent>
       </Card>
 
+      {/* Composite co-occurrence lane (Task #3) */}
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <h2 className="text-sm font-semibold text-foreground">Composite co-occurrence lane</h2>
+          <p className="text-xs text-muted-foreground">
+            Pair-level detector that surfaces entity pairs co-mentioned in
+            the same posts more often than chance would predict. Tune the
+            joint-mention floor, lift threshold, and rolling window to control
+            how aggressively the Composite tab surfaces pairs.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-2 pb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <NumberField
+              fieldKey="compositeMinJointMentions"
+              label="Min joint mentions"
+              help="Pairs must co-occur in at least this many distinct signals. 2–100."
+              value={(cfg.compositeMinJointMentions as number) ?? 5}
+              min={2}
+              max={100}
+              onChange={(v) =>
+                setField("compositeMinJointMentions" as keyof PipelineConfig, v as never)
+              }
+              onSave={handleSave}
+              ready={ready}
+            />
+            <SliderField
+              fieldKey="compositeMinLift"
+              label="Min lift"
+              help="Ratio of observed-to-expected joint count. Higher = stricter. 1–50."
+              value={(cfg.compositeMinLift as number) ?? 2.0}
+              min={1}
+              max={50}
+              step={0.1}
+              onChange={(v) =>
+                setField("compositeMinLift" as keyof PipelineConfig, v as never)
+              }
+              onSave={handleSave}
+              ready={ready}
+            />
+            <NumberField
+              fieldKey="compositeWindowDays"
+              label="Window (days)"
+              help="Rolling window for co-occurrence detection. 7–90."
+              value={(cfg.compositeWindowDays as number) ?? 14}
+              min={7}
+              max={90}
+              onChange={(v) =>
+                setField("compositeWindowDays" as keyof PipelineConfig, v as never)
+              }
+              onSave={handleSave}
+              ready={ready}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Author allowlist */}
       <Card className="mt-4">
         <CardContent className="pt-5 pb-5">

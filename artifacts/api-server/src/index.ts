@@ -14,6 +14,7 @@ import { runTimeseriesAggregation } from "./services/timeseries.js";
 import { runStateMachine } from "./services/state-machine.js";
 import { launchBatch, finalizeBatchIfDone } from "./services/launch-batch.js";
 import { runLongTailEvaluation } from "./services/long-tail.js";
+import { runCoOccurrenceAggregation } from "./services/co-occurrence.js";
 
 const rawPort = process.env["PORT"] ?? "8080";
 const port = Number(rawPort);
@@ -313,6 +314,20 @@ cron.schedule("45 2 * * *", async () => {
     }
   } catch (e) {
     logger.error({ err: e }, "Nightly long-tail evaluation failed");
+  }
+});
+
+// Weekly composite co-occurrence aggregation, Mondays at 03:00 UTC.
+// Pair-level scan over tp_entity_co_occurrences ∪ tp_signal_entities. The
+// service stamps lastCoOccurrenceRunAt inside its own transaction.
+cron.schedule("0 3 * * 1", async () => {
+  try {
+    const companies = await storage.getAllCompanies();
+    for (const company of companies) {
+      await runCoOccurrenceAggregation(company.id);
+    }
+  } catch (e) {
+    logger.error({ err: e }, "Weekly co-occurrence aggregation failed");
   }
 });
 

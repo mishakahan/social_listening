@@ -18,8 +18,11 @@ import {
   tpLaunchBatches,
   tpPipelineConfig,
   tpLongTailCandidates,
+  tpEntityCoOccurrences,
+  tpCompositeTrendCandidates,
   type Company,
   type TpLongTailCandidate,
+  type InsertTpEntityCoOccurrence,
   type InsertCompany,
   type TpSeedCandidate,
   type InsertTpSeedCandidate,
@@ -600,6 +603,16 @@ export async function setLastStateMachineRunAt(
     .where(eq(tpPipelineConfig.companyId, companyId));
 }
 
+export async function setLastCoOccurrenceRunAt(
+  companyId: number,
+  at: Date = new Date()
+): Promise<void> {
+  await db
+    .update(tpPipelineConfig)
+    .set({ lastCoOccurrenceRunAt: at })
+    .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
 // ---------------------------------------------------------------------------
 // Long-tail candidates (Task #2)
 // ---------------------------------------------------------------------------
@@ -704,6 +717,122 @@ export async function getLongTailCandidates(
       computedAt: r.c.computedAt.toISOString(),
       sparkline,
     };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Composite co-occurrence candidates (Task #3)
+// ---------------------------------------------------------------------------
+
+export interface CompositeCandidateRow {
+  id: number;
+  entityAId: number;
+  entityBId: number;
+  entityALabel: string;
+  entityBLabel: string;
+  entityAType: string | null;
+  entityBType: string | null;
+  windowStart: string;
+  windowEnd: string;
+  jointCount: number;
+  countA: number;
+  countB: number;
+  totalSignals: number;
+  expectedCount: number;
+  lift: number;
+  computedAt: string;
+}
+
+/**
+ * Returns the most-recent composite-trend snapshot for the company, joined
+ * with both entity rows so the UI gets canonical labels without N+1.
+ */
+export async function getCompositeTrendCandidates(
+  companyId: number
+): Promise<CompositeCandidateRow[]> {
+  const entA = sql`ent_a`;
+  const entB = sql`ent_b`;
+  const rows = await db.execute(sql`
+    SELECT
+      c.id,
+      c.entity_a_id  AS "entityAId",
+      c.entity_b_id  AS "entityBId",
+      ${entA}.canonical_label AS "entityALabel",
+      ${entB}.canonical_label AS "entityBLabel",
+      ${entA}.entity_type     AS "entityAType",
+      ${entB}.entity_type     AS "entityBType",
+      c.window_start  AS "windowStart",
+      c.window_end    AS "windowEnd",
+      c.joint_count   AS "jointCount",
+      c.count_a       AS "countA",
+      c.count_b       AS "countB",
+      c.total_signals AS "totalSignals",
+      c.expected_count AS "expectedCount",
+      c.lift          AS "lift",
+      c.computed_at   AS "computedAt"
+    FROM ${tpCompositeTrendCandidates} c
+    INNER JOIN ${tpEntities} ent_a ON ent_a.id = c.entity_a_id
+    INNER JOIN ${tpEntities} ent_b ON ent_b.id = c.entity_b_id
+    WHERE c.company_id = ${companyId}
+      AND ent_a.deleted_at IS NULL
+      AND ent_b.deleted_at IS NULL
+    ORDER BY c.lift DESC, c.joint_count DESC
+  `);
+  return (rows.rows as any[]).map((r) => ({
+    id: Number(r.id),
+    entityAId: Number(r.entityAId),
+    entityBId: Number(r.entityBId),
+    entityALabel: String(r.entityALabel),
+    entityBLabel: String(r.entityBLabel),
+    entityAType: r.entityAType ?? null,
+    entityBType: r.entityBType ?? null,
+    windowStart: String(r.windowStart),
+    windowEnd: String(r.windowEnd),
+    jointCount: Number(r.jointCount),
+    countA: Number(r.countA),
+    countB: Number(r.countB),
+    totalSignals: Number(r.totalSignals),
+    expectedCount: Number(r.expectedCount),
+    lift: Number(r.lift),
+    computedAt: r.computedAt instanceof Date
+      ? r.computedAt.toISOString()
+      : String(r.computedAt),
+  }));
+}
+
+/**
+ * Replace the composite-trend candidate snapshot atomically and stamp
+ * lastCoOccurrenceRunAt. Mirrors the long-tail snapshot-replace pattern.
+ */
+export async function replaceCompositeTrendCandidates(
+  companyId: number,
+  rows: Array<{
+    entityAId: number;
+    entityBId: number;
+    windowStart: string;
+    windowEnd: string;
+    jointCount: number;
+    countA: number;
+    countB: number;
+    totalSignals: number;
+    expectedCount: number;
+    lift: number;
+  }>,
+  computedAt: Date = new Date()
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(tpCompositeTrendCandidates)
+      .where(eq(tpCompositeTrendCandidates.companyId, companyId));
+    if (rows.length > 0) {
+      await tx
+        .insert(tpCompositeTrendCandidates)
+        .values(rows.map((r) => ({ ...r, companyId, computedAt })));
+    }
+    await tx
+      .update(tpPipelineConfig)
+      .set({ lastCoOccurrenceRunAt: computedAt })
+      .where(eq(tpPipelineConfig.companyId, companyId));
   });
 }
 
@@ -1326,6 +1455,63 @@ export async function bulkInsertSignalEntities(
 ): Promise<void> {
   if (data.length === 0) return;
   await db.insert(tpSignalEntities).values(data).onConflictDoNothing();
+}
+
+/**
+ * Insert signal-entity links AND the unordered co-occurrence pairs in the
+ * same transaction so a failure in either side rolls both back. This keeps
+ * tp_entity_co_occurrences in sync with tp_signal_entities — if extraction
+ * succeeds we always have both, never one without the other.
+ *
+ * Pair generation: per-signal, the caller passes the de-duplicated entity-id
+ * list (max 50, capped to avoid the O(n^2) blow-up on dense long-form posts).
+ * The helper produces unordered pairs with entityAId < entityBId.
+ */
+export async function bulkInsertSignalEntitiesAndCoOccurrences(
+  data: InsertTpSignalEntity[],
+  perSignal: Array<{
+    companyId: number;
+    rawSignalId: number;
+    postedAt: Date;
+    entityIds: number[];
+  }>,
+  maxEntitiesPerSignal = 50
+): Promise<{ pairsInserted: number }> {
+  if (data.length === 0 && perSignal.length === 0) {
+    return { pairsInserted: 0 };
+  }
+
+  const coRows: InsertTpEntityCoOccurrence[] = [];
+  for (const s of perSignal) {
+    const ids = Array.from(new Set(s.entityIds)).sort((a, b) => a - b);
+    if (ids.length < 2) continue;
+    const capped = ids.slice(0, maxEntitiesPerSignal);
+    for (let i = 0; i < capped.length; i++) {
+      for (let j = i + 1; j < capped.length; j++) {
+        coRows.push({
+          companyId: s.companyId,
+          rawSignalId: s.rawSignalId,
+          entityAId: capped[i]!,
+          entityBId: capped[j]!,
+          postedAt: s.postedAt,
+        });
+      }
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    if (data.length > 0) {
+      await tx.insert(tpSignalEntities).values(data).onConflictDoNothing();
+    }
+    if (coRows.length > 0) {
+      await tx
+        .insert(tpEntityCoOccurrences)
+        .values(coRows)
+        .onConflictDoNothing();
+    }
+  });
+
+  return { pairsInserted: coRows.length };
 }
 
 // ---------------------------------------------------------------------------
