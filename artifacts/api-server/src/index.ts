@@ -13,6 +13,7 @@ import { runEntityExtraction } from "./services/entity-extraction.js";
 import { runTimeseriesAggregation } from "./services/timeseries.js";
 import { runStateMachine } from "./services/state-machine.js";
 import { launchBatch, finalizeBatchIfDone } from "./services/launch-batch.js";
+import { runLongTailEvaluation } from "./services/long-tail.js";
 
 const rawPort = process.env["PORT"] ?? "8080";
 const port = Number(rawPort);
@@ -297,6 +298,21 @@ cron.schedule("30 2 * * *", async () => {
     }
   } catch (e) {
     logger.error({ err: e }, "Nightly state machine run failed");
+  }
+});
+
+// Nightly long-tail Bayesian uplift at 02:45 UTC (after state machine).
+// Pure read of tp_entity_timeseries, cheap to run unconditionally so we
+// keep the snapshot fresh even on quiet days. Stamps lastLongTailRunAt
+// inside runLongTailEvaluation's own transaction.
+cron.schedule("45 2 * * *", async () => {
+  try {
+    const companies = await storage.getAllCompanies();
+    for (const company of companies) {
+      await runLongTailEvaluation(company.id);
+    }
+  } catch (e) {
+    logger.error({ err: e }, "Nightly long-tail evaluation failed");
   }
 });
 

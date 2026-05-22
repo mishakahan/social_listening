@@ -17,7 +17,9 @@ import {
   tpKeywordInterest,
   tpLaunchBatches,
   tpPipelineConfig,
+  tpLongTailCandidates,
   type Company,
+  type TpLongTailCandidate,
   type InsertCompany,
   type TpSeedCandidate,
   type InsertTpSeedCandidate,
@@ -596,6 +598,182 @@ export async function setLastStateMachineRunAt(
     .update(tpPipelineConfig)
     .set({ lastStateMachineRunAt: at })
     .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
+// ---------------------------------------------------------------------------
+// Long-tail candidates (Task #2)
+// ---------------------------------------------------------------------------
+
+export interface LongTailRow {
+  id: number;
+  entityId: number;
+  canonicalLabel: string;
+  entityType: string | null;
+  aliases: string[];
+  windowStart: string;
+  windowEnd: string;
+  currentMentions: number;
+  baselineMentions: number;
+  baselineKind: string;
+  upliftScore: number;
+  posteriorProb: number;
+  computedAt: string;
+  // Compact 30-day sparkline (one entry per day in window, oldest first).
+  sparkline: number[];
+}
+
+/**
+ * Returns the most-recent long-tail snapshot for the company joined with the
+ * entity row (canonical label, aliases). Includes a 30d mentions sparkline
+ * per candidate, batch-fetched in a single query.
+ */
+export async function getLongTailCandidates(
+  companyId: number
+): Promise<LongTailRow[]> {
+  const rows = await db
+    .select({
+      c: tpLongTailCandidates,
+      ent: tpEntities,
+    })
+    .from(tpLongTailCandidates)
+    .innerJoin(tpEntities, eq(tpEntities.id, tpLongTailCandidates.entityId))
+    .where(
+      and(
+        eq(tpLongTailCandidates.companyId, companyId),
+        isNull(tpEntities.deletedAt)
+      )
+    )
+    .orderBy(desc(tpLongTailCandidates.posteriorProb));
+
+  if (rows.length === 0) return [];
+
+  // Batch-fetch sparkline data: one query covering all candidate entities,
+  // aggregating mentions per (entity, bucketDate) across platforms/geos.
+  const entityIds = rows.map((r) => r.c.entityId);
+  const windowStart = rows[0]!.c.windowStart;
+  const windowEnd = rows[0]!.c.windowEnd;
+
+  const tsRows = await db
+    .select({
+      entityId: tpEntityTimeseries.entityId,
+      bucketDate: tpEntityTimeseries.bucketDate,
+      mentions: sql<number>`coalesce(sum(${tpEntityTimeseries.mentions}), 0)::int`,
+    })
+    .from(tpEntityTimeseries)
+    .where(
+      and(
+        eq(tpEntityTimeseries.companyId, companyId),
+        inArray(tpEntityTimeseries.entityId, entityIds),
+        gte(tpEntityTimeseries.bucketDate, windowStart),
+        lte(tpEntityTimeseries.bucketDate, windowEnd)
+      )
+    )
+    .groupBy(tpEntityTimeseries.entityId, tpEntityTimeseries.bucketDate);
+
+  // Build a dense 30-day array per entity by walking the window day-by-day.
+  const startMs = new Date(windowStart + "T00:00:00Z").getTime();
+  const endMs = new Date(windowEnd + "T00:00:00Z").getTime();
+  const days = Math.round((endMs - startMs) / 86400_000) + 1;
+  const byEntity = new Map<number, Map<string, number>>();
+  for (const r of tsRows) {
+    const m = byEntity.get(r.entityId) ?? new Map<string, number>();
+    m.set(String(r.bucketDate), Number(r.mentions) || 0);
+    byEntity.set(r.entityId, m);
+  }
+
+  return rows.map((r) => {
+    const dayMap = byEntity.get(r.c.entityId) ?? new Map();
+    const sparkline: number[] = [];
+    for (let i = 0; i < days; i++) {
+      const ts = new Date(startMs + i * 86400_000).toISOString().slice(0, 10);
+      sparkline.push(dayMap.get(ts) ?? 0);
+    }
+    return {
+      id: r.c.id,
+      entityId: r.c.entityId,
+      canonicalLabel: r.ent.canonicalLabel,
+      entityType: r.ent.entityType ?? null,
+      aliases: r.ent.aliases ?? [],
+      windowStart: r.c.windowStart,
+      windowEnd: r.c.windowEnd,
+      currentMentions: r.c.currentMentions,
+      baselineMentions: r.c.baselineMentions,
+      baselineKind: r.c.baselineKind,
+      upliftScore: r.c.upliftScore,
+      posteriorProb: r.c.posteriorProb,
+      computedAt: r.c.computedAt.toISOString(),
+      sparkline,
+    };
+  });
+}
+
+/**
+ * Promote an entity to the main radar manually. Sets manuallyPromoted=true
+ * on every (entity, geography) state row and creates/links a knowledge item
+ * so the entity surfaces in getTrendsEnriched even when its volume sits
+ * below the noise floor.
+ */
+export async function promoteEntityToRadar(
+  companyId: number,
+  entityId: number
+): Promise<{ promoted: number; knowledgeItemId: number | null }> {
+  const entRows = await db
+    .select()
+    .from(tpEntities)
+    .where(and(eq(tpEntities.id, entityId), eq(tpEntities.companyId, companyId)))
+    .limit(1);
+  const entity = entRows[0];
+  if (!entity) {
+    throw new Error("Entity not found");
+  }
+
+  const stateRows = await db
+    .select()
+    .from(tpEntityState)
+    .where(
+      and(
+        eq(tpEntityState.companyId, companyId),
+        eq(tpEntityState.entityId, entityId)
+      )
+    );
+
+  if (stateRows.length === 0) {
+    throw new Error("Entity has no state rows — run state machine first");
+  }
+
+  // Use the highest-volume geography as the canonical row for the KI.
+  const primary = stateRows.reduce((best, r) =>
+    r.volume30d > best.volume30d ? r : best
+  );
+
+  const ki = await upsertKnowledgeItem({
+    companyId,
+    category: entity.entityType,
+    topicLabel: entity.canonicalLabel,
+    geographicScope: primary.geography,
+    type: entity.entityType,
+    title: entity.canonicalLabel,
+    summary: `${entity.canonicalLabel} — manually promoted from long-tail lane (current=${primary.volume30d}, posterior uplift >= configured threshold).`,
+    status: primary.state,
+    archived: false,
+    signalStrength: Math.max(50, Math.round((primary.volume30d / 10) * 30)),
+    evidenceCount: primary.volume30d,
+  } as any);
+
+  await db
+    .update(tpEntityState)
+    .set({
+      manuallyPromoted: true,
+      knowledgeItemId: ki.id,
+    })
+    .where(
+      and(
+        eq(tpEntityState.companyId, companyId),
+        eq(tpEntityState.entityId, entityId)
+      )
+    );
+
+  return { promoted: stateRows.length, knowledgeItemId: ki.id };
 }
 
 /**

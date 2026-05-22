@@ -19,6 +19,7 @@ import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
 import { launchBatch, finalizeBatchIfDone } from "../services/launch-batch.js";
+import { runLongTailEvaluation } from "../services/long-tail.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -1032,6 +1033,9 @@ const patchConfigSchema = z
       .optional(),
     scoutPullDow: z.number().int().min(0).max(6).optional(),
     scoutPullHourUtc: z.number().int().min(0).max(23).optional(),
+    // Long-tail Bayesian-uplift lane (Task #2).
+    longTailMinMentions: z.number().int().min(1).max(100).optional(),
+    longTailMinPosterior: z.number().min(0.5).max(0.99).optional(),
   })
   .passthrough();
 
@@ -1540,5 +1544,66 @@ router.post("/companies/:id/run-state-machine", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Long-tail Bayesian-uplift lane (Task #2)
+// ---------------------------------------------------------------------------
+
+// GET /api/pipeline/companies/:id/long-tail
+//   Returns the most recent long-tail snapshot for the company, plus the
+//   knobs in effect so the UI can render its header without a second call.
+router.get("/companies/:id/long-tail", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const [candidates, cfg] = await Promise.all([
+      storage.getLongTailCandidates(companyId),
+      storage.getPipelineConfig(companyId),
+    ]);
+    res.json({
+      candidates,
+      lastRunAt: cfg?.lastLongTailRunAt ?? null,
+      minMentions: cfg?.longTailMinMentions ?? 5,
+      minPosterior: cfg?.longTailMinPosterior ?? 0.9,
+    });
+  } catch (err: any) {
+    req.log?.error?.({ err }, "Failed to fetch long-tail candidates");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/companies/:id/run-long-tail
+//   Fire-and-forget re-evaluation. Returns immediately; the run stamps
+//   lastLongTailRunAt on completion. Same pattern as run-timeseries.
+router.post("/companies/:id/run-long-tail", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "Long-tail evaluation started" });
+    runLongTailEvaluation(companyId).catch((e) =>
+      logger.error({ err: e, companyId }, "Manual long-tail evaluation failed")
+    );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start long-tail evaluation");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/companies/:id/entities/:entityId/promote
+//   Manually surface a long-tail entity on the main radar. Flips
+//   manuallyPromoted on every state row and creates/links a knowledge item
+//   so getTrendsEnriched picks it up immediately.
+router.post(
+  "/companies/:id/entities/:entityId/promote",
+  async (req, res) => {
+    try {
+      const companyId = parseInt(req.params.id!, 10);
+      const entityId = parseInt(req.params.entityId!, 10);
+      const result = await storage.promoteEntityToRadar(companyId, entityId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      logger.error({ err }, "Failed to promote entity");
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 export default router;

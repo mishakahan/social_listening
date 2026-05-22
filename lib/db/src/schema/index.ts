@@ -402,6 +402,12 @@ export const tpEntityState = pgTable(
   momPrior: integer("mom_prior"),
   yoyCurrent: integer("yoy_current"),
   yoyPrior: integer("yoy_prior"),
+  // Long-tail manual promotion (Task #2). When true, the entity surfaces on
+  // the main radar even if its volume sits below the noise floor — used after
+  // a user clicks "Promote to radar" on a long-tail Bayesian-uplift candidate.
+  // The promote endpoint also creates/links a knowledge item so the entity
+  // shows up in getTrendsEnriched immediately.
+  manuallyPromoted: boolean("manually_promoted").notNull().default(false),
   volatility: doublePrecision("volatility").notNull().default(0),
   platformsSeen: jsonb("platforms_seen").notNull().$type<string[]>().default([]),
   knowledgeItemId: integer("knowledge_item_id").references(
@@ -686,8 +692,60 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
   // Last time runTimeseriesAggregation / runStateMachine completed for this company
   lastTimeseriesRunAt: timestamp("last_timeseries_run_at"),
   lastStateMachineRunAt: timestamp("last_state_machine_run_at"),
+  // Long-tail Bayesian-uplift lane (Task #2). Knobs + last-run stamp.
+  // longTailMinMentions: absolute floor on current 30d mentions for an entity
+  //   to even be considered as a long-tail candidate (default 5; range 1-100).
+  // longTailMinPosterior: Bayesian posterior P(true rate >= 2x baseline)
+  //   required to surface (default 0.9; range 0.5-0.99).
+  longTailMinMentions: integer("long_tail_min_mentions").notNull().default(5),
+  longTailMinPosterior: doublePrecision("long_tail_min_posterior")
+    .notNull()
+    .default(0.9),
+  lastLongTailRunAt: timestamp("last_long_tail_run_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ---------------------------------------------------------------------------
+// tp_long_tail_candidates — output of the Beta-Binomial uplift evaluator.
+// One row per (company, entity) per run; each run shares a single
+// computedAt timestamp. The unique index allows a history of snapshots.
+// GET endpoint returns rows from the most recent computedAt for the company.
+// ---------------------------------------------------------------------------
+export const tpLongTailCandidates = pgTable(
+  "tp_long_tail_candidates",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    entityId: integer("entity_id")
+      .notNull()
+      .references(() => tpEntities.id, { onDelete: "cascade" }),
+    // YYYY-MM-DD window bounds for the current measurement period.
+    windowStart: text("window_start").notNull(),
+    windowEnd: text("window_end").notNull(),
+    currentMentions: integer("current_mentions").notNull(),
+    baselineMentions: integer("baseline_mentions").notNull(),
+    // "yoy" when prior-year same-30d-window had data; "prior_window" when
+    // we fell back to the immediately preceding 30d (most common for
+    // companies without a year of history yet).
+    baselineKind: text("baseline_kind").notNull(),
+    // currentMentions / max(baselineMentions, 1). Pure ratio, no smoothing.
+    upliftScore: doublePrecision("uplift_score").notNull(),
+    // P(true rate >= 2x baseline) under Beta(1,1) prior on the proportion
+    // p = current / (current + baseline). Computed via the regularized
+    // incomplete beta function in services/long-tail.ts (no sampling).
+    posteriorProb: doublePrecision("posterior_prob").notNull(),
+    computedAt: timestamp("computed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_long_tail_candidates_unique_idx").on(
+      t.companyId,
+      t.entityId,
+      t.computedAt
+    ),
+  ]
+);
 
 // ---------------------------------------------------------------------------
 // Relations
@@ -913,4 +971,13 @@ export const insertTpPipelineConfigSchema =
 export type TpPipelineConfig = typeof tpPipelineConfig.$inferSelect;
 export type InsertTpPipelineConfig = z.infer<
   typeof insertTpPipelineConfigSchema
+>;
+
+// tpLongTailCandidates
+export const insertTpLongTailCandidateSchema = createInsertSchema(
+  tpLongTailCandidates
+).omit({ id: true });
+export type TpLongTailCandidate = typeof tpLongTailCandidates.$inferSelect;
+export type InsertTpLongTailCandidate = z.infer<
+  typeof insertTpLongTailCandidateSchema
 >;

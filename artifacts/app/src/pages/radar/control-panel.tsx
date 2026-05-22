@@ -1052,6 +1052,46 @@ export default function ControlPanelPage() {
         </Card>
       </Accordion>
 
+      {/* Long-tail lane */}
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <h2 className="text-sm font-semibold text-foreground">Emerging long-tail lane</h2>
+          <p className="text-xs text-muted-foreground">
+            Bayesian uplift evaluator that surfaces low-volume entities whose
+            rate jumped vs prior-year (or prior 30-day) baseline. Tune the
+            volume floor and posterior threshold to control how aggressively
+            the Emerging tab proposes promotions.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-2 pb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <NumberField
+              fieldKey="longTailMinMentions"
+              label="Min mentions (last 30d)"
+              help="Entities below this floor are not evaluated. 1–100."
+              value={(cfg.longTailMinMentions as number) ?? 5}
+              min={1}
+              max={100}
+              onChange={(v) => setField("longTailMinMentions" as keyof PipelineConfig, v as never)}
+              onSave={handleSave}
+              ready={ready}
+            />
+            <SliderField
+              fieldKey="longTailMinPosterior"
+              label="Min posterior probability"
+              help="Bayesian P(true rate ≥ 2× baseline). Higher = stricter. 0.50–0.99."
+              value={(cfg.longTailMinPosterior as number) ?? 0.9}
+              min={0.5}
+              max={0.99}
+              step={0.01}
+              onChange={(v) => setField("longTailMinPosterior" as keyof PipelineConfig, v as never)}
+              onSave={handleSave}
+              ready={ready}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Author allowlist */}
       <Card className="mt-4">
         <CardContent className="pt-5 pb-5">
