@@ -20,6 +20,15 @@ import {
   tpLongTailCandidates,
   tpEntityCoOccurrences,
   tpCompositeTrendCandidates,
+  tpCategories,
+  tpCategoryAttributes,
+  tpAttributeSignals,
+  tpAttributeTimeseries,
+  type TpCategory,
+  type InsertTpCategory,
+  type TpCategoryAttribute,
+  type InsertTpCategoryAttribute,
+  type InsertTpAttributeSignal,
   type Company,
   type TpLongTailCandidate,
   type InsertTpEntityCoOccurrence,
@@ -2217,4 +2226,407 @@ export async function getPipelineRunStatus(
       lastComputedAt: toIso(stateLastRows[0]?.ts ?? null),
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Categories & attribute vocabulary (Task #4)
+// ---------------------------------------------------------------------------
+
+export async function getCategories(companyId: number): Promise<TpCategory[]> {
+  return db
+    .select()
+    .from(tpCategories)
+    .where(eq(tpCategories.companyId, companyId))
+    .orderBy(asc(tpCategories.label));
+}
+
+export async function getCategoryAttributes(
+  companyId: number,
+  categoryId?: number
+): Promise<TpCategoryAttribute[]> {
+  const conds = [eq(tpCategoryAttributes.companyId, companyId)];
+  if (categoryId !== undefined) {
+    conds.push(eq(tpCategoryAttributes.categoryId, categoryId));
+  }
+  return db
+    .select()
+    .from(tpCategoryAttributes)
+    .where(and(...conds))
+    .orderBy(asc(tpCategoryAttributes.attribute));
+}
+
+export interface CategoryWithVocab {
+  id: number;
+  label: string;
+  slug: string;
+  attributes: Array<{ id: number; attribute: string; attributeClass: string | null }>;
+}
+
+export async function getCategoriesWithVocab(
+  companyId: number
+): Promise<CategoryWithVocab[]> {
+  const [cats, attrs] = await Promise.all([
+    getCategories(companyId),
+    getCategoryAttributes(companyId),
+  ]);
+  const byCat = new Map<number, CategoryWithVocab["attributes"]>();
+  for (const a of attrs) {
+    const list = byCat.get(a.categoryId) ?? [];
+    list.push({ id: a.id, attribute: a.attribute, attributeClass: a.attributeClass });
+    byCat.set(a.categoryId, list);
+  }
+  return cats.map((c) => ({
+    id: c.id,
+    label: c.label,
+    slug: c.slug,
+    attributes: byCat.get(c.id) ?? [],
+  }));
+}
+
+/**
+ * Atomic replace of categories + per-category attribute vocabulary.
+ * Input shape mirrors the control-panel editor.
+ * - Categories matched by slug are kept (preserves the id so existing tagged
+ *   entities don't get untagged). Categories not present in the payload are
+ *   deleted (cascades through attribute_signals).
+ * - For each retained / new category, the attribute set is replaced
+ *   wholesale (compute additions + removals).
+ */
+export async function replaceCategoriesAndVocab(
+  companyId: number,
+  payload: Array<{
+    slug: string;
+    label: string;
+    attributes: Array<{ attribute: string; attributeClass?: string | null }>;
+  }>
+): Promise<CategoryWithVocab[]> {
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select()
+      .from(tpCategories)
+      .where(eq(tpCategories.companyId, companyId));
+    const existingBySlug = new Map(existing.map((c) => [c.slug, c]));
+    const incomingSlugs = new Set(payload.map((p) => p.slug));
+
+    // Delete categories not in payload (cascades through attributes + signals).
+    const toDeleteIds = existing
+      .filter((c) => !incomingSlugs.has(c.slug))
+      .map((c) => c.id);
+    if (toDeleteIds.length > 0) {
+      await tx
+        .delete(tpCategories)
+        .where(inArray(tpCategories.id, toDeleteIds));
+    }
+
+    for (const p of payload) {
+      let row = existingBySlug.get(p.slug);
+      if (!row) {
+        const inserted = await tx
+          .insert(tpCategories)
+          .values({ companyId, label: p.label, slug: p.slug })
+          .returning();
+        row = inserted[0]!;
+      } else if (row.label !== p.label) {
+        await tx
+          .update(tpCategories)
+          .set({ label: p.label })
+          .where(eq(tpCategories.id, row.id));
+      }
+
+      const currentAttrs = await tx
+        .select()
+        .from(tpCategoryAttributes)
+        .where(
+          and(
+            eq(tpCategoryAttributes.companyId, companyId),
+            eq(tpCategoryAttributes.categoryId, row.id)
+          )
+        );
+      const currentByAttr = new Map(currentAttrs.map((a) => [a.attribute.toLowerCase(), a]));
+      const incomingByAttr = new Map(
+        p.attributes.map((a) => [a.attribute.trim().toLowerCase(), a])
+      );
+
+      const toDeleteAttrIds: number[] = [];
+      for (const [key, a] of currentByAttr) {
+        if (!incomingByAttr.has(key)) toDeleteAttrIds.push(a.id);
+      }
+      if (toDeleteAttrIds.length > 0) {
+        await tx
+          .delete(tpCategoryAttributes)
+          .where(inArray(tpCategoryAttributes.id, toDeleteAttrIds));
+      }
+
+      const toInsert: InsertTpCategoryAttribute[] = [];
+      for (const [key, a] of incomingByAttr) {
+        const existingRow = currentByAttr.get(key);
+        if (!existingRow) {
+          toInsert.push({
+            companyId,
+            categoryId: row.id,
+            attribute: a.attribute.trim(),
+            attributeClass: a.attributeClass ?? null,
+          });
+        } else if ((existingRow.attributeClass ?? null) !== (a.attributeClass ?? null)) {
+          await tx
+            .update(tpCategoryAttributes)
+            .set({ attributeClass: a.attributeClass ?? null })
+            .where(eq(tpCategoryAttributes.id, existingRow.id));
+        }
+      }
+      if (toInsert.length > 0) {
+        await tx
+          .insert(tpCategoryAttributes)
+          .values(toInsert)
+          .onConflictDoNothing();
+      }
+    }
+  });
+  return getCategoriesWithVocab(companyId);
+}
+
+export async function getEntityById(entityId: number): Promise<TpEntity | null> {
+  const rows = await db
+    .select()
+    .from(tpEntities)
+    .where(eq(tpEntities.id, entityId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function tagEntityCategory(
+  entityId: number,
+  categoryId: number | null
+): Promise<void> {
+  await db
+    .update(tpEntities)
+    .set({ categoryId, updatedAt: new Date() })
+    .where(eq(tpEntities.id, entityId));
+}
+
+/**
+ * For a batch of signal ids, returns Map<signalId, Set<categoryId>> for the
+ * categories whose entities co-occur in each signal. Used by attribute
+ * extraction to know which category vocabularies to score per signal.
+ */
+export async function getSignalCategoryMap(
+  signalIds: number[]
+): Promise<Map<number, Set<number>>> {
+  const out = new Map<number, Set<number>>();
+  if (signalIds.length === 0) return out;
+  const rows = await db
+    .selectDistinct({
+      signalId: tpSignalEntities.rawSignalId,
+      categoryId: tpEntities.categoryId,
+    })
+    .from(tpSignalEntities)
+    .innerJoin(tpEntities, eq(tpEntities.id, tpSignalEntities.entityId))
+    .where(
+      and(
+        inArray(tpSignalEntities.rawSignalId, signalIds),
+        isNull(tpEntities.deletedAt)
+      )
+    );
+  for (const r of rows) {
+    if (r.categoryId == null) continue;
+    const set = out.get(r.signalId) ?? new Set<number>();
+    set.add(r.categoryId);
+    out.set(r.signalId, set);
+  }
+  return out;
+}
+
+/**
+ * Returns Set of "${signalId}:${categoryId}" already present in
+ * tp_attribute_signals — used to skip re-extraction on retries.
+ */
+export async function getCachedAttributeSignalPairs(
+  signalIds: number[],
+  categoryIds: number[]
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (signalIds.length === 0 || categoryIds.length === 0) return out;
+  const rows = await db
+    .selectDistinct({
+      signalId: tpAttributeSignals.rawSignalId,
+      categoryId: tpAttributeSignals.categoryId,
+    })
+    .from(tpAttributeSignals)
+    .where(
+      and(
+        inArray(tpAttributeSignals.rawSignalId, signalIds),
+        inArray(tpAttributeSignals.categoryId, categoryIds)
+      )
+    );
+  for (const r of rows) out.add(`${r.signalId}:${r.categoryId}`);
+  return out;
+}
+
+export async function bulkInsertAttributeSignals(
+  rows: InsertTpAttributeSignal[]
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const inserted = await db
+    .insert(tpAttributeSignals)
+    .values(rows)
+    .onConflictDoNothing()
+    .returning({ id: tpAttributeSignals.id });
+  return inserted.length;
+}
+
+export async function setLastAttributeAggregationAt(
+  companyId: number,
+  at: Date = new Date()
+): Promise<void> {
+  await db
+    .update(tpPipelineConfig)
+    .set({ lastAttributeAggregationAt: at })
+    .where(eq(tpPipelineConfig.companyId, companyId));
+}
+
+/**
+ * Recompute tp_attribute_timeseries for the company over `windowDays` and
+ * snapshot-replace via DELETE-then-INSERT inside one tx. Returns total rows
+ * upserted. Stamps lastAttributeAggregationAt on completion.
+ */
+export async function runAttributeTimeseriesAggregation(
+  companyId: number,
+  windowDays = 365
+): Promise<{ rows: number }> {
+  const since = new Date(Date.now() - windowDays * 86400 * 1000);
+  const sinceDate = since.toISOString().slice(0, 10);
+
+  const rows = await db.execute<{
+    category_id: number;
+    attribute_id: number;
+    bucket_date: string;
+    mentions: number;
+    unique_authors: number;
+  }>(sql`
+    SELECT
+      asg.category_id AS category_id,
+      asg.attribute_id AS attribute_id,
+      to_char(date_trunc('day', COALESCE(rs.posted_at, rs.captured_at)), 'YYYY-MM-DD') AS bucket_date,
+      COUNT(*)::int AS mentions,
+      COUNT(DISTINCT rs.author_handle)::int AS unique_authors
+    FROM tp_attribute_signals asg
+    JOIN tp_raw_signals rs ON rs.id = asg.raw_signal_id
+    WHERE asg.company_id = ${companyId}
+      AND COALESCE(rs.posted_at, rs.captured_at) >= ${sinceDate}::timestamp
+    GROUP BY asg.category_id, asg.attribute_id, bucket_date
+  `);
+
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(tpAttributeTimeseries)
+      .where(
+        and(
+          eq(tpAttributeTimeseries.companyId, companyId),
+          gte(tpAttributeTimeseries.bucketDate, sinceDate)
+        )
+      );
+    if (rows.rows.length > 0) {
+      const values = rows.rows.map((r) => ({
+        companyId,
+        categoryId: Number(r.category_id),
+        attributeId: Number(r.attribute_id),
+        bucketDate: r.bucket_date,
+        mentions: Number(r.mentions),
+        uniqueAuthors: Number(r.unique_authors),
+        computedAt: now,
+      }));
+      // Chunk to stay under parameter limits.
+      const chunkSize = 1000;
+      for (let i = 0; i < values.length; i += chunkSize) {
+        await tx
+          .insert(tpAttributeTimeseries)
+          .values(values.slice(i, i + chunkSize));
+      }
+    }
+    await tx
+      .update(tpPipelineConfig)
+      .set({ lastAttributeAggregationAt: now })
+      .where(eq(tpPipelineConfig.companyId, companyId));
+  });
+
+  return { rows: rows.rows.length };
+}
+
+export interface AttributeRanked {
+  attributeId: number;
+  attribute: string;
+  attributeClass: string | null;
+  categoryId: number;
+  categoryLabel: string;
+  mentions: number;
+  priorMentions: number;
+  deltaPct: number | null;
+}
+
+/**
+ * Ranked attributes for the company. Splits the recent N days into
+ * current = last windowDays, prior = the windowDays immediately preceding it.
+ * deltaPct is (current - prior) / prior, or null when prior == 0.
+ */
+export async function getAttributesRanked(
+  companyId: number,
+  options: { categoryId?: number; windowDays?: number } = {}
+): Promise<AttributeRanked[]> {
+  const windowDays = options.windowDays ?? 30;
+  const today = new Date();
+  const toDate = (d: Date) => d.toISOString().slice(0, 10);
+  const currentStart = toDate(new Date(today.getTime() - windowDays * 86400 * 1000));
+  const priorStart = toDate(new Date(today.getTime() - 2 * windowDays * 86400 * 1000));
+  const currentStartLit = currentStart;
+  const priorStartLit = priorStart;
+
+  const catFilter = options.categoryId
+    ? sql` AND ats.category_id = ${options.categoryId}`
+    : sql``;
+
+  const result = await db.execute<{
+    attribute_id: number;
+    attribute: string;
+    attribute_class: string | null;
+    category_id: number;
+    category_label: string;
+    mentions: number;
+    prior_mentions: number;
+  }>(sql`
+    SELECT
+      ats.attribute_id AS attribute_id,
+      ca.attribute AS attribute,
+      ca.attribute_class AS attribute_class,
+      ats.category_id AS category_id,
+      c.label AS category_label,
+      SUM(CASE WHEN ats.bucket_date >= ${currentStartLit} THEN ats.mentions ELSE 0 END)::int AS mentions,
+      SUM(CASE WHEN ats.bucket_date >= ${priorStartLit} AND ats.bucket_date < ${currentStartLit} THEN ats.mentions ELSE 0 END)::int AS prior_mentions
+    FROM tp_attribute_timeseries ats
+    JOIN tp_category_attributes ca ON ca.id = ats.attribute_id
+    JOIN tp_categories c ON c.id = ats.category_id
+    WHERE ats.company_id = ${companyId}
+      AND ats.bucket_date >= ${priorStartLit}
+      ${catFilter}
+    GROUP BY ats.attribute_id, ca.attribute, ca.attribute_class, ats.category_id, c.label
+    HAVING SUM(CASE WHEN ats.bucket_date >= ${currentStartLit} THEN ats.mentions ELSE 0 END) > 0
+        OR SUM(CASE WHEN ats.bucket_date >= ${priorStartLit} AND ats.bucket_date < ${currentStartLit} THEN ats.mentions ELSE 0 END) > 0
+    ORDER BY mentions DESC, attribute ASC
+  `);
+
+  return result.rows.map((r) => {
+    const mentions = Number(r.mentions);
+    const prior = Number(r.prior_mentions);
+    const deltaPct = prior > 0 ? (mentions - prior) / prior : null;
+    return {
+      attributeId: Number(r.attribute_id),
+      attribute: r.attribute,
+      attributeClass: r.attribute_class,
+      categoryId: Number(r.category_id),
+      categoryLabel: r.category_label,
+      mentions,
+      priorMentions: prior,
+      deltaPct,
+    };
+  });
 }

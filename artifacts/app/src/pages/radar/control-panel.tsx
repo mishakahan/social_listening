@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock } from "lucide-react";
+import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock, Layers, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface EntityTypeConfig {
@@ -108,6 +108,334 @@ const TYPE_COLOR_SWATCHES: { label: string; value: string }[] = [
   { label: "Pink", value: "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300" },
   { label: "Rose", value: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
 ];
+
+// ---------------------------------------------------------------------------
+// Categories & attribute vocabulary editor (Task #4)
+// ---------------------------------------------------------------------------
+
+interface CategoryVocabUI {
+  id?: number;
+  slug: string;
+  label: string;
+  attributes: Array<{ id?: number; attribute: string; attributeClass: string | null }>;
+}
+
+function slugifyCategoryLabel(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+async function fetchCategoriesApi(): Promise<CategoryVocabUI[]> {
+  const res = await fetch("/api/pipeline/companies/1/categories");
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { categories: CategoryVocabUI[] };
+  return data.categories ?? [];
+}
+
+async function patchCategoriesApi(
+  categories: CategoryVocabUI[]
+): Promise<CategoryVocabUI[]> {
+  const payload = {
+    categories: categories.map((c) => ({
+      slug: c.slug,
+      label: c.label,
+      attributes: c.attributes.map((a) => ({
+        attribute: a.attribute,
+        attributeClass: a.attributeClass,
+      })),
+    })),
+  };
+  const res = await fetch("/api/pipeline/companies/1/categories", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { categories: CategoryVocabUI[] };
+  return data.categories ?? [];
+}
+
+function CategoriesEditor() {
+  const queryClient = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["categories"],
+    queryFn: fetchCategoriesApi,
+  });
+
+  const [local, setLocal] = useState<CategoryVocabUI[] | null>(null);
+  const [newLabel, setNewLabel] = useState("");
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Monotonic request counter — out-of-order PATCH responses are ignored so a
+  // slow earlier save can't overwrite a newer edit.
+  const reqSeqRef = useRef(0);
+  const latestAckedRef = useRef(0);
+
+  useEffect(() => {
+    if (data && local === null) setLocal(data);
+  }, [data, local]);
+
+  const mutation = useMutation({
+    mutationFn: async (args: { seq: number; payload: CategoryVocabUI[] }) => {
+      const saved = await patchCategoriesApi(args.payload);
+      return { seq: args.seq, saved };
+    },
+    onSuccess: ({ seq, saved }) => {
+      if (seq < latestAckedRef.current) return; // stale response, ignore
+      latestAckedRef.current = seq;
+      queryClient.setQueryData(["categories"], saved);
+      // Only reconcile local state if no newer edits are pending; otherwise
+      // the user's in-flight edits would be reverted.
+      if (seq === reqSeqRef.current) setLocal(saved);
+      setSavedAt(Date.now());
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "Failed to save categories");
+    },
+  });
+
+  const scheduleSave = useCallback(
+    (next: CategoryVocabUI[]) => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(() => {
+        reqSeqRef.current += 1;
+        const seq = reqSeqRef.current;
+        mutation.mutate({ seq, payload: next });
+      }, 600);
+    },
+    [mutation]
+  );
+
+  const update = (next: CategoryVocabUI[]) => {
+    setLocal(next);
+    scheduleSave(next);
+  };
+
+  if (isLoading || local === null) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>
+          {error instanceof Error ? error.message : "Failed to load categories"}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const addCategory = () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    const slug = slugifyCategoryLabel(label);
+    if (!slug) return;
+    if (local.some((c) => c.slug === slug)) {
+      toast.error("A category with that slug already exists");
+      return;
+    }
+    update([...local, { slug, label, attributes: [] }]);
+    setNewLabel("");
+  };
+
+  const renameCategory = (idx: number, label: string) => {
+    const next = local.map((c, i) => (i === idx ? { ...c, label } : c));
+    setLocal(next);
+    scheduleSave(next);
+  };
+
+  const removeCategory = (idx: number) => {
+    if (!confirm(`Delete category "${local[idx]?.label}"? This removes its attribute vocabulary and any extracted attribute mentions.`)) return;
+    update(local.filter((_, i) => i !== idx));
+  };
+
+  const addAttribute = (idx: number, raw: string) => {
+    const attribute = raw.trim();
+    if (!attribute) return;
+    const lc = attribute.toLowerCase();
+    const cat = local[idx]!;
+    if (cat.attributes.some((a) => a.attribute.toLowerCase() === lc)) return;
+    const next = local.map((c, i) =>
+      i === idx
+        ? {
+            ...c,
+            attributes: [...c.attributes, { attribute, attributeClass: null }],
+          }
+        : c
+    );
+    update(next);
+  };
+
+  const removeAttribute = (catIdx: number, attrIdx: number) => {
+    const next = local.map((c, i) =>
+      i === catIdx
+        ? { ...c, attributes: c.attributes.filter((_, j) => j !== attrIdx) }
+        : c
+    );
+    update(next);
+  };
+
+  const showSaved = savedAt && Date.now() - savedAt < 2000;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Input
+          placeholder="New category label (e.g. Beverages)"
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addCategory()}
+          className="h-9 text-sm flex-1"
+        />
+        <Button size="sm" variant="outline" className="gap-1 h-9" onClick={addCategory}>
+          <Plus className="h-3.5 w-3.5" />
+          Add category
+        </Button>
+        {mutation.isPending && (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        )}
+        {!mutation.isPending && showSaved && (
+          <CheckCircle2 className="h-4 w-4 text-green-500" />
+        )}
+      </div>
+
+      {local.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No categories yet. Add one above to start defining its attribute vocabulary.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {local.map((cat, idx) => (
+            <CategoryRow
+              key={cat.id ?? cat.slug}
+              category={cat}
+              onRename={(label) => renameCategory(idx, label)}
+              onRemove={() => removeCategory(idx)}
+              onAddAttribute={(v) => addAttribute(idx, v)}
+              onRemoveAttribute={(j) => removeAttribute(idx, j)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface CategoryRowProps {
+  category: CategoryVocabUI;
+  onRename: (label: string) => void;
+  onRemove: () => void;
+  onAddAttribute: (val: string) => void;
+  onRemoveAttribute: (idx: number) => void;
+}
+
+function CategoryRow({
+  category,
+  onRename,
+  onRemove,
+  onAddAttribute,
+  onRemoveAttribute,
+}: CategoryRowProps) {
+  const [labelLocal, setLabelLocal] = useState(category.label);
+  const [attrInput, setAttrInput] = useState("");
+
+  useEffect(() => {
+    setLabelLocal(category.label);
+  }, [category.label]);
+
+  const commitLabel = () => {
+    const trimmed = labelLocal.trim();
+    if (trimmed && trimmed !== category.label) onRename(trimmed);
+    else setLabelLocal(category.label);
+  };
+
+  const submitAttr = () => {
+    if (!attrInput.trim()) return;
+    onAddAttribute(attrInput);
+    setAttrInput("");
+  };
+
+  return (
+    <div className="rounded-md border border-border p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <Input
+          value={labelLocal}
+          onChange={(e) => setLabelLocal(e.target.value)}
+          onBlur={commitLabel}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          className="h-8 text-sm font-medium flex-1"
+        />
+        <Badge variant="outline" className="text-xs font-mono">
+          {category.slug}
+        </Badge>
+        <Badge variant="outline" className="text-xs">
+          {category.attributes.length}{" "}
+          {category.attributes.length === 1 ? "term" : "terms"}
+        </Badge>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+          onClick={onRemove}
+          title="Delete category"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5 min-h-[32px] rounded-md border border-input bg-transparent px-2 py-1.5">
+        {category.attributes.map((a, j) => (
+          <span
+            key={a.id ?? `${a.attribute}-${j}`}
+            className="inline-flex items-center gap-1 rounded-sm bg-muted px-2 py-0.5 text-xs font-medium"
+          >
+            {a.attribute}
+            <button
+              onClick={() => onRemoveAttribute(j)}
+              className="text-muted-foreground hover:text-foreground ml-0.5"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+        {category.attributes.length === 0 && (
+          <span className="text-xs text-muted-foreground">
+            No attribute terms yet
+          </span>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <Input
+          placeholder="add attribute term (e.g. matcha, smoky, single-origin)"
+          value={attrInput}
+          onChange={(e) => setAttrInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitAttr()}
+          className="h-8 text-xs flex-1"
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1 h-8"
+          onClick={submitAttr}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function slugifyTypeId(input: string): string {
   return input
@@ -1170,6 +1498,26 @@ export default function ControlPanelPage() {
             isSaving={saveMutation.isPending}
             ready={ready}
           />
+        </CardContent>
+      </Card>
+
+      {/* Categories & attribute vocabularies */}
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-foreground">
+              Categories &amp; attribute vocabularies
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Define product/topic categories and the controlled vocabulary of
+            descriptors for each. The attribute extraction pass scores every
+            post tagged with a category against that exact list of terms only.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-2 pb-5">
+          <CategoriesEditor />
         </CardContent>
       </Card>
 

@@ -317,6 +317,20 @@ cron.schedule("45 2 * * *", async () => {
   }
 });
 
+// Nightly category attribute timeseries aggregation at 02:45 UTC.
+// Pure read of tp_attribute_signals + raw signal posted_at; stamps
+// lastAttributeAggregationAt inside its own transaction.
+cron.schedule("45 2 * * *", async () => {
+  try {
+    const companies = await storage.getAllCompanies();
+    for (const company of companies) {
+      await storage.runAttributeTimeseriesAggregation(company.id);
+    }
+  } catch (e) {
+    logger.error({ err: e }, "Nightly attribute aggregation failed");
+  }
+});
+
 // Weekly composite co-occurrence aggregation, Mondays at 03:00 UTC.
 // Pair-level scan over tp_entity_co_occurrences ∪ tp_signal_entities. The
 // service stamps lastCoOccurrenceRunAt inside its own transaction.

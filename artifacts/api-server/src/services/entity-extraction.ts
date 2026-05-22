@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { logger } from "../lib/logger.js";
 import * as storage from "../storage/index.js";
+import { extractAttributesForBatch } from "./attribute-extraction.js";
 import {
   DEFAULT_ENTITY_TYPES,
   type EntityTypeConfig,
@@ -287,6 +288,17 @@ export async function extractEntitiesForBatch(
     { companyId, signalCount: signals.length, entityLinks: signalEntityRows.length },
     "Entity extraction batch done"
   );
+
+  // Category-scoped attribute extraction (Task #4). Best-effort: a failure
+  // here logs but never throws so the entity batch stays "done".
+  try {
+    await extractAttributesForBatch(companyId, signals);
+  } catch (err) {
+    logger.warn(
+      { err, companyId, signalCount: signals.length },
+      "Attribute extraction batch threw; ignoring (best-effort)"
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

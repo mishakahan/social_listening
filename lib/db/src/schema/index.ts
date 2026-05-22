@@ -282,6 +282,23 @@ export const tpRawSignals = pgTable(
   (t) => [uniqueIndex("tp_raw_signals_dedup_idx").on(t.companyId, t.platform, t.sourceId)]
 );
 
+// tp_categories (Task #4) — user-defined product/topic categories. Each
+// category has its own attribute vocabulary (see tp_category_attributes).
+// Entities are tagged with at most one category (tp_entities.category_id).
+export const tpCategories = pgTable(
+  "tp_categories",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    slug: text("slug").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("tp_categories_company_slug_idx").on(t.companyId, t.slug)]
+);
+
 // tp_entities
 export const tpEntities = pgTable("tp_entities", {
   id: serial("id").primaryKey(),
@@ -290,6 +307,11 @@ export const tpEntities = pgTable("tp_entities", {
     .references(() => companies.id, { onDelete: "cascade" }),
   canonicalLabel: text("canonical_label").notNull(),
   entityType: text("entity_type").notNull(),
+  // Optional category tag (Task #4). NULL = uncategorized. Entities can be
+  // moved between categories from the Entities Audit UI.
+  categoryId: integer("category_id").references(() => tpCategories.id, {
+    onDelete: "set null",
+  }),
   aliases: jsonb("aliases").notNull().$type<string[]>().default([]),
   firstSeenAt: timestamp("first_seen_at"),
   lastSeenAt: timestamp("last_seen_at"),
@@ -299,6 +321,105 @@ export const tpEntities = pgTable("tp_entities", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// tp_category_attributes (Task #4) — controlled vocabulary of descriptors
+// (adjectives, attribute terms) per category. The LLM attribute-extraction
+// pass is restricted to this exact list per category.
+export const tpCategoryAttributes = pgTable(
+  "tp_category_attributes",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id")
+      .notNull()
+      .references(() => tpCategories.id, { onDelete: "cascade" }),
+    attribute: text("attribute").notNull(),
+    // Optional grouping class ("flavor", "format", "occasion", etc.) — purely
+    // for UI grouping; the extraction pass doesn't read it.
+    attributeClass: text("attribute_class"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_category_attributes_unique_idx").on(
+      t.companyId,
+      t.categoryId,
+      t.attribute
+    ),
+  ]
+);
+
+// tp_attribute_signals (Task #4) — per-signal extraction cache. One row per
+// (signal, attribute) the LLM said matched. The (raw_signal_id, attribute_id)
+// unique index prevents duplicates on re-extraction.
+export const tpAttributeSignals = pgTable(
+  "tp_attribute_signals",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    rawSignalId: integer("raw_signal_id")
+      .notNull()
+      .references(() => tpRawSignals.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id")
+      .notNull()
+      .references(() => tpCategories.id, { onDelete: "cascade" }),
+    attributeId: integer("attribute_id")
+      .notNull()
+      .references(() => tpCategoryAttributes.id, { onDelete: "cascade" }),
+    // postedAt copied from the source signal at insert so the aggregator can
+    // bucket by day without a join (matches the co-occurrence pattern).
+    postedAt: timestamp("posted_at").notNull(),
+    capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_attribute_signals_unique_idx").on(
+      t.rawSignalId,
+      t.attributeId
+    ),
+    index("tp_attribute_signals_company_posted_idx").on(
+      t.companyId,
+      t.postedAt
+    ),
+    // Cache lookup key: "have we already extracted this (signal, category)?"
+    index("tp_attribute_signals_signal_category_idx").on(
+      t.rawSignalId,
+      t.categoryId
+    ),
+  ]
+);
+
+// tp_attribute_timeseries (Task #4) — daily rollup written by the
+// runAttributeTimeseriesAggregation job.
+export const tpAttributeTimeseries = pgTable(
+  "tp_attribute_timeseries",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id")
+      .notNull()
+      .references(() => tpCategories.id, { onDelete: "cascade" }),
+    attributeId: integer("attribute_id")
+      .notNull()
+      .references(() => tpCategoryAttributes.id, { onDelete: "cascade" }),
+    bucketDate: date("bucket_date").notNull(),
+    mentions: integer("mentions").notNull().default(0),
+    uniqueAuthors: integer("unique_authors").notNull().default(0),
+    computedAt: timestamp("computed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_attribute_timeseries_unique_idx").on(
+      t.companyId,
+      t.categoryId,
+      t.attributeId,
+      t.bucketDate
+    ),
+  ]
+);
 
 // tp_signal_entities
 export const tpSignalEntities = pgTable("tp_signal_entities", {
@@ -720,6 +841,8 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
     .default(2.0),
   compositeWindowDays: integer("composite_window_days").notNull().default(14),
   lastCoOccurrenceRunAt: timestamp("last_co_occurrence_run_at"),
+  // Category-scoped attribute extraction lane (Task #4).
+  lastAttributeAggregationAt: timestamp("last_attribute_aggregation_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -1119,4 +1242,38 @@ export type InsertTpCompositeTrendCandidate = z.infer<
 export type TpLongTailCandidate = typeof tpLongTailCandidates.$inferSelect;
 export type InsertTpLongTailCandidate = z.infer<
   typeof insertTpLongTailCandidateSchema
+>;
+
+// tpCategories (Task #4)
+export const insertTpCategorySchema = createInsertSchema(tpCategories).omit({
+  id: true,
+});
+export type TpCategory = typeof tpCategories.$inferSelect;
+export type InsertTpCategory = z.infer<typeof insertTpCategorySchema>;
+
+// tpCategoryAttributes (Task #4)
+export const insertTpCategoryAttributeSchema = createInsertSchema(
+  tpCategoryAttributes
+).omit({ id: true });
+export type TpCategoryAttribute = typeof tpCategoryAttributes.$inferSelect;
+export type InsertTpCategoryAttribute = z.infer<
+  typeof insertTpCategoryAttributeSchema
+>;
+
+// tpAttributeSignals (Task #4)
+export const insertTpAttributeSignalSchema = createInsertSchema(
+  tpAttributeSignals
+).omit({ id: true });
+export type TpAttributeSignal = typeof tpAttributeSignals.$inferSelect;
+export type InsertTpAttributeSignal = z.infer<
+  typeof insertTpAttributeSignalSchema
+>;
+
+// tpAttributeTimeseries (Task #4)
+export const insertTpAttributeTimeseriesSchema = createInsertSchema(
+  tpAttributeTimeseries
+).omit({ id: true });
+export type TpAttributeTimeseries = typeof tpAttributeTimeseries.$inferSelect;
+export type InsertTpAttributeTimeseries = z.infer<
+  typeof insertTpAttributeTimeseriesSchema
 >;

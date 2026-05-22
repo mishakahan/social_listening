@@ -21,6 +21,7 @@ import { runStateMachine } from "../services/state-machine.js";
 import { launchBatch, finalizeBatchIfDone } from "../services/launch-batch.js";
 import { runLongTailEvaluation } from "../services/long-tail.js";
 import { runCoOccurrenceAggregation } from "../services/co-occurrence.js";
+import { extractAttributesForBatch } from "../services/attribute-extraction.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -1634,6 +1635,156 @@ router.post("/companies/:id/run-co-occurrence", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Categories & attribute vocabulary (Task #4)
+// ---------------------------------------------------------------------------
+
+// GET /api/pipeline/companies/:id/categories
+router.get("/companies/:id/categories", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const data = await storage.getCategoriesWithVocab(companyId);
+    res.json({ categories: data });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to list categories");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const slugRegex = /^[a-z0-9_-]+$/;
+const categoriesPatchSchema = z.object({
+  categories: z
+    .array(
+      z.object({
+        slug: z.string().min(1).max(64).regex(slugRegex, "slug must be lowercase letters, digits, dashes or underscores"),
+        label: z.string().min(1).max(120),
+        attributes: z
+          .array(
+            z.object({
+              attribute: z.string().trim().min(1).max(80),
+              attributeClass: z.string().trim().min(1).max(40).nullable().optional(),
+            })
+          )
+          .max(500),
+      })
+    )
+    .max(50)
+    .refine(
+      (arr) => new Set(arr.map((c) => c.slug)).size === arr.length,
+      { message: "Category slugs must be unique" }
+    ),
+});
+
+// PATCH /api/pipeline/companies/:id/categories
+router.patch("/companies/:id/categories", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const parsed = categoriesPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid categories payload",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+    const updated = await storage.replaceCategoriesAndVocab(
+      companyId,
+      parsed.data.categories
+    );
+    res.json({ categories: updated });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to update categories");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pipeline/companies/:id/attributes?categoryId=&windowDays=30
+router.get("/companies/:id/attributes", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const categoryId = req.query.categoryId
+      ? parseInt(String(req.query.categoryId), 10)
+      : undefined;
+    const windowDays = req.query.windowDays
+      ? Math.max(1, Math.min(365, parseInt(String(req.query.windowDays), 10)))
+      : 30;
+    const items = await storage.getAttributesRanked(companyId, {
+      categoryId,
+      windowDays,
+    });
+    res.json({ items, windowDays });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to list attributes");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/companies/:id/run-attribute-aggregation
+router.post("/companies/:id/run-attribute-aggregation", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json({ ok: true, message: "Attribute aggregation started" });
+    storage
+      .runAttributeTimeseriesAggregation(companyId)
+      .catch((e) =>
+        logger.error(
+          { err: e, companyId },
+          "Manual attribute aggregation failed"
+        )
+      );
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start attribute aggregation");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/pipeline/companies/:id/entities/:entityId/category
+//   Tag (or untag) an entity with a category. Body: { categoryId: number | null }
+router.patch(
+  "/companies/:id/entities/:entityId/category",
+  async (req, res) => {
+    try {
+      const companyId = parseInt(req.params.id!, 10);
+      const entityId = parseInt(req.params.entityId!, 10);
+      const raw = (req.body as { categoryId?: number | null }).categoryId;
+      const categoryId =
+        raw === null || raw === undefined ? null : Number(raw);
+      if (categoryId !== null && !Number.isInteger(categoryId)) {
+        res.status(400).json({ error: "categoryId must be an integer or null" });
+        return;
+      }
+      // Tenant isolation: verify entity belongs to this company AND, if a
+      // category is supplied, that the category also belongs to it. Without
+      // these checks the endpoint would happily cross-tag entities/categories
+      // between companies.
+      const entity = await storage.getEntityById(entityId);
+      if (!entity || entity.companyId !== companyId) {
+        res.status(404).json({ error: "Entity not found in this company" });
+        return;
+      }
+      if (categoryId !== null) {
+        const allowed = await storage.getCategoriesWithVocab(companyId);
+        if (!allowed.some((c) => c.id === categoryId)) {
+          res
+            .status(404)
+            .json({ error: "Category not found in this company" });
+          return;
+        }
+      }
+      await storage.tagEntityCategory(entityId, categoryId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      logger.error({ err }, "Failed to tag entity category");
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Silence unused-import warning when extractAttributesForBatch is referenced
+// only from the entity-extraction module. (Kept here to make the cross-module
+// boundary explicit for future debug routes.)
+void extractAttributesForBatch;
 
 // POST /api/pipeline/companies/:id/entities/:entityId/promote
 //   Manually surface a long-tail entity on the main radar. Flips

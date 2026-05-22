@@ -17,6 +17,7 @@ const TrendsListPage = lazy(() => import("@/pages/radar/trends/list"));
 const TrendDetailPage = lazy(() => import("@/pages/radar/trends/detail"));
 const ControlPanelPage = lazy(() => import("@/pages/radar/control-panel"));
 const EmergingPage = lazy(() => import("@/pages/radar/emerging"));
+const AttributesPage = lazy(() => import("@/pages/radar/attributes"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +40,7 @@ function RadarRouter() {
           <Route path="/radar/trends/:trendId" component={TrendDetailPage} />
           <Route path="/radar/trends" component={TrendsListPage} />
           <Route path="/radar/emerging" component={EmergingPage} />
+          <Route path="/radar/attributes" component={AttributesPage} />
           <Route path="/radar/control-panel" component={ControlPanelPage} />
           <Route component={NotFound} />
         </Switch>

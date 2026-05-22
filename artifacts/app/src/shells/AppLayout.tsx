@@ -2,7 +2,7 @@ import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, Search, ClipboardCheck, PlayCircle, TrendingUp,
-  Settings, Radar, ChevronRight, Activity, Tag, Sparkles,
+  Settings, Radar, ChevronRight, Activity, Tag, Sparkles, Layers,
 } from "lucide-react";
 
 const navItems = [
@@ -14,6 +14,7 @@ const navItems = [
   { href: "/radar/audit/entities", label: "Entities", parent: "Audit", icon: Tag },
   { href: "/radar/trends", label: "Trends", icon: TrendingUp },
   { href: "/radar/emerging", label: "Emerging", icon: Sparkles },
+  { href: "/radar/attributes", label: "Attributes", icon: Layers },
   { href: "/radar/control-panel", label: "Control Panel", icon: Settings },
 ];
 
