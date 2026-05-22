@@ -23,6 +23,7 @@ import {
   tpCategories,
   tpCategoryAttributes,
   tpAttributeSignals,
+  tpAttributeExtractionLog,
   tpAttributeTimeseries,
   type TpCategory,
   type InsertTpCategory,
@@ -2437,8 +2438,11 @@ export async function getSignalCategoryMap(
 }
 
 /**
- * Returns Set of "${signalId}:${categoryId}" already present in
- * tp_attribute_signals — used to skip re-extraction on retries.
+ * Returns Set of "${signalId}:${categoryId}" already processed by attribute
+ * extraction — read from tp_attribute_extraction_log, which records every
+ * processed pair INCLUDING zero-match outcomes. This is the source of truth
+ * for the cache; reading from tp_attribute_signals alone would re-send any
+ * signal/category that produced no matches to the LLM on every rerun.
  */
 export async function getCachedAttributeSignalPairs(
   signalIds: number[],
@@ -2448,18 +2452,43 @@ export async function getCachedAttributeSignalPairs(
   if (signalIds.length === 0 || categoryIds.length === 0) return out;
   const rows = await db
     .selectDistinct({
-      signalId: tpAttributeSignals.rawSignalId,
-      categoryId: tpAttributeSignals.categoryId,
+      signalId: tpAttributeExtractionLog.rawSignalId,
+      categoryId: tpAttributeExtractionLog.categoryId,
     })
-    .from(tpAttributeSignals)
+    .from(tpAttributeExtractionLog)
     .where(
       and(
-        inArray(tpAttributeSignals.rawSignalId, signalIds),
-        inArray(tpAttributeSignals.categoryId, categoryIds)
+        inArray(tpAttributeExtractionLog.rawSignalId, signalIds),
+        inArray(tpAttributeExtractionLog.categoryId, categoryIds)
       )
     );
   for (const r of rows) out.add(`${r.signalId}:${r.categoryId}`);
   return out;
+}
+
+/**
+ * Record that an attribute extraction pass has processed each given
+ * (signal, category) pair, regardless of whether any attributes matched.
+ * ON CONFLICT DO NOTHING so reruns are idempotent.
+ */
+export async function logAttributeExtractionPairs(
+  companyId: number,
+  pairs: Array<{ rawSignalId: number; categoryId: number; matchCount: number }>
+): Promise<void> {
+  if (pairs.length === 0) return;
+  const values = pairs.map((p) => ({
+    companyId,
+    rawSignalId: p.rawSignalId,
+    categoryId: p.categoryId,
+    matchCount: p.matchCount,
+  }));
+  const chunkSize = 1000;
+  for (let i = 0; i < values.length; i += chunkSize) {
+    await db
+      .insert(tpAttributeExtractionLog)
+      .values(values.slice(i, i + chunkSize))
+      .onConflictDoNothing();
+  }
 }
 
 export async function bulkInsertAttributeSignals(

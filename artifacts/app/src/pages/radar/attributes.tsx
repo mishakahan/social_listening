@@ -34,12 +34,18 @@ interface CategoryWithVocab {
   attributes: Array<{ id: number; attribute: string; attributeClass: string | null }>;
 }
 
-async function fetchAttributes(windowDays: number): Promise<{
+async function fetchAttributes(
+  windowDays: number,
+  categoryId: number | null
+): Promise<{
   items: AttributeRanked[];
   windowDays: number;
 }> {
+  const params = new URLSearchParams();
+  params.set("windowDays", String(windowDays));
+  if (categoryId !== null) params.set("categoryId", String(categoryId));
   const res = await fetch(
-    `/api/pipeline/companies/1/attributes?windowDays=${windowDays}`
+    `/api/pipeline/companies/1/attributes?${params.toString()}`
   );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -85,7 +91,11 @@ function DeltaCell({ deltaPct }: { deltaPct: number | null }) {
 
 export default function AttributesPage() {
   const [windowDays, setWindowDays] = useState(30);
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [reaggregating, setReaggregating] = useState(false);
+
+  const categoryIdFilter =
+    categoryFilter === "all" ? null : Number(categoryFilter);
 
   const {
     data: attrData,
@@ -93,8 +103,8 @@ export default function AttributesPage() {
     error: attrError,
     refetch: refetchAttrs,
   } = useQuery({
-    queryKey: ["attributes", windowDays],
-    queryFn: () => fetchAttributes(windowDays),
+    queryKey: ["attributes", windowDays, categoryIdFilter],
+    queryFn: () => fetchAttributes(windowDays, categoryIdFilter),
   });
 
   const { data: catData, isLoading: catLoading } = useQuery({
@@ -209,6 +219,19 @@ export default function AttributesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger className="h-9 w-44 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((cat) => (
+                <SelectItem key={cat.id} value={String(cat.id)}>
+                  {cat.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Select
             value={String(windowDays)}
             onValueChange={(v) => setWindowDays(Number(v))}
@@ -238,7 +261,10 @@ export default function AttributesPage() {
       </div>
 
       <div className="space-y-4">
-        {categories.map((cat) => {
+        {(categoryIdFilter === null
+          ? categories
+          : categories.filter((c) => c.id === categoryIdFilter)
+        ).map((cat) => {
           const ranked = (byCategory.get(cat.id) ?? []).slice(0, TOP_N);
           const vocabCount = cat.attributes.length;
           return (

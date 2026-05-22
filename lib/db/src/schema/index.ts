@@ -391,6 +391,34 @@ export const tpAttributeSignals = pgTable(
   ]
 );
 
+// tp_attribute_extraction_log (Task #4) — sentinel cache of processed
+// (raw_signal_id, category_id) pairs INCLUDING zero-match outcomes. Without
+// this, signals that yield no attributes for a category would be re-sent to
+// the LLM on every rerun (tp_attribute_signals only records matches).
+export const tpAttributeExtractionLog = pgTable(
+  "tp_attribute_extraction_log",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    rawSignalId: integer("raw_signal_id")
+      .notNull()
+      .references(() => tpRawSignals.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id")
+      .notNull()
+      .references(() => tpCategories.id, { onDelete: "cascade" }),
+    matchCount: integer("match_count").notNull().default(0),
+    processedAt: timestamp("processed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("tp_attribute_extraction_log_unique_idx").on(
+      t.rawSignalId,
+      t.categoryId
+    ),
+  ]
+);
+
 // tp_attribute_timeseries (Task #4) — daily rollup written by the
 // runAttributeTimeseriesAggregation job.
 export const tpAttributeTimeseries = pgTable(
@@ -1267,6 +1295,15 @@ export const insertTpAttributeSignalSchema = createInsertSchema(
 export type TpAttributeSignal = typeof tpAttributeSignals.$inferSelect;
 export type InsertTpAttributeSignal = z.infer<
   typeof insertTpAttributeSignalSchema
+>;
+
+// tpAttributeExtractionLog (Task #4)
+export const insertTpAttributeExtractionLogSchema = createInsertSchema(
+  tpAttributeExtractionLog
+).omit({ id: true });
+export type TpAttributeExtractionLog = typeof tpAttributeExtractionLog.$inferSelect;
+export type InsertTpAttributeExtractionLog = z.infer<
+  typeof insertTpAttributeExtractionLogSchema
 >;
 
 // tpAttributeTimeseries (Task #4)

@@ -161,6 +161,12 @@ export async function extractAttributesForBatch(
       }
 
       const toInsert: InsertTpAttributeSignal[] = [];
+      // Count matches per signal in this chunk so we can stamp the
+      // extraction-log sentinel for every processed pair (including
+      // zero-match), not just the ones that produced rows.
+      const matchCountBySignalId = new Map<number, number>();
+      for (const sig of chunk) matchCountBySignalId.set(sig.id, 0);
+
       for (const r of results) {
         const signal = chunk[r.signalIndex];
         if (!signal) continue;
@@ -177,6 +183,10 @@ export async function extractAttributesForBatch(
             postedAt: signal.postedAt ?? signal.capturedAt,
           });
         }
+        matchCountBySignalId.set(
+          signal.id,
+          (matchCountBySignalId.get(signal.id) ?? 0) + dedup.length
+        );
         pairsProcessed += 1;
       }
 
@@ -184,6 +194,19 @@ export async function extractAttributesForBatch(
         const inserted = await storage.bulkInsertAttributeSignals(toInsert);
         rowsInserted += inserted;
       }
+
+      // Stamp the sentinel cache for every signal in the chunk so subsequent
+      // runs skip them even when nothing matched. We log the entire chunk —
+      // not just signals the LLM returned — because if the model omitted a
+      // signal it effectively returned zero matches for it.
+      await storage.logAttributeExtractionPairs(
+        companyId,
+        chunk.map((s) => ({
+          rawSignalId: s.id,
+          categoryId,
+          matchCount: matchCountBySignalId.get(s.id) ?? 0,
+        }))
+      );
     }
   }
 
