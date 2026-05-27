@@ -2659,3 +2659,152 @@ export async function getAttributesRanked(
     };
   });
 }
+
+/**
+ * Wipe all pipeline-generated data for a company, preserving configuration.
+ *
+ * DELETED (collected/derived data):
+ *   tp_attribute_timeseries, tp_attribute_signals,
+ *   tp_attribute_extraction_log, tp_entity_state, tp_entity_timeseries,
+ *   tp_entity_co_occurrences, tp_composite_trend_candidates,
+ *   tp_long_tail_candidates, tp_signal_entities, tp_entities,
+ *   tp_keyword_interest, tp_raw_signals, tp_actor_runs, tp_launch_batches.
+ *
+ * PRESERVED (user-authored config):
+ *   tp_companies, tp_seed_items, tp_seed_candidates, tp_scout_queries,
+ *   tp_categories, tp_category_attributes, tp_entity_synonyms,
+ *   tp_pipeline_config (rows kept; last*At timestamps reset to NULL so
+ *   the next cron run treats the system as a fresh start).
+ *
+ * Returns per-table row counts deleted.
+ */
+export async function flushPipelineData(
+  companyId: number
+): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  await db.transaction(async (tx) => {
+    const deletes: Array<[string, () => Promise<{ rowCount: number | null }>]> =
+      [
+        [
+          "tp_attribute_timeseries",
+          () =>
+            tx
+              .delete(tpAttributeTimeseries)
+              .where(eq(tpAttributeTimeseries.companyId, companyId)),
+        ],
+        [
+          "tp_attribute_signals",
+          () =>
+            tx
+              .delete(tpAttributeSignals)
+              .where(eq(tpAttributeSignals.companyId, companyId)),
+        ],
+        [
+          "tp_attribute_extraction_log",
+          () =>
+            tx
+              .delete(tpAttributeExtractionLog)
+              .where(eq(tpAttributeExtractionLog.companyId, companyId)),
+        ],
+        [
+          "tp_entity_state",
+          () =>
+            tx
+              .delete(tpEntityState)
+              .where(eq(tpEntityState.companyId, companyId)),
+        ],
+        [
+          "tp_entity_timeseries",
+          () =>
+            tx
+              .delete(tpEntityTimeseries)
+              .where(eq(tpEntityTimeseries.companyId, companyId)),
+        ],
+        [
+          "tp_entity_co_occurrences",
+          () =>
+            tx
+              .delete(tpEntityCoOccurrences)
+              .where(eq(tpEntityCoOccurrences.companyId, companyId)),
+        ],
+        [
+          "tp_composite_trend_candidates",
+          () =>
+            tx
+              .delete(tpCompositeTrendCandidates)
+              .where(eq(tpCompositeTrendCandidates.companyId, companyId)),
+        ],
+        [
+          "tp_long_tail_candidates",
+          () =>
+            tx
+              .delete(tpLongTailCandidates)
+              .where(eq(tpLongTailCandidates.companyId, companyId)),
+        ],
+        [
+          "tp_signal_entities",
+          // No company_id on this join table — delete via raw_signal FK.
+          () =>
+            tx.delete(tpSignalEntities).where(
+              inArray(
+                tpSignalEntities.rawSignalId,
+                tx
+                  .select({ id: tpRawSignals.id })
+                  .from(tpRawSignals)
+                  .where(eq(tpRawSignals.companyId, companyId))
+              )
+            ),
+        ],
+        [
+          "tp_entities",
+          () =>
+            tx.delete(tpEntities).where(eq(tpEntities.companyId, companyId)),
+        ],
+        [
+          "tp_keyword_interest",
+          () =>
+            tx
+              .delete(tpKeywordInterest)
+              .where(eq(tpKeywordInterest.companyId, companyId)),
+        ],
+        [
+          "tp_raw_signals",
+          () =>
+            tx
+              .delete(tpRawSignals)
+              .where(eq(tpRawSignals.companyId, companyId)),
+        ],
+        [
+          "tp_actor_runs",
+          () =>
+            tx
+              .delete(tpActorRuns)
+              .where(eq(tpActorRuns.companyId, companyId)),
+        ],
+        [
+          "tp_launch_batches",
+          () =>
+            tx
+              .delete(tpLaunchBatches)
+              .where(eq(tpLaunchBatches.companyId, companyId)),
+        ],
+      ];
+
+    for (const [name, run] of deletes) {
+      const res = await run();
+      counts[name] = res.rowCount ?? 0;
+    }
+
+    // Reset pipeline_config timestamps so cron treats this as a fresh start.
+    await tx
+      .update(tpPipelineConfig)
+      .set({
+        lastScoutPullAt: null,
+        lastTimeseriesRunAt: null,
+        lastStateMachineRunAt: null,
+        lastAttributeAggregationAt: null,
+      })
+      .where(eq(tpPipelineConfig.companyId, companyId));
+  });
+  return counts;
+}

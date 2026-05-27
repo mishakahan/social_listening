@@ -1739,6 +1739,29 @@ router.post("/companies/:id/run-attribute-aggregation", async (req, res) => {
   }
 });
 
+// POST /api/pipeline/companies/:id/flush-data
+//   Destructive: deletes all collected/derived data for the company while
+//   preserving user-authored configuration. Requires { confirm: "FLUSH" }
+//   in the request body as a deliberate-action guard.
+router.post("/companies/:id/flush-data", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    const confirm = (req.body as { confirm?: string } | undefined)?.confirm;
+    if (confirm !== "FLUSH") {
+      res
+        .status(400)
+        .json({ error: 'Missing confirmation. Send { "confirm": "FLUSH" }.' });
+      return;
+    }
+    const counts = await storage.flushPipelineData(companyId);
+    req.log.warn({ companyId, counts }, "Pipeline data flushed");
+    res.json({ ok: true, counts });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to flush pipeline data");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/pipeline/companies/:id/entities/:entityId/category
 //   Tag (or untag) an entity with a category. Body: { categoryId: number | null }
 router.patch(

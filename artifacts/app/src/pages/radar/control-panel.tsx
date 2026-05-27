@@ -16,7 +16,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock, Layers, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock, Layers, Trash2, AlertTriangle } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 
 interface EntityTypeConfig {
@@ -1003,7 +1014,143 @@ function EntityTypesEditor({ types, onSave, isSaving, ready }: EntityTypesEditor
   );
 }
 
+function FlushDataCard() {
+  const queryClient = useQueryClient();
+  const [confirmText, setConfirmText] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const flushMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/pipeline/companies/1/flush-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "FLUSH" }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<{
+        ok: boolean;
+        counts: Record<string, number>;
+      }>;
+    },
+    onSuccess: (data) => {
+      const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
+      toast.success(
+        `Flushed ${total.toLocaleString()} rows across ${
+          Object.keys(data.counts).length
+        } tables. Configuration preserved.`
+      );
+      queryClient.invalidateQueries();
+      setConfirmText("");
+      setOpen(false);
+    },
+    onError: (err: Error) => {
+      toast.error(`Flush failed: ${err.message}`);
+    },
+  });
+
+  return (
+    <Card className="mt-4 border-destructive/40">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-destructive" />
+          <h2 className="text-sm font-semibold text-foreground">
+            Danger zone — flush all pipeline data
+          </h2>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Deletes every collected post, actor run, entity, timeseries point,
+          state row, and attribute mention for this company. Use this to test
+          the pipeline end-to-end on a clean slate. Your configuration
+          (scout queries, categories &amp; vocab, core vocab, entity types,
+          synonyms, pipeline settings) is preserved; cron timestamps are
+          reset so the next scheduled pull will treat this as a fresh start.
+        </p>
+      </CardHeader>
+      <CardContent className="pt-2 pb-5">
+        <AlertDialog open={open} onOpenChange={setOpen}>
+          <AlertDialogTrigger asChild>
+            <Button variant="destructive" size="sm">
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              Flush all data
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Flush all pipeline data?</AlertDialogTitle>
+              <AlertDialogDescription asChild>
+                <div className="space-y-2 text-sm">
+                  <p>
+                    This permanently deletes all collected and derived data
+                    for this company. There is no undo.
+                  </p>
+                  <p className="text-xs">
+                    <strong>Deleted:</strong> actor runs, launch batches, raw
+                    signals, signal/entity links, entities, entity timeseries,
+                    entity state, keyword interest, co-occurrences, composite
+                    &amp; long-tail candidates, attribute signals, attribute
+                    extraction log, attribute timeseries.
+                  </p>
+                  <p className="text-xs">
+                    <strong>Preserved:</strong> scout queries, categories
+                    &amp; attribute vocab, core vocabulary, entity types,
+                    entity synonyms, pipeline settings.
+                  </p>
+                  <p className="pt-2">
+                    Type{" "}
+                    <code className="px-1 py-0.5 rounded bg-muted font-mono text-xs">
+                      FLUSH
+                    </code>{" "}
+                    to confirm.
+                  </p>
+                  <Input
+                    autoFocus
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder="FLUSH"
+                    className="font-mono"
+                  />
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                onClick={() => setConfirmText("")}
+                disabled={flushMutation.isPending}
+              >
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  flushMutation.mutate();
+                }}
+                disabled={
+                  confirmText !== "FLUSH" || flushMutation.isPending
+                }
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {flushMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    Flushing…
+                  </>
+                ) : (
+                  "Flush all data"
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ControlPanelPage() {
+  return <ControlPanelInner />;
+}
+
+function ControlPanelInner() {
   const { data: config, isLoading, error } = useQuery({
     queryKey: ["pipeline-config"],
     queryFn: fetchConfig,
@@ -1520,6 +1667,9 @@ export default function ControlPanelPage() {
           <CategoriesEditor />
         </CardContent>
       </Card>
+
+      {/* Danger zone: flush all pipeline data */}
+      <FlushDataCard />
 
       {/* Entity types */}
       <Accordion type="single" collapsible defaultValue="entity-types" className="mt-4">
