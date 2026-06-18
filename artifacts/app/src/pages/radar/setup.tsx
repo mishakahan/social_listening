@@ -1,31 +1,66 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, Sparkles, AlertCircle, CheckCircle2 } from "lucide-react";
+import {
+  Loader2,
+  Sparkles,
+  AlertCircle,
+  CheckCircle2,
+  Target,
+  Plus,
+  Trash2,
+} from "lucide-react";
 
 const MIN_BRIEF_LENGTH = 500;
+
+interface WatchTopicDraft {
+  title: string;
+  description: string;
+}
 
 export default function RadarSetupPage() {
   const [, navigate] = useLocation();
   const [brief, setBrief] = useState("");
+  const [watchTopics, setWatchTopics] = useState<WatchTopicDraft[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const charCount = brief.length;
   const isReady = charCount >= MIN_BRIEF_LENGTH;
 
+  const addWatchTopic = useCallback(() => {
+    setWatchTopics((prev) => [...prev, { title: "", description: "" }]);
+  }, []);
+
+  const updateWatchTopic = useCallback(
+    (index: number, field: keyof WatchTopicDraft, value: string) => {
+      setWatchTopics((prev) =>
+        prev.map((t, i) => (i === index ? { ...t, [field]: value } : t))
+      );
+    },
+    []
+  );
+
+  const removeWatchTopic = useCallback((index: number) => {
+    setWatchTopics((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleSubmit = useCallback(async () => {
     if (!isReady || isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
     try {
+      const cleanedWatchTopics = watchTopics
+        .map((t) => ({ title: t.title.trim(), description: t.description.trim() }))
+        .filter((t) => t.title.length > 0);
       const res = await fetch("/api/pipeline/companies/1/setup-radar/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief }),
+        body: JSON.stringify({ brief, watchTopics: cleanedWatchTopics }),
       });
       if (!res.ok) {
         const contentType = res.headers.get("content-type") ?? "";
@@ -42,7 +77,7 @@ export default function RadarSetupPage() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [brief, isReady, isSubmitting, navigate]);
+  }, [brief, watchTopics, isReady, isSubmitting, navigate]);
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
@@ -107,37 +142,115 @@ export default function RadarSetupPage() {
             />
           </div>
 
-          {/* Error */}
-          {error && (
-            <Alert variant="destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-
-          {/* Submit */}
-          <div className="flex justify-end pt-2">
-            <Button
-              onClick={handleSubmit}
-              disabled={!isReady || isSubmitting}
-              size="lg"
-              className="gap-2"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Generating…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4" />
-                  Generate Seed Topics
-                </>
-              )}
-            </Button>
-          </div>
         </CardContent>
       </Card>
+
+      {/* Watch Topics */}
+      <Card className="mt-6">
+        <CardHeader className="pb-4">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Target className="h-4 w-4 text-primary" />
+            Watch Topics
+            <span className="text-xs font-normal text-muted-foreground">
+              (optional)
+            </span>
+          </CardTitle>
+          <CardDescription>
+            Strategic themes that anchor what your radar tracks. Seeds will be
+            generated to ladder up to each topic. Pitch these at the altitude of
+            a strategic question — e.g.{" "}
+            <span className="italic">
+              “LATAM consumer trends in chicken-based products”
+            </span>
+            . Leave empty to let the brief drive generation on its own.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {watchTopics.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No watch topics yet. Add one to steer seed generation.
+            </p>
+          )}
+
+          {watchTopics.map((topic, i) => (
+            <div
+              key={i}
+              className="rounded-lg border border-border p-3 space-y-2 bg-muted/20"
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  value={topic.title}
+                  onChange={(e) => updateWatchTopic(i, "title", e.target.value)}
+                  placeholder="Topic title (e.g. LATAM consumer trends in chicken-based products)"
+                  className="text-sm"
+                  disabled={isSubmitting}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="flex-shrink-0 text-muted-foreground hover:text-red-600"
+                  onClick={() => removeWatchTopic(i)}
+                  disabled={isSubmitting}
+                  aria-label="Remove watch topic"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <Textarea
+                value={topic.description}
+                onChange={(e) =>
+                  updateWatchTopic(i, "description", e.target.value)
+                }
+                rows={2}
+                placeholder="Short description — what this theme covers and why it matters (optional)"
+                className="resize-none text-sm leading-relaxed"
+                disabled={isSubmitting}
+              />
+            </div>
+          ))}
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={addWatchTopic}
+            disabled={isSubmitting}
+          >
+            <Plus className="h-4 w-4" />
+            Add watch topic
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Error */}
+      {error && (
+        <Alert variant="destructive" className="mt-6">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* Submit */}
+      <div className="flex justify-end pt-6">
+        <Button
+          onClick={handleSubmit}
+          disabled={!isReady || isSubmitting}
+          size="lg"
+          className="gap-2"
+        >
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Generating…
+            </>
+          ) : (
+            <>
+              <Sparkles className="h-4 w-4" />
+              Generate Seed Topics
+            </>
+          )}
+        </Button>
+      </div>
 
       {/* Tips */}
       <div className="mt-6 p-4 rounded-lg bg-muted/50 border border-border">

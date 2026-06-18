@@ -105,6 +105,7 @@ export const tpSeedCandidates = pgTable("tp_seed_candidates", {
         strategicCentrality: number;
         actionableAt: string;
         groundedIn: string[];
+        watchTopic?: string;
         seedQueries: {
           language: string;
           keywords: string[];
@@ -118,6 +119,11 @@ export const tpSeedCandidates = pgTable("tp_seed_candidates", {
   companyContextSnapshot: jsonb("company_context_snapshot").$type<
     Record<string, any>
   >(),
+  // User-supplied strategic "watch topics" (title + short description) that
+  // anchor seed generation. Optional — empty array means brief-only generation.
+  watchTopicsSnapshot: jsonb("watch_topics_snapshot")
+    .$type<Array<{ title: string; description: string }>>()
+    .default([]),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   committedAt: timestamp("committed_at"),
 });

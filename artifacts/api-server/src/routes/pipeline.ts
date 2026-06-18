@@ -47,7 +47,11 @@ router.get("/companies/default", async (_req, res) => {
 router.post("/companies/:id/setup-radar/generate", async (req, res) => {
   try {
     const companyId = parseInt(req.params.id!, 10);
-    const { brief, userId } = req.body as { brief?: string; userId?: number };
+    const { brief, userId, watchTopics: rawWatchTopics } = req.body as {
+      brief?: string;
+      userId?: number;
+      watchTopics?: unknown;
+    };
 
     if (!brief || typeof brief !== "string") {
       res.status(400).json({ error: "brief is required" });
@@ -60,12 +64,39 @@ router.post("/companies/:id/setup-radar/generate", async (req, res) => {
       return;
     }
 
+    // Watch topics are optional. Validate + normalize: each needs a non-empty
+    // title; description defaults to "". Drop blank rows so empty UI rows don't
+    // pollute the prompt.
+    const watchTopicsParsed = z
+      .array(
+        z.object({
+          title: z.string().trim().min(1).max(200),
+          description: z.string().trim().max(1000).optional().default(""),
+        })
+      )
+      .max(20)
+      .optional()
+      .safeParse(rawWatchTopics);
+
+    if (!watchTopicsParsed.success) {
+      res.status(400).json({
+        error:
+          "watchTopics must be an array of { title, description } objects (title 1-200 chars).",
+      });
+      return;
+    }
+
+    const watchTopics = (watchTopicsParsed.data ?? []).filter(
+      (t) => t.title.length > 0
+    );
+
     const resolvedUserId = userId ?? (await storage.getOrCreateDefaultUserId());
 
     const { companyContext, seedItems } = await generateSeedCandidates(
       brief,
       companyId,
-      resolvedUserId
+      resolvedUserId,
+      watchTopics
     );
 
     const candidate = await storage.createSeedCandidates({
@@ -74,6 +105,7 @@ router.post("/companies/:id/setup-radar/generate", async (req, res) => {
       payload: seedItems as any,
       briefSnapshot: brief,
       companyContextSnapshot: companyContext as Record<string, any>,
+      watchTopicsSnapshot: watchTopics,
       status: "draft",
     });
 

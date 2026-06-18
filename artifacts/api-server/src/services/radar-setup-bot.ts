@@ -32,6 +32,11 @@ export interface CompanyContext {
   innovationPhases: string[];
 }
 
+export interface WatchTopic {
+  title: string;
+  description: string;
+}
+
 export interface SeedCandidateItem {
   label: string;
   description: string;
@@ -41,6 +46,9 @@ export interface SeedCandidateItem {
   strategicCentrality: number;
   actionableAt: string;
   groundedIn: string[];
+  // Title of the user-supplied watch topic this seed ladders up to. Undefined
+  // when generation was brief-only (no watch topics provided).
+  watchTopic?: string;
   seedQueries: { language: string; keywords: string[]; hashtags: string[] }[];
 }
 
@@ -154,14 +162,41 @@ export function computeTargetSeedCount(ctx: CompanyContext): number {
 
 export async function generateSeedItems(
   ctx: CompanyContext,
-  targetCount: number
+  targetCount: number,
+  watchTopics: WatchTopic[] = []
 ): Promise<SeedCandidateItem[]> {
   const companyName = ctx.companyName ?? "this company";
+  const hasWatchTopics = watchTopics.length > 0;
+
+  const watchTopicsBlock = hasWatchTopics
+    ? `
+The user has supplied these strategic WATCH TOPICS. They are the anchoring themes
+for this radar — every seed you generate MUST ladder up to exactly one of them:
+${watchTopics
+  .map(
+    (t, i) =>
+      `${i + 1}. "${t.title}"${t.description ? ` — ${t.description}` : ""}`
+  )
+  .join("\n")}
+`
+    : "";
+
+  const watchTopicField = hasWatchTopics
+    ? `- watchTopic: the EXACT title of the watch topic this seed ladders up to. Must be copied verbatim from one of the watch topic titles listed above.
+`
+    : "";
+
+  const watchTopicRules = hasWatchTopics
+    ? `- Every watch topic above MUST be covered by at least two seeds; distribute the ${targetCount} seeds across all of them.
+- Each seed must set watchTopic to exactly one of the provided watch topic titles (verbatim).
+- Seeds must concretely operationalize their watch topic into specific, trackable social-listening topics.`
+    : `- Cover all strategicPriorities at least once`;
+
   const systemPrompt = `You are a trend-intelligence analyst building a social-listening seed list for ${companyName}.
 
 Company context:
 ${JSON.stringify(ctx, null, 2)}
-
+${watchTopicsBlock}
 Generate exactly ${targetCount} seed items. Each seed is a specific topic to track on social media.
 
 For each seed, produce:
@@ -173,7 +208,7 @@ For each seed, produce:
 - strategicCentrality: integer 0-100 (how central to the company's strategic priorities; 80-100 = core, 50-79 = relevant, 20-49 = adjacent)
 - actionableAt: one of: "ingredient", "format", "claim", "occasion", "brand"
 - groundedIn: array of CompanyContext field names that justify this seed (e.g. ["strategicPriorities", "productCategories"])
-- seedQueries: one entry per relevant language for this geography. Language mapping:
+${watchTopicField}- seedQueries: one entry per relevant language for this geography. Language mapping:
   - IT → [{ language: "it", ... }]
   - DE → [{ language: "de", ... }]
   - CN → [{ language: "zh-CN", ... }]
@@ -183,7 +218,7 @@ For each seed, produce:
 
 Rules:
 - Cover all targetGeographies at least once
-- Cover all strategicPriorities at least once
+${watchTopicRules}
 - Distribute seeds across different territory tags
 - Be specific and concrete: "pistachio cream" not just "chocolate"
 - Return JSON array only`;
@@ -211,17 +246,31 @@ Rules:
 export async function generateSeedCandidates(
   brief: string,
   companyId: number,
-  userId: number
+  userId: number,
+  watchTopics: WatchTopic[] = []
 ): Promise<{ companyContext: CompanyContext; seedItems: SeedCandidateItem[] }> {
-  logger.info({ companyId, userId }, "Generating seed candidates from brief");
+  logger.info(
+    { companyId, userId, watchTopicCount: watchTopics.length },
+    "Generating seed candidates from brief"
+  );
 
   const companyContext = await parseBriefToCompanyContext(brief);
   logger.info({ companyId }, "Brief parsed to company context");
 
-  const targetCount = computeTargetSeedCount(companyContext);
+  // When watch topics are supplied, scale the seed count to the number of
+  // topics (~4 seeds per topic) so each anchoring theme gets meaningful
+  // coverage; otherwise fall back to the context-derived heuristic.
+  let targetCount = computeTargetSeedCount(companyContext);
+  if (watchTopics.length > 0) {
+    targetCount = Math.min(45, Math.max(12, watchTopics.length * 4));
+  }
   logger.info({ companyId, targetCount }, "Target seed count computed");
 
-  const seedItems = await generateSeedItems(companyContext, targetCount);
+  const seedItems = await generateSeedItems(
+    companyContext,
+    targetCount,
+    watchTopics
+  );
   logger.info({ companyId, seedCount: seedItems.length }, "Seed items generated");
 
   return { companyContext, seedItems };

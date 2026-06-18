@@ -16,6 +16,7 @@ import {
   Globe,
   Tag,
   Layers,
+  Target,
   CheckSquare,
   Square,
 } from "lucide-react";
@@ -30,7 +31,13 @@ interface SeedItem {
   strategicCentrality: number;
   actionableAt: string;
   groundedIn: string[];
+  watchTopic?: string;
   status?: "pending" | "approved" | "killed";
+}
+
+interface WatchTopicSnapshot {
+  title: string;
+  description: string;
 }
 
 interface SeedCandidates {
@@ -39,6 +46,7 @@ interface SeedCandidates {
   status: string;
   briefSnapshot: string;
   companyContextSnapshot: unknown;
+  watchTopicsSnapshot?: WatchTopicSnapshot[];
   createdAt: string;
 }
 
@@ -145,6 +153,12 @@ function SeedCard({ item, index, selected, onSelect, allItems, onUpdate, isPendi
       <CardContent className="px-5 pb-4 space-y-3">
         {/* Chips row */}
         <div className="flex flex-wrap gap-1.5">
+          {item.watchTopic && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs text-primary border border-primary/30">
+              <Target className="h-3 w-3" />
+              {item.watchTopic}
+            </span>
+          )}
           {item.geography && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
               <Globe className="h-3 w-3" />
@@ -523,9 +537,9 @@ export default function SeedsAuditPage() {
         )}
       </div>
 
-      {/* Seed cards */}
-      <div className="space-y-4">
-        {items.map((item, i) => (
+      {/* Seed cards — grouped under watch topics when present */}
+      {(() => {
+        const renderCard = (item: SeedItem, i: number) => (
           <SeedCard
             key={`${item.label}-${i}`}
             item={item}
@@ -536,8 +550,66 @@ export default function SeedsAuditPage() {
             onUpdate={handleUpdate}
             isPending={patchMutation.isPending}
           />
-        ))}
-      </div>
+        );
+
+        const hasWatchTopics = items.some((it) => it.watchTopic);
+        if (!hasWatchTopics) {
+          return (
+            <div className="space-y-4">
+              {items.map((item, i) => renderCard(item, i))}
+            </div>
+          );
+        }
+
+        // Preserve original indices (SeedCard updates status by index).
+        const indexed = items.map((item, i) => ({ item, i }));
+        const groups = new Map<string, { item: SeedItem; i: number }[]>();
+        for (const entry of indexed) {
+          const key = entry.item.watchTopic?.trim() || "__ungrouped__";
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key)!.push(entry);
+        }
+
+        // Order groups by the snapshot ordering, then any extras, ungrouped last.
+        const snapshotTitles = (data?.watchTopicsSnapshot ?? []).map(
+          (t) => t.title
+        );
+        const orderedKeys: string[] = [];
+        for (const title of snapshotTitles) {
+          if (groups.has(title)) orderedKeys.push(title);
+        }
+        for (const key of groups.keys()) {
+          if (key !== "__ungrouped__" && !orderedKeys.includes(key)) {
+            orderedKeys.push(key);
+          }
+        }
+        if (groups.has("__ungrouped__")) orderedKeys.push("__ungrouped__");
+
+        return (
+          <div className="space-y-8">
+            {orderedKeys.map((key) => {
+              const entries = groups.get(key)!;
+              const isUngrouped = key === "__ungrouped__";
+              return (
+                <div key={key} className="space-y-3">
+                  <div className="flex items-center gap-2 border-b border-border pb-2">
+                    <Target className="h-4 w-4 text-primary flex-shrink-0" />
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {isUngrouped ? "Other seeds" : key}
+                    </h2>
+                    <span className="text-xs text-muted-foreground">
+                      {entries.length} seed{entries.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                  <div className="space-y-4">
+                    {entries.map(({ item, i }) => renderCard(item, i))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* Sticky commit bar */}
       <div className="fixed bottom-0 left-60 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-8 py-4 flex items-center justify-between">
