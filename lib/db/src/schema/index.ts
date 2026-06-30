@@ -579,6 +579,16 @@ export const tpEntityState = pgTable(
     .notNull()
     .$type<Record<string, string>>()
     .default({}),
+  // Confirmation gate verdict (fourth-stage check). Nullable + additive:
+  // null means the gate has not evaluated this state yet, or is disabled.
+  // decision "hold" means the candidate did not surface to the radar.
+  confirmationVerdict: jsonb("confirmation_verdict").$type<{
+    decision: "pass" | "hold";
+    reasons: string[];
+    significanceP: number;
+    entropyBits: number;
+    evaluatedAt: string;
+  }>(),
   computedAt: timestamp("computed_at").defaultNow().notNull(),
   },
   (t) => [uniqueIndex("tp_entity_state_geo_idx").on(t.entityId, t.geography)]
