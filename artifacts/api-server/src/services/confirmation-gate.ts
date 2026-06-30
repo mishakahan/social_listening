@@ -13,6 +13,40 @@ export interface GateConfig {
   enabled: boolean; // master toggle (revert behaviour)
 }
 
-export function sourceBreadth(): never {
-  throw new Error("not implemented");
+export interface SourceObservation {
+  platform: string;
+  uniqueAuthors: number;
+  mentions: number;
+}
+
+export interface BreadthResult {
+  entropyBits: number;
+  totalAuthors: number;
+  pass: boolean;
+  reason: string;
+}
+
+// Shannon entropy (in bits) over how unique authors are distributed across
+// sources. A single dominant source -> ~0 bits -> held. A broad spread of
+// authors across platforms -> high bits -> passes. This is what catches the
+// "one coffee shop posts 10 times" case the current state machine misses.
+export function sourceBreadth(
+  obs: SourceObservation[],
+  cfg: GateConfig
+): BreadthResult {
+  const totalAuthors = obs.reduce((s, o) => s + Math.max(0, o.uniqueAuthors), 0);
+  if (totalAuthors === 0) {
+    return { entropyBits: 0, totalAuthors: 0, pass: false, reason: "no authors" };
+  }
+  let entropyBits = 0;
+  for (const o of obs) {
+    const p = o.uniqueAuthors / totalAuthors;
+    if (p > 0) entropyBits -= p * Math.log2(p);
+  }
+  const pass =
+    entropyBits >= cfg.minSourceEntropyBits && totalAuthors >= cfg.minUniqueAuthors;
+  const reason = pass
+    ? `breadth ok: ${entropyBits.toFixed(2)} bits, ${totalAuthors} authors`
+    : `too concentrated: ${entropyBits.toFixed(2)} bits, ${totalAuthors} authors`;
+  return { entropyBits, totalAuthors, pass, reason };
 }
