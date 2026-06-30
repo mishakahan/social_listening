@@ -5,6 +5,8 @@
 // machine and the Radar knowledge base. It is descriptive and reversible:
 // it only decides pass/hold for surfacing, and never mutates upstream data.
 
+import type { TpEntityTimeseries, TpPipelineConfig } from "@workspace/db/schema";
+
 export interface GateConfig {
   significanceAlpha: number; // e.g. 0.05
   permutations: number; // e.g. 1000
@@ -141,4 +143,45 @@ export function confirmationVerdict(
   const reasons = [significance.reason, breadth.reason];
   const decision = significance.pass && breadth.pass ? "pass" : "hold";
   return { decision, significance, breadth, reasons };
+}
+
+// --- Adapters: turn pipeline config + timeseries rows into gate inputs ---
+
+// Reads gate thresholds from the pipeline config defensively, falling back to
+// sensible defaults. Keys can later be exposed in the control-panel config
+// schema without changing this code.
+export function gateConfigFromPipeline(config: TpPipelineConfig): GateConfig {
+  const c = config as unknown as Record<string, number | boolean | undefined>;
+  return {
+    significanceAlpha: (c.gateSignificanceAlpha as number) ?? 0.05,
+    permutations: (c.gatePermutations as number) ?? 1000,
+    minSourceEntropyBits: (c.gateMinSourceEntropyBits as number) ?? 1.0,
+    minUniqueAuthors: (c.gateMinUniqueAuthors as number) ?? 3,
+    enabled: (c.gateEnabled as boolean) ?? true,
+  };
+}
+
+// Collapse per-(platform, geo, day) rows into a chronological daily mention
+// series plus per-platform source observations (summing authors/mentions).
+export function buildGateInput(rows: TpEntityTimeseries[]): GateInput {
+  const byDate = new Map<string, number>();
+  const byPlatform = new Map<string, { authors: number; mentions: number }>();
+  for (const r of rows) {
+    byDate.set(r.bucketDate, (byDate.get(r.bucketDate) ?? 0) + r.mentions);
+    const p = byPlatform.get(r.platform) ?? { authors: 0, mentions: 0 };
+    p.authors += r.uniqueAuthors;
+    p.mentions += r.mentions;
+    byPlatform.set(r.platform, p);
+  }
+  const dailyMentions = [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, v]) => v);
+  const sources: SourceObservation[] = [...byPlatform.entries()].map(
+    ([platform, v]) => ({
+      platform,
+      uniqueAuthors: v.authors,
+      mentions: v.mentions,
+    })
+  );
+  return { dailyMentions, sources };
 }

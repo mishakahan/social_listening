@@ -1,6 +1,11 @@
 import { logger } from "../lib/logger.js";
 import * as storage from "../storage/index.js";
 import { computeDeltasForCompany } from "./deltas.js";
+import {
+  confirmationVerdict,
+  buildGateInput,
+  gateConfigFromPipeline,
+} from "./confirmation-gate.js";
 import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
@@ -271,7 +276,34 @@ export async function runStateMachine(
         );
       }
 
-      await ensureKnowledgeItem(companyId, entityState.id, updated, metrics, config.radarSurfaceMinSignalStrength);
+      // --- Confirmation gate (fourth stage) ---
+      // Before surfacing a flagged candidate to the radar, require it to beat
+      // its own noise (significance) and be broad-based (source diversity).
+      // Only surfacing states are gated; the verdict is persisted for audit.
+      const gateCfg = gateConfigFromPipeline(config);
+      const surfacingStates: TrendState[] = ["emerging", "confirmed", "peaking", "resurgent"];
+      let verdict: ReturnType<typeof confirmationVerdict> | null = null;
+      if (surfacingStates.includes(nextState)) {
+        verdict = confirmationVerdict(buildGateInput(rows), gateCfg);
+        await storage.updateEntityState(entityState.id, {
+          confirmationVerdict: {
+            decision: verdict.decision,
+            reasons: verdict.reasons,
+            significanceP: verdict.significance.pValue,
+            entropyBits: verdict.breadth.entropyBits,
+            evaluatedAt: new Date().toISOString(),
+          },
+        } as any);
+      }
+
+      if (!verdict || verdict.decision === "pass") {
+        await ensureKnowledgeItem(companyId, entityState.id, updated, metrics, config.radarSurfaceMinSignalStrength);
+      } else {
+        logger.info(
+          { entityId: entity.id, label: entity.canonicalLabel, geography, reasons: verdict.reasons },
+          "Confirmation gate HOLD — not surfacing to radar"
+        );
+      }
       processed++;
     }
   }
