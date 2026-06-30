@@ -112,3 +112,33 @@ export function significanceTest(
     : `not beyond own noise: p=${pValue.toFixed(3)}`;
   return { observedStat: observed, pValue, pass, reason };
 }
+
+export interface GateInput {
+  dailyMentions: number[];
+  sources: SourceObservation[];
+}
+
+export interface GateVerdict {
+  decision: "pass" | "hold";
+  significance: SignificanceResult;
+  breadth: BreadthResult;
+  reasons: string[];
+}
+
+// A candidate surfaces to the Radar only if it BOTH beats its own noise
+// (significance) AND is broad-based (source diversity). When the gate is
+// disabled via config, it always passes — reverting to current behaviour.
+export function confirmationVerdict(
+  input: GateInput,
+  cfg: GateConfig,
+  rng: () => number = Math.random
+): GateVerdict {
+  const significance = significanceTest(input.dailyMentions, cfg, rng);
+  const breadth = sourceBreadth(input.sources, cfg);
+  if (!cfg.enabled) {
+    return { decision: "pass", significance, breadth, reasons: ["gate disabled"] };
+  }
+  const reasons = [significance.reason, breadth.reason];
+  const decision = significance.pass && breadth.pass ? "pass" : "hold";
+  return { decision, significance, breadth, reasons };
+}

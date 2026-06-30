@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   sourceBreadth,
   significanceTest,
+  confirmationVerdict,
   type GateConfig,
   type SourceObservation,
 } from "./confirmation-gate.js";
@@ -72,4 +73,46 @@ test("clear recent spike -> significant -> pass", () => {
 test("too little history -> hold, no crash", () => {
   const r = significanceTest([1, 2, 3], cfg, seeded(1));
   assert.equal(r.pass, false);
+});
+
+test("passes only when BOTH significance and breadth pass", () => {
+  const spike = Array.from({ length: 60 }, () => 2);
+  for (let i = 53; i < 60; i++) spike[i] = 40;
+  // 3 sources so entropy comfortably clears 1.0 bits — 2 sources cap at 1.0
+  // bit even on a perfect split, which the 1.0 threshold would reject.
+  const broad: SourceObservation[] = [
+    { platform: "tiktok", uniqueAuthors: 8, mentions: 30 },
+    { platform: "youtube", uniqueAuthors: 7, mentions: 25 },
+    { platform: "googletrends", uniqueAuthors: 5, mentions: 12 },
+  ];
+  const v = confirmationVerdict(
+    { dailyMentions: spike, sources: broad },
+    cfg,
+    seeded(1)
+  );
+  assert.equal(v.decision, "pass");
+});
+
+test("significant but single-source -> hold", () => {
+  const spike = Array.from({ length: 60 }, () => 2);
+  for (let i = 53; i < 60; i++) spike[i] = 40;
+  const narrow: SourceObservation[] = [
+    { platform: "tiktok", uniqueAuthors: 1, mentions: 40 },
+  ];
+  const v = confirmationVerdict(
+    { dailyMentions: spike, sources: narrow },
+    cfg,
+    seeded(1)
+  );
+  assert.equal(v.decision, "hold");
+});
+
+test("disabled gate always passes", () => {
+  const v = confirmationVerdict(
+    { dailyMentions: [1, 1, 1], sources: [] },
+    { ...cfg, enabled: false },
+    seeded(1)
+  );
+  assert.equal(v.decision, "pass");
+  assert.ok(v.reasons.includes("gate disabled"));
 });
