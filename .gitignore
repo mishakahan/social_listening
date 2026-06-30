@@ -40,6 +40,10 @@ testem.log
 # System Files
 .DS_Store
 Thumbs.db
+.env
+.env.local
+.env.*.local
+!.env.example
 
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
