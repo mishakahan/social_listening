@@ -112,6 +112,21 @@ export function buildActorInput(
       };
     }
 
+    case "xquik/x-tweet-scraper": {
+      // X is free-text search (not hashtag-bound), so we pass all keyword
+      // variants as searchTerms — no hashtag-variant preprocessing needed here.
+      // X wants dates as YYYY-MM-DD_HH:MM:SS_UTC.
+      const { afterDate, beforeDate } = backfillWindow(today);
+      const xDate = (d: string) => `${d}_00:00:00_UTC`;
+      return {
+        searchTerms: kws,
+        since: xDate(afterDate),
+        until: xDate(beforeDate),
+        maxItems: 200,
+        ...(input.language ? { lang: input.language } : {}),
+      };
+    }
+
     case "benthepythondev/reddit-archive-scraper": {
       // Archive actor (PullPush) supports a true after/before date window, so we
       // can do a real 6-month backfill. It takes a single searchQuery, so we use

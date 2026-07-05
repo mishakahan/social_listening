@@ -28,6 +28,8 @@ function planPlatformsForQuery(query: {
   platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "scrapeforge/tiktok-posts" });
   if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
     platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "benthepythondev/reddit-archive-scraper" });
+    // X: free-text keyword search with a real since/until date window.
+    platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper" });
   }
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
