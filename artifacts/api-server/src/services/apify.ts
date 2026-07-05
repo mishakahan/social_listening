@@ -52,11 +52,27 @@ function normalizeGeo(geography: string): string {
   return "";
 }
 
-// Map our generic query payload to the input format each actor expects
+// Default backfill window (months) for actors that support a date range.
+const BACKFILL_MONTHS = 6;
+
+function ymd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Returns { afterDate, beforeDate } for a BACKFILL_MONTHS window ending at `today`.
+function backfillWindow(today: Date): { afterDate: string; beforeDate: string } {
+  const after = new Date(today);
+  after.setMonth(after.getMonth() - BACKFILL_MONTHS);
+  return { afterDate: ymd(after), beforeDate: ymd(today) };
+}
+
+// Map our generic query payload to the input format each actor expects.
+// `today` is injectable for deterministic date-window tests.
 export function buildActorInput(
   actorSlug: string,
   runMode: string,
-  input: QueryInput
+  input: QueryInput,
+  today: Date = new Date()
 ): Record<string, unknown> {
   const tags = input.hashtags.map((h) => (h.startsWith("#") ? h.slice(1) : h));
   const kws = input.keywords;
@@ -79,6 +95,22 @@ export function buildActorInput(
         maxItems: 200,
         ...(geo ? { countryCode: geo } : {}),
       };
+
+    case "benthepythondev/reddit-archive-scraper": {
+      // Archive actor (PullPush) supports a true after/before date window, so we
+      // can do a real 6-month backfill. It takes a single searchQuery, so we use
+      // the primary keyword. Comments are the cost driver and irrelevant to
+      // mention counts, so they stay off.
+      const primary = (kws.find((k) => k.trim().length > 0) ?? input.topicLabel).trim();
+      const { afterDate, beforeDate } = backfillWindow(today);
+      return {
+        searchQuery: primary,
+        afterDate,
+        beforeDate,
+        maxPosts: 200,
+        includeComments: false,
+      };
+    }
 
     case "trudax/reddit-scraper-lite": {
       // Reddit doesn't use hashtags. Run one search per keyword instead of joining

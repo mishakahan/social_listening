@@ -27,7 +27,7 @@ function planPlatformsForQuery(query: {
   platforms.push({ platform: "instagram", runMode: "backfill:ig_reels", actorSlug: "apify/instagram-scraper" });
   platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "clockworks/tiktok-scraper" });
   if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
-    platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
+    platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "benthepythondev/reddit-archive-scraper" });
   }
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
