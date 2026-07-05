@@ -25,7 +25,7 @@ function planPlatformsForQuery(query: {
   const platforms: PlatformPlan[] = [];
   platforms.push({ platform: "instagram", runMode: "backfill:ig_posts", actorSlug: "apify/instagram-scraper" });
   platforms.push({ platform: "instagram", runMode: "backfill:ig_reels", actorSlug: "apify/instagram-scraper" });
-  platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "clockworks/tiktok-scraper" });
+  platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "scrapeforge/tiktok-posts" });
   if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
     platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "benthepythondev/reddit-archive-scraper" });
   }

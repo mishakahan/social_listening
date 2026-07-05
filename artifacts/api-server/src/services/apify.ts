@@ -96,6 +96,22 @@ export function buildActorInput(
         ...(geo ? { countryCode: geo } : {}),
       };
 
+    case "scrapeforge/tiktok-posts": {
+      // Takes a single keyword + single hashtag (not arrays). Use the primary
+      // of each. datePosted is a preset window, not exact dates — TikTok can't
+      // do precise date boundaries, so "last-6-months" is the closest match.
+      const primaryKw = (kws.find((k) => k.trim().length > 0) ?? input.topicLabel).trim();
+      const primaryTag = tags.find((t) => t.trim().length > 0) ?? "";
+      return {
+        keyword: primaryKw,
+        hashtag: primaryTag,
+        datePosted: "last-6-months",
+        maxResults: 200,
+        sortBy: "relevance",
+        ...(geo ? { region: geo } : {}),
+      };
+    }
+
     case "benthepythondev/reddit-archive-scraper": {
       // Archive actor (PullPush) supports a true after/before date window, so we
       // can do a real 6-month backfill. It takes a single searchQuery, so we use

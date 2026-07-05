@@ -10,6 +10,19 @@ const baseQuery = {
   topicLabel: "Functional gummies US",
 };
 
+test("tiktok scrapeforge actor uses primary keyword/hashtag + 6mo preset + region", () => {
+  const input = buildActorInput(
+    "scrapeforge/tiktok-posts",
+    "backfill:tiktok",
+    baseQuery
+  );
+  assert.equal(input.keyword, "functional gummies");
+  assert.equal(input.hashtag, "functionalgummies");
+  assert.equal(input.datePosted, "last-6-months");
+  assert.equal(input.region, "US");
+  assert.ok(typeof input.maxResults === "number" && input.maxResults > 0);
+});
+
 test("reddit archive actor uses searchQuery + 6mo date window + comments off", () => {
   // deterministic 'today' so afterDate is stable
   const today = new Date("2026-07-05T00:00:00Z");
