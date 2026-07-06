@@ -23,11 +23,17 @@ function planPlatformsForQuery(query: {
   geography: string | null;
 }): PlatformPlan[] {
   const platforms: PlatformPlan[] = [];
+  // IG is the cost driver (~85% of spend). Posts alone carry the hashtag
+  // signal; reels are dropped to halve IG cost. Re-add if reels prove needed.
   platforms.push({ platform: "instagram", runMode: "backfill:ig_posts", actorSlug: "apify/instagram-scraper" });
-  platforms.push({ platform: "instagram", runMode: "backfill:ig_reels", actorSlug: "apify/instagram-scraper" });
   platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "scrapeforge/tiktok-posts" });
   if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
-    platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "benthepythondev/reddit-archive-scraper" });
+    // reddit-scraper-lite is recent-only but reliably returns data; the
+    // archive actor (benthepythondev) promised date backfill but returned 0
+    // even on direct calls, so we use the lite scraper until a working
+    // date-capable Reddit actor is found. (Mapping for the archive actor is
+    // kept in buildActorInput for when that happens.)
+    platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
     // X: free-text keyword search with a real since/until date window.
     platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper" });
   }

@@ -223,7 +223,7 @@ function normalizeReddit(item: Record<string, unknown>): NormalizedSignal | null
   );
   return {
     platform: "reddit",
-    sourceActor: "benthepythondev/reddit-archive-scraper",
+    sourceActor: "trudax/reddit-scraper-lite",
     sourceId,
     sourceUrl: normalizeRedditUrl(item),
     postedAt,

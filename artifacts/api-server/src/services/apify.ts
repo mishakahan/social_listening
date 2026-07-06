@@ -78,6 +78,16 @@ const BACKFILL_MONTHS = 6;
 // small cap (e.g. 40) before a full-depth run at the default 200.
 const RESULT_CAP = Number(process.env.BACKFILL_RESULT_CAP ?? "200") || 200;
 
+// Instagram is by far the most expensive actor per result (~85% of scrape
+// cost), so it gets its own, smaller cap. Trend detection needs enough posts
+// to measure volume + author diversity, not hundreds. Env-overridable.
+const IG_RESULT_CAP = Number(process.env.IG_RESULT_CAP ?? "40") || 40;
+
+// Cap how many hashtag variants we expand to on IG — each variant is a
+// separate (billed) scrape, so we keep this small. Popular tags don't need
+// singular+plural both; this mainly helps sparse/niche tags.
+const IG_MAX_VARIANT_TAGS = Number(process.env.IG_MAX_VARIANT_TAGS ?? "4") || 4;
+
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -128,13 +138,15 @@ export function buildActorInput(
       // apify/instagram-scraper v3+ expects directUrls for hashtag exploration.
       // Expand each hashtag into its common variants so we don't miss
       // #functionalgummy just because the generator produced #functionalgummies.
-      const expanded = [...new Set(tags.flatMap((h) => expandHashtagVariants(h)))];
+      // Cap the number of tag variants — each is a separately-billed scrape.
+      const expanded = [...new Set(tags.flatMap((h) => expandHashtagVariants(h)))]
+        .slice(0, IG_MAX_VARIANT_TAGS);
       return {
         directUrls: expanded.map(
           (h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`
         ),
         resultsType: runMode === "backfill:ig_reels" ? "reels" : "posts",
-        resultsLimit: RESULT_CAP,
+        resultsLimit: IG_RESULT_CAP,
         addParentData: false,
       };
     }
@@ -154,6 +166,9 @@ export function buildActorInput(
       const primaryKw = (kws.find((k) => k.trim().length > 0) ?? input.topicLabel).trim();
       const primaryTag = tags.find((t) => t.trim().length > 0) ?? "";
       return {
+        // Must set scrapeMode explicitly — it defaults to "profiles", which
+        // searches for a USER named e.g. "gummies" and returns nothing.
+        scrapeMode: "keyword",
         keyword: primaryKw,
         hashtag: primaryTag,
         datePosted: "last-6-months",

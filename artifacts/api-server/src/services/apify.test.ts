@@ -99,6 +99,7 @@ test("tiktok scrapeforge actor uses primary keyword/hashtag + 6mo preset + regio
     "backfill:tiktok",
     baseQuery
   );
+  assert.equal(input.scrapeMode, "keyword"); // not the default "profiles"
   assert.equal(input.keyword, "functional gummies");
   assert.equal(input.hashtag, "functionalgummies");
   assert.equal(input.datePosted, "last-6-months");
