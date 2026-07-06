@@ -66,6 +66,28 @@ function backfillWindow(today: Date): { afterDate: string; beforeDate: string } 
   return { afterDate: ymd(after), beforeDate: ymd(today) };
 }
 
+// Instagram matches EXACT hashtag strings, so #functionalgummies and
+// #functionalgummy are different tags. To avoid missing a variant the
+// generator didn't emit, expand each tag into a small, bounded set of common
+// morphological variants (singular/plural). Empty tags on IG just return
+// nothing, so extra variants are cheap.
+export function expandHashtagVariants(raw: string): string[] {
+  // normalize: drop leading #, spaces, underscores, hyphens; lowercase
+  const base = raw.replace(/^#+/, "").replace(/[\s_-]+/g, "").toLowerCase();
+  if (!base) return [];
+  const out = new Set<string>([base]);
+  // plural/singular toggles
+  if (base.endsWith("ies")) {
+    out.add(base.slice(0, -3) + "y"); // gummies -> gummy
+  } else if (base.endsWith("s")) {
+    out.add(base.slice(0, -1)); // pastilles -> pastille
+  } else {
+    out.add(base + "s"); // pastille -> pastilles
+    if (base.endsWith("y")) out.add(base.slice(0, -1) + "ies"); // gummy -> gummies
+  }
+  return [...out];
+}
+
 // Map our generic query payload to the input format each actor expects.
 // `today` is injectable for deterministic date-window tests.
 export function buildActorInput(
@@ -79,14 +101,20 @@ export function buildActorInput(
   const geo = normalizeGeo(input.geography);
 
   switch (actorSlug) {
-    case "apify/instagram-scraper":
-      // apify/instagram-scraper v3+ expects directUrls for hashtag exploration
+    case "apify/instagram-scraper": {
+      // apify/instagram-scraper v3+ expects directUrls for hashtag exploration.
+      // Expand each hashtag into its common variants so we don't miss
+      // #functionalgummy just because the generator produced #functionalgummies.
+      const expanded = [...new Set(tags.flatMap((h) => expandHashtagVariants(h)))];
       return {
-        directUrls: tags.map((h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`),
+        directUrls: expanded.map(
+          (h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`
+        ),
         resultsType: runMode === "backfill:ig_reels" ? "reels" : "posts",
         resultsLimit: 200,
         addParentData: false,
       };
+    }
 
     case "clockworks/tiktok-scraper":
       return {

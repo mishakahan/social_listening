@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildActorInput } from "./apify.js";
+import { buildActorInput, expandHashtagVariants } from "./apify.js";
 import { normalizeX } from "./ingestion.js";
 
 const baseQuery = {
@@ -10,6 +10,40 @@ const baseQuery = {
   geography: "US",
   topicLabel: "Functional gummies US",
 };
+
+test("expandHashtagVariants covers singular/plural + normalizes input", () => {
+  const v = expandHashtagVariants("functionalgummies");
+  // always includes the original
+  assert.ok(v.includes("functionalgummies"));
+  // singular form (drop trailing 'ies' -> 'y', and drop trailing 's')
+  assert.ok(v.includes("functionalgummy"), `missing singular: ${v.join(",")}`);
+  // no duplicates
+  assert.equal(new Set(v).size, v.length);
+});
+
+test("expandHashtagVariants adds plural for a singular tag", () => {
+  const v = expandHashtagVariants("pastille");
+  assert.ok(v.includes("pastille"));
+  assert.ok(v.includes("pastilles"), `missing plural: ${v.join(",")}`);
+});
+
+test("expandHashtagVariants strips spaces/underscores/hashes and stays bounded", () => {
+  const v = expandHashtagVariants("#functional_gummies");
+  assert.ok(v.every((x) => !x.includes(" ") && !x.includes("_") && !x.startsWith("#")));
+  assert.ok(v.length <= 6, `too many variants: ${v.length}`);
+});
+
+test("IG mapping expands hashtags into variant explore/tags urls", () => {
+  const input = buildActorInput(
+    "apify/instagram-scraper",
+    "backfill:ig_posts",
+    { ...baseQuery, hashtags: ["functionalgummies"] }
+  );
+  const urls = input.directUrls as string[];
+  // covers both the plural original and the singular variant
+  assert.ok(urls.some((u) => u.includes("functionalgummies")));
+  assert.ok(urls.some((u) => u.includes("functionalgummy")));
+});
 
 test("normalizeX maps xquik tweet output to a NormalizedSignal", () => {
   const tweet = {
