@@ -26,9 +26,28 @@ export function getApifyClient(): ApifyClient {
   return _client;
 }
 
-// Derive the public webhook URL from environment
+// Apify can't reach localhost / private hosts, and rejects such webhook URLs
+// at launch. Treat those as "no public URL" so the pipeline falls back to
+// polling instead of sending an unreachable webhook.
+function isPubliclyReachable(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    if (host === "localhost" || host.endsWith(".local")) return false;
+    if (host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") return false;
+    if (/^10\./.test(host) || /^192\.168\./.test(host)) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Derive the public webhook URL from environment. Returns null when there is no
+// publicly reachable URL (e.g. local dev), so runs are polled instead.
 export function getWebhookBaseUrl(): string | null {
-  if (process.env.SERVER_URL) return process.env.SERVER_URL;
+  if (process.env.SERVER_URL && isPubliclyReachable(process.env.SERVER_URL)) {
+    return process.env.SERVER_URL;
+  }
   // Replit exposes the first domain in REPLIT_DOMAINS
   if (process.env.REPLIT_DOMAINS) {
     const domain = process.env.REPLIT_DOMAINS.split(",")[0]!.trim();
@@ -54,6 +73,10 @@ function normalizeGeo(geography: string): string {
 
 // Default backfill window (months) for actors that support a date range.
 const BACKFILL_MONTHS = 6;
+
+// Per-actor result cap. Env-overridable so a cheap verification pass can use a
+// small cap (e.g. 40) before a full-depth run at the default 200.
+const RESULT_CAP = Number(process.env.BACKFILL_RESULT_CAP ?? "200") || 200;
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -111,7 +134,7 @@ export function buildActorInput(
           (h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`
         ),
         resultsType: runMode === "backfill:ig_reels" ? "reels" : "posts",
-        resultsLimit: 200,
+        resultsLimit: RESULT_CAP,
         addParentData: false,
       };
     }
@@ -120,7 +143,7 @@ export function buildActorInput(
       return {
         hashtags: tags,
         keywords: kws,
-        maxItems: 200,
+        maxItems: RESULT_CAP,
         ...(geo ? { countryCode: geo } : {}),
       };
 
@@ -134,7 +157,7 @@ export function buildActorInput(
         keyword: primaryKw,
         hashtag: primaryTag,
         datePosted: "last-6-months",
-        maxResults: 200,
+        maxResults: RESULT_CAP,
         sortBy: "relevance",
         ...(geo ? { region: geo } : {}),
       };
@@ -150,7 +173,7 @@ export function buildActorInput(
         searchTerms: kws,
         since: xDate(afterDate),
         until: xDate(beforeDate),
-        maxItems: 200,
+        maxItems: RESULT_CAP,
         ...(input.language ? { lang: input.language } : {}),
       };
     }
@@ -166,7 +189,7 @@ export function buildActorInput(
         searchQuery: primary,
         afterDate,
         beforeDate,
-        maxPosts: 200,
+        maxPosts: RESULT_CAP,
         includeComments: false,
       };
     }
@@ -188,7 +211,7 @@ export function buildActorInput(
     case "easyapi/all-in-one-rednote-xiaohongshu-scraper":
       return {
         keywords: kws.concat(tags),
-        maxItems: 200,
+        maxItems: RESULT_CAP,
       };
 
     case "apify/google-trends-scraper":
