@@ -1,4 +1,5 @@
 import { db } from "@workspace/db";
+import { canonicalizeLabel } from "../services/entity-canonical.js";
 import {
   companies,
   users,
@@ -1128,7 +1129,10 @@ export async function resolveSynonym(
   if (rows.length > 0) {
     return rows[0]!.canonicalLabel;
   }
-  return alias;
+  // No hand-curated synonym: fall back to automatic canonicalization so trivial
+  // variants (Gummies/Gummy) collapse without needing a manual table entry,
+  // while multi-word products (gummy bears) stay distinct.
+  return canonicalizeLabel(alias);
 }
 
 // ---------------------------------------------------------------------------
