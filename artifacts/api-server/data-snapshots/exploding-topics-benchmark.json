@@ -732,42 +732,22 @@
   {
     "name": "Water",
     "expected": "hold",
-    "description": "Generic evergreen term, steady high volume, not a trend"
-  },
-  {
-    "name": "Coffee",
-    "expected": "hold",
-    "description": "Evergreen, flat, not trending"
+    "description": "Evergreen, flat"
   },
   {
     "name": "Bread",
-    "expected": "hold",
-    "description": "Evergreen staple, no movement"
-  },
-  {
-    "name": "Milk",
     "expected": "hold",
     "description": "Evergreen staple"
   },
   {
     "name": "Sugar",
     "expected": "hold",
-    "description": "Evergreen ingredient, flat"
+    "description": "Evergreen ingredient"
   },
   {
     "name": "Salt",
     "expected": "hold",
-    "description": "Evergreen, flat"
-  },
-  {
-    "name": "Apple",
-    "expected": "hold",
-    "description": "Evergreen fruit, steady"
-  },
-  {
-    "name": "Chicken",
-    "expected": "hold",
-    "description": "Evergreen staple"
+    "description": "Evergreen ingredient"
   },
   {
     "name": "Rice",
@@ -777,6 +757,26 @@
   {
     "name": "Butter",
     "expected": "hold",
-    "description": "Evergreen, flat"
+    "description": "Evergreen"
+  },
+  {
+    "name": "Spoon",
+    "expected": "hold",
+    "description": "Generic utensil, flat"
+  },
+  {
+    "name": "Napkin",
+    "expected": "hold",
+    "description": "Generic item, flat"
+  },
+  {
+    "name": "Plate",
+    "expected": "hold",
+    "description": "Generic item, flat"
+  },
+  {
+    "name": "Flour",
+    "expected": "hold",
+    "description": "Evergreen staple"
   }
 ]

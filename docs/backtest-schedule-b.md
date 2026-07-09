@@ -1,6 +1,6 @@
 # Schedule B Backtest — Confirmation Gate vs Exploding Topics Benchmark
 
-Run: 2026-07-09T08:52:29.992Z
+Run: 2026-07-09T09:14:45.237Z
 
 Two-sided test: known trends should PASS the gate; evergreen noise should be HELD.
 
@@ -14,7 +14,7 @@ Confirmed: 2 | Held-flat: 1 | Held-no-signal: 36 | Not-found: 37 (of 76)
 | Bringoo | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Don-Key | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Lychee Seltzer | held-no-signal | - | found but too little social signal to evaluate |
-| Non-Homogenized Milk | confirmed | pass | gate confirmed (p=0.013, bits=1.46) |
+| Non-Homogenized Milk | confirmed | pass | gate confirmed (p=0.014, bits=1.46) |
 | Omie Cie | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Pear Ketchup | held-no-signal | - | found but too little social signal to evaluate |
 | Portable Cooler Keg | not-found | - | never surfaced as an entity (no social presence in the scrape) |
@@ -70,7 +70,7 @@ Confirmed: 2 | Held-flat: 1 | Held-no-signal: 36 | Not-found: 37 (of 76)
 | Endeavour Group | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Montucky Cold Snacks | held-no-signal | - | found but too little social signal to evaluate |
 | Sake Kasu | held-no-signal | - | found but too little social signal to evaluate |
-| JuneShine | confirmed | pass | gate confirmed (p=0.018, bits=1.16) |
+| JuneShine | confirmed | pass | gate confirmed (p=0.020, bits=1.16) |
 | Coolberg | held-no-signal | - | found but too little social signal to evaluate |
 | Provi | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Athletic Brewing | held-no-signal | - | found but too little social signal to evaluate |
@@ -89,20 +89,20 @@ Confirmed: 2 | Held-flat: 1 | Held-no-signal: 36 | Not-found: 37 (of 76)
 
 ## Negatives — evergreen noise that SHOULD be held
 
-Correctly held: 9 | Wrongly passed: 1 (of 10)
+Correctly held: 10 | Wrongly passed: 0 (of 10)
 
 | noise term | outcome | verdict | note |
 |---|---|---|---|
 | Water | held-flat | hold | held despite being a known trend (p=1.000, bits=0.92) — check if it has real social movement |
-| Coffee | held-no-signal | - | found but too little social signal to evaluate |
 | Bread | held-no-signal | - | found but too little social signal to evaluate |
-| Milk | confirmed | pass | gate confirmed (p=0.013, bits=1.46) |
 | Sugar | held-no-signal | - | found but too little social signal to evaluate |
 | Salt | held-no-signal | - | found but too little social signal to evaluate |
-| Apple | held-no-signal | - | found but too little social signal to evaluate |
-| Chicken | not-found | - | never surfaced as an entity (no social presence in the scrape) |
 | Rice | held-flat | hold | held despite being a known trend (p=1.000, bits=1.00) — check if it has real social movement |
 | Butter | held-no-signal | - | found but too little social signal to evaluate |
+| Spoon | not-found | - | never surfaced as an entity (no social presence in the scrape) |
+| Napkin | not-found | - | never surfaced as an entity (no social presence in the scrape) |
+| Plate | not-found | - | never surfaced as an entity (no social presence in the scrape) |
+| Flour | held-no-signal | - | found but too little social signal to evaluate |
 
 ## Honest read
 

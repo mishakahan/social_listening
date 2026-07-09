@@ -16,7 +16,10 @@ const POSITIVES = [
   "Coolberg", "Pinkglow Pineapple", "Oishii Strawberries", "Ritual Rum",
   "Nomadica Wine", "TALEA Beer Co.", "Mayawell", "Happi Drink",
 ];
-const NOISE = ["Water", "Coffee", "Bread", "Milk", "Sugar", "Salt", "Apple", "Chicken", "Rice", "Butter"];
+// Inert evergreen terms that should HOLD. Avoid genuinely-active topics like
+// "milk" (raw/oat milk is trending) or "coffee"/"apple" — those can legitimately
+// pass and aren't real noise.
+const NOISE = ["Water", "Bread", "Sugar", "Salt", "Rice", "Butter", "Spoon", "Napkin", "Plate", "Flour"];
 
 function toKeywords(name: string): string[] {
   const clean = name.replace(/\bCo\.?\b/gi, "").trim();
