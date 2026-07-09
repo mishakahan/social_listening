@@ -308,6 +308,56 @@ export function normalizeX(item: Record<string, unknown>): NormalizedSignal | nu
   };
 }
 
+// streamers/youtube-scraper output. One video = one signal. The channel is the
+// "author"; views/likes/comments are the engagement. text = title + description.
+export function normalizeYouTube(item: Record<string, unknown>): NormalizedSignal | null {
+  const sourceId = String(item["id"] ?? "");
+  if (!sourceId) return null;
+  const title = String(item["title"] ?? "");
+  const desc = String(item["text"] ?? item["description"] ?? "");
+  const text = [title, desc].filter(Boolean).join(" ");
+  const { language, confidence } = detectLanguage(text);
+  const postedAt = item["date"] ? new Date(String(item["date"])) : null;
+
+  const engLikes    = Number(item["likes"] ?? item["likeCount"] ?? 0);
+  const engComments = Number(item["commentsCount"] ?? item["commentCount"] ?? 0);
+  const engViews    = Number(item["viewCount"] ?? item["views"] ?? 0);
+  const { score, composite } = computeEngagement("youtube",
+    { likes: engLikes, comments: engComments, shares: 0, views: engViews, saves: 0 },
+    { youtube: { likes: 1, comments: 2, views: 0.001 } }
+  );
+  return {
+    platform: "youtube",
+    sourceActor: "streamers/youtube-scraper",
+    sourceId,
+    sourceUrl: String(item["url"] ?? ""),
+    postedAt: postedAt && !isNaN(postedAt.getTime()) ? postedAt : null,
+    authorHandle: String(item["channelName"] ?? "") || null,
+    authorFollowers: Number(item["numberOfSubscribers"] ?? 0) || null,
+    authorTier: "nano",
+    authorVerified: false,
+    text: text || null,
+    hashtags: [],
+    mentions: [],
+    language,
+    languageConfidence: confidence || null,
+    geography: null,
+    engagementLikes: engLikes || null,
+    engagementComments: engComments || null,
+    engagementShares: null,
+    engagementViews: engViews || null,
+    engagementSaves: null,
+    engagementScore: score,
+    engagementComposite: composite,
+    commercialIntent: false,
+    commercialIntentConfidence: null,
+    backfillDerived: false,
+    retainReason: null,
+    raw: item,
+    metadata: {},
+  };
+}
+
 function normalizeXhs(item: Record<string, unknown>): NormalizedSignal | null {
   const sourceId = String(item["id"] ?? item["noteId"] ?? "");
   if (!sourceId) return null;
@@ -372,6 +422,7 @@ function normalizeItem(
     case "tiktok": return normalizeTikTok(item);
     case "reddit": return normalizeReddit(item);
     case "x": return normalizeX(item);
+    case "youtube": return normalizeYouTube(item);
     case "xiaohongshu": return normalizeXhs(item);
     default: return null;
   }

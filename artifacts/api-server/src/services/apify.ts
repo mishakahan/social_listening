@@ -178,6 +178,20 @@ export function buildActorInput(
       };
     }
 
+    case "streamers/youtube-scraper": {
+      // YouTube has deep, date-queryable history (videos back years), which is
+      // the point of adding it: it can supply the historical depth the
+      // significance test needs, unlike recent-only IG/Reddit. Free-text search
+      // over the keyword variants; oldestPostDate sets the earliest video date.
+      const { afterDate } = backfillWindow(today);
+      return {
+        searchQueries: kws,
+        oldestPostDate: afterDate,
+        sortingOrder: "date",
+        maxResults: RESULT_CAP,
+      };
+    }
+
     case "xquik/x-tweet-scraper": {
       // X is free-text search (not hashtag-bound), so we pass all keyword
       // variants as searchTerms — no hashtag-variant preprocessing needed here.

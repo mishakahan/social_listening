@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildActorInput, expandHashtagVariants } from "./apify.js";
-import { normalizeX } from "./ingestion.js";
+import { normalizeX, normalizeYouTube } from "./ingestion.js";
 
 const baseQuery = {
   keywords: ["functional gummies", "functional gummy", "gummy supplements"],
@@ -74,6 +74,53 @@ test("normalizeX maps xquik tweet output to a NormalizedSignal", () => {
 
 test("normalizeX returns null when there is no id", () => {
   assert.equal(normalizeX({ text: "no id here" }), null);
+});
+
+test("youtube scraper uses searchQueries + oldestPostDate 6mo window + date sort", () => {
+  const today = new Date("2026-07-09T00:00:00Z");
+  const input = buildActorInput(
+    "streamers/youtube-scraper",
+    "backfill:youtube_search",
+    baseQuery,
+    today
+  );
+  // free-text search over all keyword variants
+  assert.deepEqual(input.searchQueries, baseQuery.keywords);
+  // 6 months before 2026-07-09 => 2026-01-09 (the earliest video date to include)
+  assert.equal(input.oldestPostDate, "2026-01-09");
+  assert.equal(input.sortingOrder, "date");
+  assert.ok(typeof input.maxResults === "number" && input.maxResults > 0);
+});
+
+test("normalizeYouTube maps a video to a NormalizedSignal", () => {
+  const video = {
+    id: "abc123",
+    title: "Best functional gummies review 2026",
+    text: "trying out these new gummies with vitamins",
+    channelName: "WellnessReviews",
+    numberOfSubscribers: 50000,
+    viewCount: 12000,
+    likes: 800,
+    commentsCount: 45,
+    url: "https://youtube.com/watch?v=abc123",
+    date: "2026-03-15T00:00:00Z",
+  };
+  const sig = normalizeYouTube(video);
+  assert.ok(sig, "should not be null");
+  assert.equal(sig!.platform, "youtube");
+  assert.equal(sig!.sourceId, "abc123");
+  assert.equal(sig!.authorHandle, "WellnessReviews");
+  assert.equal(sig!.authorFollowers, 50000);
+  assert.equal(sig!.engagementLikes, 800);
+  assert.equal(sig!.engagementComments, 45);
+  assert.equal(sig!.engagementViews, 12000);
+  assert.ok(sig!.postedAt instanceof Date);
+  // text combines title + description
+  assert.ok(sig!.text && sig!.text.includes("functional gummies"));
+});
+
+test("normalizeYouTube returns null without an id", () => {
+  assert.equal(normalizeYouTube({ title: "no id" }), null);
 });
 
 test("x tweet scraper uses free-text searchTerms + since/until 6mo window + lang", () => {

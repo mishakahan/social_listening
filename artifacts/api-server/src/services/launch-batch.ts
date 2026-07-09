@@ -36,6 +36,9 @@ function planPlatformsForQuery(query: {
     platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
     // X: free-text keyword search with a real since/until date window.
     platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper" });
+    // YouTube: deep date-queryable history — the main lever for the depth the
+    // significance test needs (unlike recent-only IG/Reddit).
+    platforms.push({ platform: "youtube", runMode: "backfill:youtube_search", actorSlug: "streamers/youtube-scraper" });
   }
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
