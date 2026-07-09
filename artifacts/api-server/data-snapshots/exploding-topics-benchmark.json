@@ -6,7 +6,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Bringoo",
@@ -15,7 +16,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Don-Key",
@@ -26,7 +28,8 @@
       "Food and bev trends 3 months",
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Lychee Seltzer",
@@ -35,7 +38,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Non-Homogenized Milk",
@@ -44,7 +48,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Omie Cie",
@@ -53,7 +58,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Pear Ketchup",
@@ -62,7 +68,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Portable Cooler Keg",
@@ -73,7 +80,8 @@
       "Food and bev trends 3 months",
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Jiant Kombucha",
@@ -84,7 +92,8 @@
       "Food and bev trends 3 months",
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Grubtech",
@@ -93,7 +102,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "SeoulBox",
@@ -102,7 +112,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Kalahari Snacks",
@@ -111,7 +122,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Sophie's Kitchen",
@@ -120,7 +132,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Heshela",
@@ -129,7 +142,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Eatic",
@@ -138,7 +152,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Clubbi",
@@ -147,7 +162,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Rarebird Coffee",
@@ -156,7 +172,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Ceramic Non Stick Skillet",
@@ -165,7 +182,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Pollotarian",
@@ -174,7 +192,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "4 In 1 Vegetable Chopper",
@@ -183,7 +202,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Wayfast",
@@ -192,7 +212,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Indonesian Rice Pudding",
@@ -201,7 +222,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Peach Ketchup",
@@ -210,7 +232,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Pentire Drinks",
@@ -219,7 +242,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Pinkglow Pineapple",
@@ -228,7 +252,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "RobinFood",
@@ -237,7 +262,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Sammee",
@@ -246,7 +272,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Oishii Strawberries",
@@ -255,7 +282,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Snapshift",
@@ -264,7 +292,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Food and bev trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Jimmy's Cocktails",
@@ -275,7 +304,8 @@
       "Food and bev trends 3 months",
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Mayawell",
@@ -283,7 +313,8 @@
     "description": "Company that produces prebiotic beverages designed to support gut health. These beverages are made with organic...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "TALEA Beer Co.",
@@ -293,7 +324,8 @@
       "Food & bev trends 6 months",
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Tomato Beef Seasoning",
@@ -301,7 +333,8 @@
     "description": "A blend of ingredients typically used to flavor beef dishes that include tomatoes. Common components of this seasoning mix...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Brewbird",
@@ -309,7 +342,8 @@
     "description": "Company specializing in innovative coffee technology, particularly known for creating the world's first whole-bean...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Cajoo",
@@ -317,7 +351,8 @@
     "description": "Cajoo is a rapid delivery service company that offers a wide range of products including drinks, chocolates, alcohol, baby care, an...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Usukuchi",
@@ -325,7 +360,8 @@
     "description": "A type of Japanese soy sauce that is light in color but contains more salt per serving than regular soy sauce. Usukuchi soy...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Mushroom Crumble",
@@ -333,7 +369,8 @@
     "description": "Savory dish made with ingredients such as diced yellow onion, zucchini, mixed mushrooms, flour, and oatmeal. The vegetables...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Healthy Indulgence",
@@ -341,7 +378,8 @@
     "description": "Healthy indulgence is a trend where traditionally unhealthy treats are reformulated to include positive nutritional elements...",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Shiitake Mushroom Chips",
@@ -349,7 +387,8 @@
     "description": "[not captured]",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Isfood",
@@ -357,7 +396,8 @@
     "description": "[not captured]",
     "sheets": [
       "Food & bev trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Mommenpop",
@@ -366,7 +406,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Happi Drink",
@@ -375,7 +416,8 @@
     "sheets": [
       "Food & bev trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Los Sundays Tequila",
@@ -383,7 +425,8 @@
     "description": "Premium tequila brand known for its high quality and smooth taste. Los Sundays Tequila differentiates itself...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Boozy Tea",
@@ -391,7 +434,8 @@
     "description": "Alcoholic beverage that contains 4.8% alcohol by volume, made with fresh-brewed tea, real fruit juice or...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Lychee Sake",
@@ -399,7 +443,8 @@
     "description": "Flavored alcoholic beverage that combines the traditional Japanese rice wine, sake, with the exotic an...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Nomadica",
@@ -407,7 +452,8 @@
     "description": "Wine company that emphasizes sustainability and responsible farming practices. Nomadica offers low...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Onda Tequila",
@@ -415,7 +461,8 @@
     "description": "Modern tequila brand known for being additive-free and made from 100% Agave Azul. It is distilled twice in...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Kooksoondang",
@@ -423,7 +470,8 @@
     "description": "A Korean brewery established in 1952, known for producing natural beverages and health-related...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Ritual Rum",
@@ -431,7 +479,8 @@
     "description": "Non-alcoholic rum alternative designed to mimic the flavor and experience of traditional rum without the...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "New Riff Distilling",
@@ -440,7 +489,8 @@
     "sheets": [
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "High Noon Cocktail",
@@ -448,7 +498,8 @@
     "description": "High Noon is a brand of hard seltzer known for its easy drinking and great tasting qualities. It offers a variety of...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "House Of Saka",
@@ -456,7 +507,8 @@
     "description": "Company headquartered in Napa Valley, California, that produces luxurious, cannabis-infused beverages. Thes...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Equiano Rum",
@@ -465,7 +517,8 @@
     "sheets": [
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Sh\u014dch\u016b",
@@ -474,7 +527,8 @@
     "sheets": [
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Nomadica Wine",
@@ -482,7 +536,8 @@
     "description": "Nomadica is a premium wine company that offers a curated selection of sommelier-approved wines...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Lunar Seltzer",
@@ -490,7 +545,8 @@
     "description": "Award-winning hard seltzer made with real fruit, available in flavors like Yuzu, Lychee, Plum, and Passion...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "SimplyDelivery",
@@ -499,7 +555,8 @@
     "sheets": [
       "Alcohol trends 6 months",
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Endeavour Group",
@@ -507,7 +564,8 @@
     "description": "A company that operates in the retail and hotel sectors, managing a large portfolio of stores and hospitality...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Montucky Cold Snacks",
@@ -515,7 +573,8 @@
     "description": "American Lager style beer brewed in Bozeman, Montana, known for its crisp and enjoyable taste. Montucky Cold...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Sake Kasu",
@@ -523,7 +582,8 @@
     "description": "Sake kasu is the nutrient-rich fermented rice residue left after sake is pressed during the Japanese brewing...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "JuneShine",
@@ -531,7 +591,8 @@
     "description": "A company based in San Diego, CA, that brews alcoholic beverages using real, premium ingredients without any...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Coolberg",
@@ -539,7 +600,8 @@
     "description": "Company that produces non-alcoholic beverages, specializing in a variety of flavored beers. Coolberg...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Provi",
@@ -547,7 +609,8 @@
     "description": "Online marketplace designed to streamline the process of ordering wholesale alcohol by connecting buyers...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Athletic Brewing",
@@ -555,7 +618,8 @@
     "description": "Athletic Brewing Company specializes in producing non-alcoholic craft beers, offering a variety of beverages...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Tapai",
@@ -563,7 +627,8 @@
     "description": "Traditional fermented preparation of rice or other starchy foods, commonly found in Southeast Asia and...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Blind Barber",
@@ -571,7 +636,8 @@
     "description": "Neighborhood barbershop and lounge that originated in New York City, with a unique combination of...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Blends",
@@ -579,7 +645,8 @@
     "description": "Blends refer to the combination of two or more elements to create a new entity with distinct characteristics. In...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Vintage Bar Cart",
@@ -587,7 +654,8 @@
     "description": "A vintage bar cart is a mobile serving unit designed for storing and displaying beverages, glassware, and bar...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Three Spirit",
@@ -595,7 +663,8 @@
     "description": "Three Spirit is a brand that offers non-alcoholic botanical elixirs designed to enhance social experiences. These...",
     "sheets": [
       "Alcohol trends 6 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Smoked Cocktails",
@@ -603,7 +672,8 @@
     "description": "Drinks infused with aromatic smoke to impart a smoky essence to the beverage. This technique enhances th...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Singlefile Wines",
@@ -611,7 +681,8 @@
     "description": "Highly acclaimed winery located in Denmark, Western Australia, known for its commitment to excellence in...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Hana Lychee Sake",
@@ -619,7 +690,8 @@
     "description": "A type of sake infused with the flavor of lychee, a tropical fruit known for its sweet and floral taste. This sake is...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Slushy Maker",
@@ -627,7 +699,8 @@
     "description": "A slushy maker is a kitchen appliance or manual tool designed to create slushies by freezing and blending...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Cacio",
@@ -635,7 +708,8 @@
     "description": "Italian term that generally refers to cheese, commonly used in traditional dishes from central Italy, such as...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Soju",
@@ -643,7 +717,8 @@
     "description": "Clear, distilled alcoholic beverage from Korea, traditionally made from rice, wheat, or barley, but...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
   },
   {
     "name": "Non Alcoholic Beer",
@@ -651,6 +726,57 @@
     "description": "This beverage is crafted to mimic the taste of traditional beer while containing minimal to no alcohol content. It i...",
     "sheets": [
       "Alcohol trends 3 months"
-    ]
+    ],
+    "expected": "pass"
+  },
+  {
+    "name": "Water",
+    "expected": "hold",
+    "description": "Generic evergreen term, steady high volume, not a trend"
+  },
+  {
+    "name": "Coffee",
+    "expected": "hold",
+    "description": "Evergreen, flat, not trending"
+  },
+  {
+    "name": "Bread",
+    "expected": "hold",
+    "description": "Evergreen staple, no movement"
+  },
+  {
+    "name": "Milk",
+    "expected": "hold",
+    "description": "Evergreen staple"
+  },
+  {
+    "name": "Sugar",
+    "expected": "hold",
+    "description": "Evergreen ingredient, flat"
+  },
+  {
+    "name": "Salt",
+    "expected": "hold",
+    "description": "Evergreen, flat"
+  },
+  {
+    "name": "Apple",
+    "expected": "hold",
+    "description": "Evergreen fruit, steady"
+  },
+  {
+    "name": "Chicken",
+    "expected": "hold",
+    "description": "Evergreen staple"
+  },
+  {
+    "name": "Rice",
+    "expected": "hold",
+    "description": "Evergreen staple"
+  },
+  {
+    "name": "Butter",
+    "expected": "hold",
+    "description": "Evergreen, flat"
   }
 ]
