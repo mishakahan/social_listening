@@ -30,5 +30,25 @@ export function canonicalizeLabel(label: string): string {
   if (!cleaned.includes(" ")) {
     return singularizeWord(cleaned);
   }
-  return cleaned;
+  // For multi-word labels, strip a trailing CORPORATE suffix (company, co, inc,
+  // llc, ...) so brand variants merge ("athletic brewing company" / "... co." ->
+  // "athletic brewing") — but only a corporate suffix, never a product word, so
+  // "gummy bears" and "hot sauce" are untouched. Never strip down to empty.
+  const withoutSuffix = stripCorporateSuffix(cleaned);
+  return withoutSuffix || cleaned;
+}
+
+// Note: "brand"/"brands" are deliberately excluded — they're too often part of
+// a real name ("Some Brand", "Kind Brands"), so stripping them over-merges.
+const CORPORATE_SUFFIXES = new Set([
+  "co", "co.", "company", "inc", "inc.", "llc", "ltd", "ltd.", "corp", "corp.",
+]);
+
+function stripCorporateSuffix(label: string): string {
+  const words = label.split(" ");
+  // only strip if there's a base name left after removing the suffix
+  while (words.length > 1 && CORPORATE_SUFFIXES.has(words[words.length - 1]!)) {
+    words.pop();
+  }
+  return words.join(" ");
 }
