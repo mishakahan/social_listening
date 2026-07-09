@@ -1,0 +1,656 @@
+[
+  {
+    "name": "Babaco Market",
+    "growth": "+99X+",
+    "description": "Subscription-based delivery service established in 2020 that provides consumers with boxes of fruits and vegetables with...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Bringoo",
+    "growth": "+99X+",
+    "description": "Application designed for grocery deliveries from local stores, enabling users to order groceries and have them delivered to thei...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Don-Key",
+    "growth": "+99X+",
+    "description": "Tex-Mex restaurant located in Pasadena, Texas, established in 1984. Known for its lively atmosphere, flowing chips and salsa, an...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months",
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Lychee Seltzer",
+    "growth": "+99X+",
+    "description": "Beverage made with premium lychee nectar from lychees grown in Thailand, offering tropical and fruity tasting notes. Typically...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Non-Homogenized Milk",
+    "growth": "+99X+",
+    "description": "Non-homogenized milk is milk that has not undergone the homogenization process, which is a mechanical method to break...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Omie Cie",
+    "growth": "+99X+",
+    "description": "Grocery delivery company that offers a range of food products delivered directly to consumers' homes. Omie & Cie differentiates...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Pear Ketchup",
+    "growth": "+99X+",
+    "description": "Condiment made from pears, often used as an alternative to tomato or BBQ sauce. It includes ingredients like Anjou pears,...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Portable Cooler Keg",
+    "growth": "+99X+",
+    "description": "A portable cooler keg is a mobile beverage container designed to keep drinks cold while allowing for easy dispensing, often...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months",
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Jiant Kombucha",
+    "growth": "+9700%",
+    "description": "A brand known for its low sugar, gluten-free kombucha made with real ingredients. Jiant kombucha differentiates itself by...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months",
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Grubtech",
+    "growth": "+8000%",
+    "description": "A company that focuses on streamlining restaurant operations within the food service industry. It provides a dashboard for...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "SeoulBox",
+    "growth": "+7700%",
+    "description": "Subscription service that delivers a curated selection of Korean snacks, treats, and other cultural items straight to your door....",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Kalahari Snacks",
+    "growth": "+7500%",
+    "description": "A company that provides meat-based snacks, specifically seasoned and dried beef snacks. These snacks are designed to...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Sophie's Kitchen",
+    "growth": "+6300%",
+    "description": "Company specializing in plant-based seafood alternatives, offering products such as plant-based shrimp, crab cakes, and...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Heshela",
+    "growth": "+5900%",
+    "description": "Salon offering a full range of gender-neutral treatments and styling services in an inclusive and eco-conscious environment....",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Eatic",
+    "growth": "+5600%",
+    "description": "Meal delivery service that provides a platform for ordering vegan and vegetarian meals from ethical restaurants and...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Clubbi",
+    "growth": "+5300%",
+    "description": "Business-to-business (B2B) platform operating in the fast-moving consumer goods (FMCG) sector, facilitating connection...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Rarebird Coffee",
+    "growth": "+4900%",
+    "description": "A small specialty coffee roaster and bakery located in Falls Church, Virginia, known for its seasonal espresso drinks,...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Ceramic Non Stick Skillet",
+    "growth": "+4700%",
+    "description": "These skillets are popular in kitchens due to their non-stick properties, which make cooking and cleaning easier. They are...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Pollotarian",
+    "growth": "+4400%",
+    "description": "Dietary practice that includes the consumption of poultry while excluding other types of meat such as red meat and pork. This...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "4 In 1 Vegetable Chopper",
+    "growth": "+4200%",
+    "description": "A 4-in-1 vegetable chopper is a multifunctional kitchen gadget designed to chop, slice, dice, and julienne vegetables using...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Wayfast",
+    "growth": "+4100%",
+    "description": "On-demand food delivery service operating in Farmville, Virginia, specializing in delivering meals from local restaurants and fast...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Indonesian Rice Pudding",
+    "growth": "+4000%",
+    "description": "Traditional dessert made from black glutinous rice, commonly known as 'Bubur Ketan Hitam' or 'Bubur Pulut Hitam.' This dish is...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Peach Ketchup",
+    "growth": "+4000%",
+    "description": "Condiment made from peaches, tomatoes, cider vinegar, lemon juice, and other seasonings. It offers a sweeter and fruitier flavo...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Pentire Drinks",
+    "growth": "+4000%",
+    "description": "Beverage company specializing in botanical, non-alcoholic spirits. Pentire Drinks differentiates itself by using native Cornis...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Pinkglow Pineapple",
+    "growth": "+4000%",
+    "description": "A unique variety of pineapple featuring pale pink flesh, developed over sixteen years. Known for its soft, semi-fibrous,...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "RobinFood",
+    "growth": "+4000%",
+    "description": "Company that enables users to place food orders via self-ordering kiosks, a mobile app, or delivery partners. RobinFood...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Sammee",
+    "growth": "+3900%",
+    "description": "Company that delivers a curated DIY experience for making boba tea at home. Sammee provides Boba Kits that include all...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Oishii Strawberries",
+    "growth": "+3700%",
+    "description": "Premium variety of strawberries originally found in the foothills of the Japanese Alps, known as the Omakase Berry. They are...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Snapshift",
+    "growth": "+3700%",
+    "description": "Staffing-as-a-Service marketplace designed to provide flexible staffing solutions, particularly for the foodservice industry. It...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months"
+    ]
+  },
+  {
+    "name": "Jimmy's Cocktails",
+    "growth": "+3600%",
+    "description": "Brand of low-calorie, non-alcoholic spirits mixers founded in 2019 by Ankur Bhatia and Nitin Bhardwaj of Radiohead Brands. Creat...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Food and bev trends 3 months",
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Mayawell",
+    "growth": "+3600%",
+    "description": "Company that produces prebiotic beverages designed to support gut health. These beverages are made with organic...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "TALEA Beer Co.",
+    "growth": "+3600%",
+    "description": "Craft beer company founded by LeAnn and Tara, who transitioned from corporate jobs in tech and media to the beer...",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Tomato Beef Seasoning",
+    "growth": "+3500%",
+    "description": "A blend of ingredients typically used to flavor beef dishes that include tomatoes. Common components of this seasoning mix...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Brewbird",
+    "growth": "+3300%",
+    "description": "Company specializing in innovative coffee technology, particularly known for creating the world's first whole-bean...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Cajoo",
+    "growth": "+3200%",
+    "description": "Cajoo is a rapid delivery service company that offers a wide range of products including drinks, chocolates, alcohol, baby care, an...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Usukuchi",
+    "growth": "+3200%",
+    "description": "A type of Japanese soy sauce that is light in color but contains more salt per serving than regular soy sauce. Usukuchi soy...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Mushroom Crumble",
+    "growth": "+3000%",
+    "description": "Savory dish made with ingredients such as diced yellow onion, zucchini, mixed mushrooms, flour, and oatmeal. The vegetables...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Healthy Indulgence",
+    "growth": "+2900%",
+    "description": "Healthy indulgence is a trend where traditionally unhealthy treats are reformulated to include positive nutritional elements...",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Shiitake Mushroom Chips",
+    "growth": "+2800%",
+    "description": "[not captured]",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Isfood",
+    "growth": "+2400%",
+    "description": "[not captured]",
+    "sheets": [
+      "Food & bev trends 6 months"
+    ]
+  },
+  {
+    "name": "Mommenpop",
+    "growth": "+2300%",
+    "description": "[not captured]",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Happi Drink",
+    "growth": "+2200%",
+    "description": "[not captured]",
+    "sheets": [
+      "Food & bev trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Los Sundays Tequila",
+    "growth": "44",
+    "description": "Premium tequila brand known for its high quality and smooth taste. Los Sundays Tequila differentiates itself...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Boozy Tea",
+    "growth": "34",
+    "description": "Alcoholic beverage that contains 4.8% alcohol by volume, made with fresh-brewed tea, real fruit juice or...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Lychee Sake",
+    "growth": "34",
+    "description": "Flavored alcoholic beverage that combines the traditional Japanese rice wine, sake, with the exotic an...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Nomadica",
+    "growth": "29",
+    "description": "Wine company that emphasizes sustainability and responsible farming practices. Nomadica offers low...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Onda Tequila",
+    "growth": "29",
+    "description": "Modern tequila brand known for being additive-free and made from 100% Agave Azul. It is distilled twice in...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Kooksoondang",
+    "growth": "27",
+    "description": "A Korean brewery established in 1952, known for producing natural beverages and health-related...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Ritual Rum",
+    "growth": "21",
+    "description": "Non-alcoholic rum alternative designed to mimic the flavor and experience of traditional rum without the...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "New Riff Distilling",
+    "growth": "19",
+    "description": "Family-owned, Kentucky-based whiskey distillery founded in 2014. They produce a variety of whiskeys...",
+    "sheets": [
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "High Noon Cocktail",
+    "growth": "18",
+    "description": "High Noon is a brand of hard seltzer known for its easy drinking and great tasting qualities. It offers a variety of...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "House Of Saka",
+    "growth": "18",
+    "description": "Company headquartered in Napa Valley, California, that produces luxurious, cannabis-infused beverages. Thes...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Equiano Rum",
+    "growth": "16",
+    "description": "Equiano rum is a premium spirit that combines African and Caribbean rum-making traditions. It is 100% natural...",
+    "sheets": [
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Sh\u014dch\u016b",
+    "growth": "13",
+    "description": "Japanese distilled liquor that can be made from various ingredients such as rice, barley, and sweet potatoes. It i...",
+    "sheets": [
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Nomadica Wine",
+    "growth": "12",
+    "description": "Nomadica is a premium wine company that offers a curated selection of sommelier-approved wines...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Lunar Seltzer",
+    "growth": "10",
+    "description": "Award-winning hard seltzer made with real fruit, available in flavors like Yuzu, Lychee, Plum, and Passion...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "SimplyDelivery",
+    "growth": "9",
+    "description": "Berlin-based startup providing cloud software solutions for restaurant chains, ghost kitchens, and individual...",
+    "sheets": [
+      "Alcohol trends 6 months",
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Endeavour Group",
+    "growth": "0.56",
+    "description": "A company that operates in the retail and hotel sectors, managing a large portfolio of stores and hospitality...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Montucky Cold Snacks",
+    "growth": "0.52",
+    "description": "American Lager style beer brewed in Bozeman, Montana, known for its crisp and enjoyable taste. Montucky Cold...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Sake Kasu",
+    "growth": "0.42",
+    "description": "Sake kasu is the nutrient-rich fermented rice residue left after sake is pressed during the Japanese brewing...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "JuneShine",
+    "growth": "0.38",
+    "description": "A company based in San Diego, CA, that brews alcoholic beverages using real, premium ingredients without any...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Coolberg",
+    "growth": "0.26",
+    "description": "Company that produces non-alcoholic beverages, specializing in a variety of flavored beers. Coolberg...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Provi",
+    "growth": "0.26",
+    "description": "Online marketplace designed to streamline the process of ordering wholesale alcohol by connecting buyers...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Athletic Brewing",
+    "growth": "0.25",
+    "description": "Athletic Brewing Company specializes in producing non-alcoholic craft beers, offering a variety of beverages...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Tapai",
+    "growth": "0.19",
+    "description": "Traditional fermented preparation of rice or other starchy foods, commonly found in Southeast Asia and...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Blind Barber",
+    "growth": "0.13",
+    "description": "Neighborhood barbershop and lounge that originated in New York City, with a unique combination of...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Blends",
+    "growth": "0.06",
+    "description": "Blends refer to the combination of two or more elements to create a new entity with distinct characteristics. In...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Vintage Bar Cart",
+    "growth": "0.05",
+    "description": "A vintage bar cart is a mobile serving unit designed for storing and displaying beverages, glassware, and bar...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Three Spirit",
+    "growth": "0.03",
+    "description": "Three Spirit is a brand that offers non-alcoholic botanical elixirs designed to enhance social experiences. These...",
+    "sheets": [
+      "Alcohol trends 6 months"
+    ]
+  },
+  {
+    "name": "Smoked Cocktails",
+    "growth": "21",
+    "description": "Drinks infused with aromatic smoke to impart a smoky essence to the beverage. This technique enhances th...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Singlefile Wines",
+    "growth": "19",
+    "description": "Highly acclaimed winery located in Denmark, Western Australia, known for its commitment to excellence in...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Hana Lychee Sake",
+    "growth": "8",
+    "description": "A type of sake infused with the flavor of lychee, a tropical fruit known for its sweet and floral taste. This sake is...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Slushy Maker",
+    "growth": "2.14",
+    "description": "A slushy maker is a kitchen appliance or manual tool designed to create slushies by freezing and blending...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Cacio",
+    "growth": "0.28",
+    "description": "Italian term that generally refers to cheese, commonly used in traditional dishes from central Italy, such as...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Soju",
+    "growth": "0.13",
+    "description": "Clear, distilled alcoholic beverage from Korea, traditionally made from rice, wheat, or barley, but...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  },
+  {
+    "name": "Non Alcoholic Beer",
+    "growth": "0.03",
+    "description": "This beverage is crafted to mimic the taste of traditional beer while containing minimal to no alcohol content. It i...",
+    "sheets": [
+      "Alcohol trends 3 months"
+    ]
+  }
+]
