@@ -17,10 +17,29 @@ test("matches benchmark name to entity via canonicalization + containment", () =
   assert.equal(matchTrendToEntity("Athletic Brewing", entities)?.label, "Athletic Brewing");
   // case-insensitive
   assert.equal(matchTrendToEntity("High Noon", entities)?.label, "high noon");
-  // singularize: "Kombucha" trend vs "Kombuchas" entity
-  assert.equal(matchTrendToEntity("Kombucha", entities)?.label, "Kombuchas");
   // no match
   assert.equal(matchTrendToEntity("Nonexistent Brand", entities), null);
+});
+
+test("single generic words match EXACTLY only (no loose containment)", () => {
+  const ents: EntityVerdict[] = [
+    { label: "Non-Homogenized Milk", hadData: true, decision: "pass" },
+    { label: "Milk", hadData: true, decision: "hold" },
+  ];
+  // "Milk" should match the "Milk" entity, NOT "non-homogenized milk"
+  assert.equal(matchTrendToEntity("Milk", ents)?.label, "Milk");
+  // if only the compound entity exists, a single generic word does NOT match it
+  const onlyCompound: EntityVerdict[] = [
+    { label: "Non-Homogenized Milk", hadData: true, decision: "pass" },
+  ];
+  assert.equal(matchTrendToEntity("Milk", onlyCompound), null);
+});
+
+test("multi-word trend names still match via containment (brand variants)", () => {
+  const ents: EntityVerdict[] = [
+    { label: "athletic brewing co", hadData: true, decision: "hold" },
+  ];
+  assert.equal(matchTrendToEntity("Athletic Brewing", ents)?.label, "athletic brewing co");
 });
 
 test("evaluateTrend: confirmed when a known trend passed the gate", () => {

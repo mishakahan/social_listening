@@ -161,6 +161,37 @@ export function gateConfigFromPipeline(config: TpPipelineConfig): GateConfig {
   };
 }
 
+// Max length of the continuous daily series. Caps the zero-fill so an ancient
+// stray mention can't create a series thousands of days long.
+const GATE_WINDOW_DAYS = 180;
+
+function daysBetween(a: string, b: string): number {
+  return Math.round(
+    (Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000
+  );
+}
+
+// Turn {date -> mentions} into a continuous, zero-filled daily array ending on
+// the last active day, spanning at most GATE_WINDOW_DAYS.
+function buildDailySeries(byDate: Map<string, number>): number[] {
+  const dates = [...byDate.keys()].sort();
+  if (dates.length === 0) return [];
+  const last = dates[dates.length - 1]!;
+  const earliest = dates[0]!;
+  const span = daysBetween(earliest, last);
+  const windowStartOffset = Math.min(span, GATE_WINDOW_DAYS - 1);
+  const startDate = new Date(Date.parse(last + "T00:00:00Z") - windowStartOffset * 86400000)
+    .toISOString()
+    .slice(0, 10);
+  const len = windowStartOffset + 1;
+  const series = new Array<number>(len).fill(0);
+  for (const [d, v] of byDate) {
+    const idx = daysBetween(startDate, d);
+    if (idx >= 0 && idx < len) series[idx] = (series[idx] ?? 0) + v;
+  }
+  return series;
+}
+
 // Collapse per-(platform, geo, day) rows into a chronological daily mention
 // series plus per-platform source observations (summing authors/mentions).
 export function buildGateInput(rows: TpEntityTimeseries[]): GateInput {
@@ -173,9 +204,12 @@ export function buildGateInput(rows: TpEntityTimeseries[]): GateInput {
     p.mentions += r.mentions;
     byPlatform.set(r.platform, p);
   }
-  const dailyMentions = [...byDate.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, v]) => v);
+  // Build a CONTINUOUS daily series (zero-filling days with no mentions) so the
+  // significance test can see "quiet historically, then rising" — collapsing to
+  // only active days hides exactly the acceleration it should detect. Bound the
+  // series to a recent window (from the last active day back at most
+  // GATE_WINDOW_DAYS) so ancient history doesn't create a giant all-zero array.
+  const dailyMentions = buildDailySeries(byDate);
   const sources: SourceObservation[] = [...byPlatform.entries()].map(
     ([platform, v]) => ({
       platform,

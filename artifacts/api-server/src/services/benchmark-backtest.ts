@@ -48,12 +48,16 @@ export function matchTrendToEntity(
   // exact canonical match first
   let m = entities.find((e) => canonicalizeLabel(e.label) === t);
   if (m) return m;
-  // containment either direction (benchmark is often a brand; entity may be a
-  // sub-phrase or vice-versa)
-  m = entities.find((e) => {
-    const el = canonicalizeLabel(e.label);
-    return el.includes(t) || t.includes(el);
-  });
+  // Containment only for MULTI-WORD trend names (specific brands like
+  // "athletic brewing" ~ "athletic brewing co"). A single generic word ("milk")
+  // must match exactly, or it would wrongly hoover up any entity that contains
+  // it ("non-homogenized milk").
+  if (t.includes(" ")) {
+    m = entities.find((e) => {
+      const el = canonicalizeLabel(e.label);
+      return el.includes(t) || t.includes(el);
+    });
+  }
   return m ?? null;
 }
 
