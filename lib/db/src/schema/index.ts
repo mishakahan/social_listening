@@ -589,6 +589,14 @@ export const tpEntityState = pgTable(
     entropyBits: number;
     evaluatedAt: string;
   }>(),
+  // Cached specificity judgment (LLM) so it's not re-judged every run. Keyed
+  // implicitly by this entity-state row; cleared if the entity's label changes.
+  specificityVerdict: jsonb("specificity_verdict").$type<{
+    specific: boolean;
+    reason: string;
+    label: string;
+    judgedAt: string;
+  }>(),
   computedAt: timestamp("computed_at").defaultNow().notNull(),
   },
   (t) => [uniqueIndex("tp_entity_state_geo_idx").on(t.entityId, t.geography)]

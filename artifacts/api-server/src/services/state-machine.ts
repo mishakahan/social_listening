@@ -6,6 +6,7 @@ import {
   buildGateInput,
   gateConfigFromPipeline,
 } from "./confirmation-gate.js";
+import { judgeSpecificityBatch, type SpecificityResult } from "./specificity.js";
 import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
@@ -283,11 +284,49 @@ export async function runStateMachine(
       const gateCfg = gateConfigFromPipeline(config);
       const surfacingStates: TrendState[] = ["emerging", "confirmed", "peaking", "resurgent"];
       let verdict: ReturnType<typeof confirmationVerdict> | null = null;
+      let finalDecision: "pass" | "hold" | null = null;
       if (surfacingStates.includes(nextState)) {
         verdict = confirmationVerdict(buildGateInput(rows), gateCfg);
+        finalDecision = verdict.decision;
+
+        // Specificity check: only bother judging entities that PASSED significance
+        // + breadth (a small set). A generic everyday term ("coffee", "salt")
+        // gets held even if it's rising + broad. Cached per entity-state so the
+        // LLM only runs once per label.
+        let specificity: SpecificityResult | null =
+          (entityState.specificityVerdict &&
+          (entityState.specificityVerdict as any).label === entity.canonicalLabel
+            ? {
+                specific: (entityState.specificityVerdict as any).specific,
+                reason: (entityState.specificityVerdict as any).reason,
+              }
+            : null);
+        if (verdict.decision === "pass" && !specificity) {
+          try {
+            const judged = await judgeSpecificityBatch([entity.canonicalLabel]);
+            specificity = judged.get(entity.canonicalLabel.toLowerCase()) ?? null;
+          } catch (e) {
+            logger.warn({ err: e, label: entity.canonicalLabel }, "specificity judge failed — keeping by default");
+          }
+          if (specificity) {
+            await storage.updateEntityState(entityState.id, {
+              specificityVerdict: {
+                specific: specificity.specific,
+                reason: specificity.reason,
+                label: entity.canonicalLabel,
+                judgedAt: new Date().toISOString(),
+              },
+            } as any);
+          }
+        }
+        if (verdict.decision === "pass" && specificity && !specificity.specific) {
+          finalDecision = "hold";
+          verdict.reasons.push(`not specific: ${specificity.reason}`);
+        }
+
         await storage.updateEntityState(entityState.id, {
           confirmationVerdict: {
-            decision: verdict.decision,
+            decision: finalDecision,
             reasons: verdict.reasons,
             significanceP: verdict.significance.pValue,
             entropyBits: verdict.breadth.entropyBits,
@@ -296,11 +335,11 @@ export async function runStateMachine(
         } as any);
       }
 
-      if (!verdict || verdict.decision === "pass") {
+      if (finalDecision === null || finalDecision === "pass") {
         await ensureKnowledgeItem(companyId, entityState.id, updated, metrics, config.radarSurfaceMinSignalStrength);
       } else {
         logger.info(
-          { entityId: entity.id, label: entity.canonicalLabel, geography, reasons: verdict.reasons },
+          { entityId: entity.id, label: entity.canonicalLabel, geography, reasons: verdict!.reasons },
           "Confirmation gate HOLD — not surfacing to radar"
         );
       }
