@@ -30,9 +30,14 @@ export function interpretSpecificityVerdict(
 
 const SPECIFICITY_SYSTEM_PROMPT = `You judge whether a term is a SPECIFIC, trackable trend or a GENERIC everyday term, for a social-listening trend radar.
 
-SPECIFIC (specific: true): a named product, brand, ingredient-trend, format, flavour, or occasion someone could act on as a trend. Examples: "ashwagandha", "spritz pastille", "chocolate gift box", "functional gummies", "hard seltzer", "dry january", "cri-cri".
+SPECIFIC (specific: true): a named product, brand, flavour, format, occasion, OR a specific ingredient/supplement/nutrient that people actively track as a wellness or food trend. If a company running a trend radar would plausibly want to see it rising, it is specific.
+Examples: "ashwagandha", "magnesium", "creatine", "zinc", "iron", "collagen", "spritz pastille", "chocolate gift box", "functional gummies", "hard seltzer", "dry january", "cri-cri", "matcha", "tallow".
+IMPORTANT: a plain mineral/vitamin/supplement/ingredient NAME (magnesium, zinc, iron, creatine) counts as SPECIFIC — these are real trackable wellness trends, NOT background noise.
 
-GENERIC (specific: false): an everyday word so broad it is background noise, not a trend. Examples: "coffee", "water", "salt", "milk", "flour", "sugar", "food", "drink", "snack", "bread".
+GENERIC (specific: false): a true kitchen staple or everyday word so broad it is just background chatter, never a trend on its own.
+Examples: "coffee", "water", "salt", "milk", "flour", "sugar", "food", "drink", "snack", "bread", "butter", "rice", "chicken".
+
+If unsure, lean toward SPECIFIC (keeping a term is safer than dropping a real trend).
 
 For each input term return a JSON object. Respond ONLY with: {"results":[{"term":"...","specific":true|false,"reason":"short"}]}`;
 
