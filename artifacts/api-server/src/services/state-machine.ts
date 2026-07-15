@@ -338,6 +338,17 @@ export async function runStateMachine(
       if (finalDecision === null || finalDecision === "pass") {
         await ensureKnowledgeItem(companyId, entityState.id, updated, metrics, config.radarSurfaceMinSignalStrength);
       } else {
+        // Gate HOLD. Holds must be retroactive: if this entity was surfaced to
+        // the radar in an earlier run (before the gate/specificity check existed
+        // or judged it), that stale knowledge item must be pulled back off the
+        // radar so the radar always reflects the current verdict. Archiving
+        // (not deleting) keeps the row for audit while removing it from the
+        // trends list, which filters on `archived`.
+        if (updated.knowledgeItemId) {
+          await storage.updateKnowledgeItem(updated.knowledgeItemId, {
+            archived: true,
+          } as any);
+        }
         logger.info(
           { entityId: entity.id, label: entity.canonicalLabel, geography, reasons: verdict!.reasons },
           "Confirmation gate HOLD — not surfacing to radar"
