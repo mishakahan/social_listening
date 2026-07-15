@@ -390,11 +390,13 @@ function SingleEntityTab({
                       <div className="text-sm font-medium text-foreground leading-tight">
                         {trend.title}
                       </div>
-                      {(trend.geography || trend.territoryTag) && (
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {[trend.geography, trend.territoryTag].filter(Boolean).join(" · ")}
-                        </div>
-                      )}
+                      {(() => {
+                        const geo = trend.geography === "Global" ? null : trend.geography;
+                        const meta = [geo, trend.territoryTag].filter(Boolean).join(" · ");
+                        return meta ? (
+                          <div className="text-xs text-muted-foreground mt-0.5">{meta}</div>
+                        ) : null;
+                      })()}
                     </div>
 
                     {/* Signal */}

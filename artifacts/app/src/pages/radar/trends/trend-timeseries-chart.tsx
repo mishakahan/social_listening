@@ -194,8 +194,9 @@ export function TrendTimeseriesChart({
 
             {!data.hasInterest && (
               <p className="text-[11px] text-muted-foreground mt-2">
-                No Google Trends data for this trend yet — run the Google
-                Trends backfill to add a search-interest line.
+                No Google search-interest line — this trend surfaced from social
+                conversation and isn&apos;t in the Google Trends keyword set
+                (the search-vs-social gap). Mentions still tell the full story.
               </p>
             )}
             {!data.hasMentions && (

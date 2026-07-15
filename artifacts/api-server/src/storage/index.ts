@@ -1870,9 +1870,29 @@ export interface TrendEvidence {
   url: string | null;
   publishedAt: string | null;
   engagementScore: number | null;
+  engagementLikes: number | null;
+  engagementViews: number | null;
+  engagementComments: number | null;
   platform: string;
   author: string | null;
   excerpt: string | null;
+}
+
+// The stored gate verdict + specificity judgment, surfaced verbatim so the
+// trend detail UI can show *why* an entity confirmed or was held.
+export interface TrendConfirmationVerdict {
+  decision: "pass" | "hold";
+  reasons: string[];
+  significanceP: number;
+  entropyBits: number;
+  evaluatedAt: string;
+}
+
+export interface TrendSpecificityVerdict {
+  specific: boolean;
+  reason: string;
+  label: string;
+  judgedAt: string;
 }
 
 export async function getTrendDetail(
@@ -1884,6 +1904,8 @@ export async function getTrendDetail(
       growthMomPct: number;
       volume7d: number;
       volume30d: number;
+      confirmationVerdict: TrendConfirmationVerdict | null;
+      specificityVerdict: TrendSpecificityVerdict | null;
     })
   | null
 > {
@@ -1935,6 +1957,8 @@ export async function getTrendDetail(
       updatedAt: ki.updatedAt.toISOString(),
       volume7d: 0,
       volume30d: 0,
+      confirmationVerdict: null,
+      specificityVerdict: null,
       evidence: [],
     };
   }
@@ -1966,6 +1990,9 @@ export async function getTrendDetail(
     url: r.sig.sourceUrl ?? null,
     publishedAt: r.sig.postedAt?.toISOString() ?? null,
     engagementScore: r.sig.engagementScore ?? null,
+    engagementLikes: r.sig.engagementLikes ?? null,
+    engagementViews: r.sig.engagementViews ?? null,
+    engagementComments: r.sig.engagementComments ?? null,
     platform: r.sig.platform,
     author: r.sig.authorHandle ?? null,
     excerpt: r.sig.text?.slice(0, 300) ?? null,
@@ -1996,6 +2023,8 @@ export async function getTrendDetail(
     updatedAt: ki.updatedAt.toISOString(),
     volume7d: es.volume7d,
     volume30d: es.volume30d,
+    confirmationVerdict: es.confirmationVerdict ?? null,
+    specificityVerdict: es.specificityVerdict ?? null,
     evidence,
   };
 }
