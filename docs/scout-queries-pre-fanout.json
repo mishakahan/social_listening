@@ -1,0 +1,390 @@
+{
+  "savedAt": "2026-07-16T11:29:26.033Z",
+  "note": "Pre-fan-out scout queries. The 10 hand-seeded Leone queries agreed with Jonathan 2026-07-01 (seed-test-queries.ts, 'no LLM expansion'). These are the query set the Schedule B backtest baseline (2 confirmed / 10-of-10 noise held / 0 false positives) was produced from. Restore with: pnpm exec tsx --env-file=../../.env src/scripts/seed-test-queries.ts",
+  "leoneQueries": [
+    {
+      "topicLabel": "Gummies",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "gummies",
+        "gummy candy",
+        "gummy sweets"
+      ],
+      "hashtags": [
+        "gummies",
+        "gummycandy",
+        "gummysweets"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Alcoholic beverages",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "alcoholic beverages",
+        "craft cocktails",
+        "hard seltzer",
+        "ready to drink cocktails"
+      ],
+      "hashtags": [
+        "alcoholicbeverages",
+        "craftcocktails",
+        "hardseltzer"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Functional gummies",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "functional gummies",
+        "supplement gummies",
+        "vitamin gummies"
+      ],
+      "hashtags": [
+        "functionalgummies",
+        "vitamingummies",
+        "supplementgummies"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Condiments and seasonings",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "condiments",
+        "seasonings",
+        "hot sauce",
+        "gourmet condiments"
+      ],
+      "hashtags": [
+        "condiments",
+        "seasonings",
+        "hotsauce"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Chocolate gifting",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "chocolate gifting",
+        "chocolate gifts",
+        "chocolate gift box"
+      ],
+      "hashtags": [
+        "chocolategifting",
+        "chocolategifts",
+        "chocolategiftbox"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Functional gummies (Italy)",
+      "geography": "IT",
+      "language": "it",
+      "keywords": [
+        "gommose funzionali",
+        "caramelle funzionali",
+        "integratori gommose"
+      ],
+      "hashtags": [
+        "gommosefunzionali",
+        "integratorigommose"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Non-alcoholic beverages",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "non alcoholic beverages",
+        "functional drinks",
+        "mocktails",
+        "prebiotic soda"
+      ],
+      "hashtags": [
+        "nonalcoholic",
+        "functionaldrinks",
+        "mocktails"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Gummies (Italy)",
+      "geography": "IT",
+      "language": "it",
+      "keywords": [
+        "caramelle gommose",
+        "gommose",
+        "caramelle gelatina"
+      ],
+      "hashtags": [
+        "caramellegommose",
+        "gommose"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Dietary supplements and nutrition",
+      "geography": "Global",
+      "language": "en",
+      "keywords": [
+        "dietary supplements",
+        "nutrition supplements",
+        "vitamins",
+        "wellness supplements"
+      ],
+      "hashtags": [
+        "supplements",
+        "nutrition",
+        "vitamins"
+      ],
+      "active": true
+    },
+    {
+      "topicLabel": "Chocolate gifting (Italy)",
+      "geography": "IT",
+      "language": "it",
+      "keywords": [
+        "regali cioccolata",
+        "regali di cioccolato",
+        "cioccolato regalo"
+      ],
+      "hashtags": [
+        "regalicioccolato",
+        "cioccolatoregalo"
+      ],
+      "active": true
+    }
+  ],
+  "benchQueryCount": 34,
+  "seedItems": [
+    {
+      "label": "Alcoholic beverages",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Non-alcoholic beverages",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Condiments and seasonings",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Dietary supplements and nutrition",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Chocolate gifting",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Gummies",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Functional gummies",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "Chocolate gifting (Italy)",
+      "geography": "IT",
+      "status": "committed"
+    },
+    {
+      "label": "Gummies (Italy)",
+      "geography": "IT",
+      "status": "committed"
+    },
+    {
+      "label": "Functional gummies (Italy)",
+      "geography": "IT",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Athletic Brewing",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:High Noon Cocktail",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:JuneShine",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Jiant Kombucha",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Equiano Rum",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Los Sundays Tequila",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Onda Tequila",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Three Spirit",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Pentire Drinks",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Lunar Seltzer",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Lychee Seltzer",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Boozy Tea",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Coolberg",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Pinkglow Pineapple",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Oishii Strawberries",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Ritual Rum",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Nomadica Wine",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:TALEA Beer Co.",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Mayawell",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:pass:Happi Drink",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Water",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Coffee",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Bread",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Milk",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Sugar",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Salt",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Apple",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Chicken",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Rice",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Butter",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Spoon",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Napkin",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Plate",
+      "geography": "Global",
+      "status": "committed"
+    },
+    {
+      "label": "BENCH:hold:Flour",
+      "geography": "Global",
+      "status": "committed"
+    }
+  ]
+}

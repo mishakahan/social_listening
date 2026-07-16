@@ -333,6 +333,17 @@ Produce two lists:
    These stay broad on purpose: hashtag scrapes are billed per tag.
 
 HARD RULES:
+- STAY INSIDE THE TOPIC. Every keyword must be a kind of "${seed.label}" itself,
+  such that "<keyword> is a type of ${seed.label}" is plainly true. Do not drift
+  into neighbouring or parent categories, however related. Test each item before
+  including it: if it belongs under a different topic, drop it — that topic is
+  searched separately, and duplicating it here wastes budget and pollutes the
+  results.
+- If the topic is defined by NOT having some property, that exclusion is binding:
+  every keyword must actually lack it. Something that merely has a version with
+  the property removed only qualifies as that removed version, named explicitly
+  (for the topic "non-alcoholic beverages": "non-alcoholic beer" qualifies,
+  plain "beer" and "soju" do not).
 - Every keyword must be a GENERIC KIND OF THING, never a brand, company, or
   product line. Brands are what we DISCOVER later, not what we search for.
 - Every keyword must be a real, established term people actually use. Do NOT

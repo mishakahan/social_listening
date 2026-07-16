@@ -213,6 +213,32 @@ async function ensureKnowledgeItem(
 // Main state machine run
 // ---------------------------------------------------------------------------
 
+// A full run walks every entity (thousands) and is long-lived, so it straddles
+// Neon dropping a connection. The pool now surfaces that as a thrown error
+// rather than hanging (see lib/db), but one blip must not abandon a run that is
+// most of the way done: retry the entity, then skip it and carry on.
+async function withDbRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  attempts = 3
+): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        // Linear backoff: a dropped Neon connection is replaced on next acquire,
+        // so a short pause is enough — no need for aggressive exponential waits.
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+        logger.warn({ label, attempt: i + 1 }, "DB call failed, retrying");
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function runStateMachine(
   companyId: number
 ): Promise<{ processed: number; transitions: number }> {
@@ -225,9 +251,14 @@ export async function runStateMachine(
   let processed = 0;
   let transitions = 0;
 
+  let skipped = 0;
+
   for (const entity of entities) {
+    try {
     // Aggregate timeseries across all platforms and geographies for this entity
-    const timeseries = await storage.getEntityTimeseries(entity.id, 90);
+    const timeseries = await withDbRetry("getEntityTimeseries", () =>
+      storage.getEntityTimeseries(entity.id, 90)
+    );
     if (timeseries.length === 0) continue;
 
     // Group by geography
@@ -356,8 +387,18 @@ export async function runStateMachine(
       }
       processed++;
     }
+    } catch (err) {
+      // Retries already exhausted for this entity. Skip it rather than abandon
+      // the whole run: a partial pass over thousands of entities is far more
+      // useful than none, and the next run picks the entity up again.
+      skipped++;
+      logger.warn(
+        { err, entityId: entity.id, label: entity.canonicalLabel },
+        "Entity failed after retries — skipping"
+      );
+    }
   }
 
-  logger.info({ companyId, processed, transitions }, "State machine run complete");
+  logger.info({ companyId, processed, transitions, skipped }, "State machine run complete");
   return { processed, transitions };
 }
