@@ -448,9 +448,17 @@ export async function generateScoutQueriesForSeed(
 
   const out: ScoutQuerySet[] = [];
   for (const [language, bucket] of keywords) {
+    const all = [...bucket.values()];
+    const { kept, dropped } = await filterKeywordsToTopic(seed.label, language, all);
+    if (dropped.length > 0) {
+      logger.info(
+        { label: seed.label, language, dropped },
+        "Fan-out keywords dropped by topic filter"
+      );
+    }
     out.push({
       language,
-      keywords: [...bucket.values()],
+      keywords: kept,
       hashtags: [...(hashtags.get(language)?.values() ?? [])],
     });
   }
@@ -459,4 +467,74 @@ export async function generateScoutQueriesForSeed(
     "Fan-out complete"
   );
   return out;
+}
+
+// Post-filter: generation keeps drifting across topic boundaries on rare terms
+// (bare "soju" under "Non-alcoholic beverages" survived prompt tuning in ~1/3
+// of runs), and hardening the generation prompt further hit diminishing
+// returns. Verification is a far easier task than generation, so after the
+// union we ask the model to JUDGE each keyword against the literal topic and
+// drop the failures. Temperature 0 — judging needs no creativity. Applies to
+// keywords only: hashtags are deliberately broad, and category-membership
+// judgment would over-drop them.
+async function filterKeywordsToTopic(
+  topic: string,
+  language: string,
+  kws: string[]
+): Promise<{ kept: string[]; dropped: string[] }> {
+  if (kws.length === 0) return { kept: [], dropped: [] };
+  const prompt = `You are validating search keywords for the topic "${topic}".
+
+For EACH keyword below, answer whether the plain statement
+"<keyword> is a kind of ${topic}" is literally true.
+
+Interpret the topic literally, including any exclusion built into its name
+(for "non-alcoholic beverages", plain "beer" or "soju" are NOT kinds of it,
+while "non-alcoholic beer" is). Keywords may be in ${language}; judge their
+meaning. Judge ONLY category membership — never drop a keyword for being
+niche, regional, or unfamiliar.
+
+Keywords:
+${kws.map((k, i) => `${i + 1}. ${k}`).join("\n")}
+
+Return JSON: { "verdicts": [{ "i": <number>, "keep": <boolean> }] } with one
+entry per keyword, in order.`;
+  try {
+    const response = await getOpenAI().chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      messages: [
+        { role: "system", content: prompt },
+        { role: "user", content: "Validate the keywords." },
+      ],
+    });
+    const text = response.choices[0]?.message?.content ?? "";
+    const cleaned = text.replace(/^```(?:json)?\n?/m, "").replace(/```$/m, "").trim();
+    const parsed = JSON.parse(cleaned) as {
+      verdicts?: { i: number; keep: boolean }[];
+    };
+    const drop = new Set(
+      (parsed.verdicts ?? [])
+        .filter((v) => v && v.keep === false)
+        .map((v) => v.i - 1)
+    );
+    const kept: string[] = [];
+    const dropped: string[] = [];
+    kws.forEach((k, idx) => (drop.has(idx) ? dropped : kept).push(k));
+    // Refuse mass-drops: if the judge rejects most of the list, the judgment is
+    // what's broken, not the list. Keep everything rather than gut the query.
+    if (dropped.length > kws.length / 2) {
+      logger.warn(
+        { topic, dropped: dropped.length, total: kws.length },
+        "Topic filter rejected majority of keywords — ignoring filter"
+      );
+      return { kept: kws, dropped: [] };
+    }
+    return { kept, dropped };
+  } catch (err) {
+    // Fail open, matching the gate's specificity check: losing the filter for
+    // one run is fine, losing the whole query set is not.
+    logger.warn({ err, topic }, "Topic filter failed — keeping all keywords");
+    return { kept: kws, dropped: [] };
+  }
 }
