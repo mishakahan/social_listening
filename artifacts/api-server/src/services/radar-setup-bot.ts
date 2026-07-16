@@ -362,11 +362,18 @@ HARD RULES:
 - A shorter accurate list beats a padded one. Aim for 20-30 keywords only if
   that many real ones exist.
 - Build the taxonomy FIRST, then write it out once per language listed below.
-  A type belongs in every language's list; only its spelling changes. Give the
-  name speakers of that language actually use — which for a foreign type is
-  usually the original name kept as-is (soju stays "soju"). Never drop a type
-  from a language for being foreign to it, and never translate a name that
-  speakers do not translate.
+  A type belongs in every language's list; only its NAME changes. Never drop a
+  type from a language for being foreign to it.
+  For each language, write what a native speaker would actually type into
+  search. Decide per item:
+    * The language has its own everyday word for it -> USE THAT WORD. Do not
+      leave the English in. In Italian, "gummy bears" is "orsetti gommosi",
+      "sour gummies" is "caramelle gommose acide", "sleep gummies" is "gomme
+      per il sonno". A list of English terms under a non-English language is
+      WRONG, even where the English is understood.
+    * It is a proper or protected name, or the language simply borrows it ->
+      keep the original (soju, mochi, pisco, lokum, champagne). Only genuine
+      borrowings, not laziness: if a plain local phrase exists, that phrase wins.
 - Think taxonomy, not marketing.
 
 Languages needed: ${languages}
@@ -403,7 +410,32 @@ export async function generateScoutQueriesForSeed(
   // language -> canonical(term) -> first-seen original casing
   const keywords = new Map<string, Map<string, string>>();
   const hashtags = new Map<string, Map<string, string>>();
-  const norm = (s: string) => s.trim().toLowerCase().replace(/^#/, "");
+  // Unioning passes on the exact string leaves near-duplicates that are the same
+  // search: "whiskey"/"whisky", "protein powder"/"protein powders",
+  // "pâte de fruit"/"pate de fruit". Normalise accents, plurals and spelling
+  // variants so one search term survives per real concept.
+  const norm = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/^#/, "")
+      // strip accents: pâte -> pate
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      // per-word singularise, so "protein powders" == "protein powder".
+      // Deliberately crude: only trailing "s"/"es" on words long enough that
+      // removing it cannot collide with a different word.
+      .map((w) => {
+        if (w.length > 4 && w.endsWith("es") && !w.endsWith("ses")) return w.slice(0, -2);
+        if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+        return w;
+      })
+      // English spelling variants that are the same search.
+      .map((w) => (w === "whisky" ? "whiskey" : w))
+      .join(" ");
 
   const absorb = (
     into: Map<string, Map<string, string>>,
@@ -466,10 +498,13 @@ export async function generateScoutQueriesForSeed(
         "Fan-out keywords dropped by topic filter"
       );
     }
-    const tags = sanitizeHashtags(
+    // Format/jargon rules first (cheap, deterministic), then ask the model which
+    // of the survivors are tags people genuinely use.
+    const formatted = sanitizeHashtags(
       [...(hashtags.get(language)?.values() ?? [])],
       ctx
     );
+    const tags = await filterHashtagsToReal(seed.label, language, formatted);
     out.push({ language, keywords: kept, hashtags: tags });
   }
   logger.info(
@@ -533,6 +568,71 @@ function sanitizeHashtags(tags: string[], ctx: CompanyContext): string[] {
   }
   // Earlier passes hold the model's highest-confidence, highest-volume tags.
   return out.slice(0, FANOUT_MAX_HASHTAGS);
+}
+
+// sanitizeHashtags only knows the client's own (English) jargon, so coinages in
+// other languages sail through: "gommefunzionali", "gommialcollagene",
+// "gommestudio" — grammatical-looking Italian that nobody actually tags. A tag
+// nobody uses is an IG scrape billed to return nothing, so ask the model to
+// judge which tags are real. Same shape as the keyword judge: temperature 0,
+// fails open, refuses to gut the list.
+async function filterHashtagsToReal(
+  topic: string,
+  language: string,
+  tags: string[]
+): Promise<string[]> {
+  if (tags.length === 0) return tags;
+  const prompt = `You are validating hashtags for social scraping on the topic "${topic}".
+
+For EACH hashtag, decide whether it is a tag REAL PEOPLE ALREADY USE — one that
+would return a substantial body of existing posts on Instagram or TikTok.
+
+Drop a hashtag if it was invented for this list: grammatical-looking compounds
+that nobody actually types ("gommefunzionali", "gommialcollagene"), or coinages
+that are not real words at all ("gommestudio").
+Keep the obvious, high-volume tags even when they are generic ("gummies",
+"chocolate", "wellness", "cioccolato"). Common beats clever: a broad tag people
+really use is exactly what we want.
+Tags are in ${language} — judge against how speakers of that language tag posts.
+
+Hashtags:
+${tags.map((t, i) => `${i + 1}. ${t}`).join("\n")}
+
+Return JSON: { "verdicts": [{ "i": <number>, "keep": <boolean> }] }, one entry
+per hashtag, in order.`;
+  try {
+    const response = await getOpenAI().chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      messages: [
+        { role: "system", content: prompt },
+        { role: "user", content: "Validate the hashtags." },
+      ],
+    });
+    const text = response.choices[0]?.message?.content ?? "";
+    const cleaned = text.replace(/^```(?:json)?\n?/m, "").replace(/```$/m, "").trim();
+    const parsed = JSON.parse(cleaned) as { verdicts?: { i: number; keep: boolean }[] };
+    const drop = new Set(
+      (parsed.verdicts ?? []).filter((v) => v && v.keep === false).map((v) => v.i - 1)
+    );
+    const kept = tags.filter((_, i) => !drop.has(i));
+    // Every tag rejected means the judgment is broken, not the list. Also keep
+    // at least one: a query with no hashtags cannot scrape IG or TikTok at all.
+    if (kept.length === 0) {
+      logger.warn({ topic, language }, "Hashtag judge rejected everything — ignoring");
+      return tags;
+    }
+    if (drop.size > 0) {
+      logger.info(
+        { topic, language, dropped: tags.filter((_, i) => drop.has(i)) },
+        "Hashtags dropped as not-real"
+      );
+    }
+    return kept;
+  } catch (err) {
+    logger.warn({ err, topic }, "Hashtag judge failed — keeping all");
+    return tags;
+  }
 }
 
 // Post-filter: generation keeps drifting across topic boundaries on rare terms
