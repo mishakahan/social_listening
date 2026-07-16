@@ -330,7 +330,17 @@ Produce two lists:
     c) EMERGING or ADJACENT types: recent hybrids, kinds that only became
        popular recently, variants defined by a distinct positioning or attribute
 2. "hashtags": 4-6 BROAD, same-level hashtags for the category (no leading #).
-   These stay broad on purpose: hashtag scrapes are billed per tag.
+   These stay broad on purpose: hashtag scrapes are billed per tag, so this list
+   must stay SHORT — quality over coverage.
+   A hashtag qualifies only if real people already tag posts with it. Test it by
+   asking "would I find thousands of existing posts under this tag?".
+   - Single token, lowercase, letters/digits only. No spaces, underscores or
+     punctuation: platforms match the tag literally, so "#gummy bears" and
+     "#functional_gummies" match nothing.
+   - NEVER coin a tag out of the company's own vertical, positioning or
+     strategic priorities. Those are internal business language, not words the
+     public tags posts with (e.g. "premiumgifting", "functionalwellness").
+   - Prefer the obvious, high-volume category tags over clever niche ones.
 
 HARD RULES:
 - STAY INSIDE THE TOPIC. Every keyword must be a kind of "${seed.label}" itself,
@@ -456,17 +466,58 @@ export async function generateScoutQueriesForSeed(
         "Fan-out keywords dropped by topic filter"
       );
     }
-    out.push({
-      language,
-      keywords: kept,
-      hashtags: [...(hashtags.get(language)?.values() ?? [])],
-    });
+    const tags = sanitizeHashtags(
+      [...(hashtags.get(language)?.values() ?? [])],
+      ctx
+    );
+    out.push({ language, keywords: kept, hashtags: tags });
   }
   logger.info(
-    { label: seed.label, languages: out.map((o) => `${o.language}:${o.keywords.length}`) },
+    {
+      label: seed.label,
+      languages: out.map((o) => `${o.language}:${o.keywords.length}kw/${o.hashtags.length}tag`),
+    },
     "Fan-out complete"
   );
   return out;
+}
+
+// Hashtags are billed per tag on IG and matched literally by every platform, so
+// a malformed or invented tag is money spent to scrape nothing. This is a
+// mechanical format rule, so enforce it in code rather than hoping the model
+// complies:
+//   - platforms have no spaces/underscores/punctuation in tags, so anything
+//     carrying them ("gummy bears", "functional_gummies") matches zero posts;
+//   - tags coined from the client's own positioning ("premiumgifting",
+//     "functionalwellness") are internal business language nobody tags with;
+//   - the union across passes inflates the list, and IG cost scales with it.
+const FANOUT_MAX_HASHTAGS = Number(process.env.FANOUT_MAX_HASHTAGS ?? "6") || 6;
+
+function sanitizeHashtags(tags: string[], ctx: CompanyContext): string[] {
+  // Words drawn from the client's own strategy deck: never public tag language.
+  const businessJargon = new Set(
+    [...ctx.strategicPriorities, ctx.vertical ?? "", ctx.brandPositioning ?? ""]
+      .flatMap((s) => s.toLowerCase().split(/[^a-z0-9]+/))
+      .filter((w) => w.length > 3)
+  );
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim().replace(/^#/, "").toLowerCase();
+    // Platforms match tags literally: reject rather than mangle, since silently
+    // stripping a space invents a tag the model never proposed.
+    if (!/^[a-z0-9]+$/.test(tag)) continue;
+    if (tag.length < 3 || tag.length > 30) continue;
+    // Drop a tag if it is only the client's jargon glued together.
+    const words = tag.match(/[a-z]+/g) ?? [];
+    if (words.length > 0 && words.every((w) => businessJargon.has(w))) continue;
+    if (businessJargon.has(tag)) continue;
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    out.push(tag);
+  }
+  // Earlier passes hold the model's highest-confidence, highest-volume tags.
+  return out.slice(0, FANOUT_MAX_HASHTAGS);
 }
 
 // Post-filter: generation keeps drifting across topic boundaries on rare terms
@@ -485,14 +536,26 @@ async function filterKeywordsToTopic(
   if (kws.length === 0) return { kept: [], dropped: [] };
   const prompt = `You are validating search keywords for the topic "${topic}".
 
-For EACH keyword below, answer whether the plain statement
-"<keyword> is a kind of ${topic}" is literally true.
+Keep a keyword only if BOTH tests pass. Drop it if either fails.
 
-Interpret the topic literally, including any exclusion built into its name
-(for "non-alcoholic beverages", plain "beer" or "soju" are NOT kinds of it,
-while "non-alcoholic beer" is). Keywords may be in ${language}; judge their
-meaning. Judge ONLY category membership — never drop a keyword for being
-niche, regional, or unfamiliar.
+TEST 1 — category membership. The plain statement "<keyword> is a kind of
+${topic}" must be literally true. Interpret the topic literally, including any
+exclusion built into its name (for "non-alcoholic beverages", plain "beer" or
+"soju" are NOT kinds of it, while "non-alcoholic beer" is).
+
+TEST 2 — not a single company's product. Drop the keyword only if it names a
+specific COMPANY or that company's product line ("Haribo gummies", "Coca-Cola"
+fail). Brands are what this system discovers downstream, so one as a search
+term defeats the point.
+This test is ONLY about company ownership. A keyword is fine — and must be kept
+— when many different producers make it, even if its name is a proper noun, a
+place, a protected origin or a foreign word: soju, pisco, champagne, prosecco,
+baijiu, cachaça, Turkish delight and Belgian chocolate ALL PASS, because no
+single company owns them. If unsure whether it is a company, keep it.
+
+Keywords may be in ${language}; judge their meaning. Judge ONLY these two tests
+— never drop a keyword for being niche, regional, traditional or unfamiliar.
+Obscurity is the signal we are hunting for.
 
 Keywords:
 ${kws.map((k, i) => `${i + 1}. ${k}`).join("\n")}
