@@ -280,46 +280,172 @@ export async function generateSeedCandidates(
 // generateScoutQueriesForSeed
 // ---------------------------------------------------------------------------
 
-export async function generateScoutQueriesForSeed(
+// Fan-out passes: one LLM call is not enough. The model is non-deterministic,
+// so each pass returns a partly different slice of the taxonomy — the stable
+// canon every time, plus a rotating tail of rarer types. Unioning several
+// passes is what surfaces the long tail (soju, gochujang, pulque) that a
+// single pass misses. Measured: pass 1 yields ~20-29 terms; pass 2 adds
+// 50-70% new; passes 3-5 ~30% each; by pass 7 it is 5-10%. We therefore stop
+// when a pass stops paying for itself rather than guessing a count per topic —
+// specificity of the topic does NOT predict how many passes it needs
+// ("Colombian coffee" needed more than "Coffee", not fewer).
+const FANOUT_MAX_PASSES = Number(process.env.FANOUT_MAX_PASSES ?? "6") || 6;
+// Stop once a pass contributes less than this share of new terms.
+const FANOUT_MIN_NEW_RATIO = 0.1;
+// ...but never before this many passes. The model empties the obvious canon
+// first (beer, wine, whiskey) and only reaches the regional tail once that is
+// exhausted: measured, soju and baijiu first appear on pass 3, and pass 2 can
+// dip under the ratio while the tail is still unreached. Stopping on that dip
+// silently loses exactly the long tail the fan-out exists to find.
+const FANOUT_MIN_PASSES = 3;
+
+function buildFanoutPrompt(
   seed: SeedCandidateItem,
-  ctx: CompanyContext
-): Promise<{ language: string; keywords: string[]; hashtags: string[] }[]> {
-  const languages = seed.seedQueries.map((q) => q.language).join(", ");
+  ctx: CompanyContext,
+  languages: string
+): string {
+  const priorities = ctx.strategicPriorities.length
+    ? ctx.strategicPriorities.join(", ")
+    : "none stated";
+  return `You are building social-listening search queries for a market-research engine.
 
-  const systemPrompt = `For the following topic, generate social-listening search queries.
-
-Topic: ${seed.label}
+Topic (the ONLY thing the client told us): ${seed.label}
 Geography: ${seed.geography}
 Territory: ${seed.territoryTag}
 Product category: ${seed.productCategoryLink}
-Company vertical: ${ctx.vertical}
-Company strategic priorities: ${ctx.strategicPriorities.join(", ")}
+Company vertical: ${ctx.vertical ?? "unknown"}
+Company strategic priorities: ${priorities}
 
-For each language listed below, produce:
-- 5-10 keywords (no hashtag prefix) — phrases that would appear in organic social posts about this topic, native to the language
-- 5-10 hashtags (no leading #) — hashtags that native speakers would actually use on IG/TikTok for this topic
+The client does NOT know what is trending. Your job is to decide WHERE to look.
+Do not narrow to the company's own products: we are scanning the whole category
+they compete in. Use the company context only to disambiguate what the topic
+means, never to filter the taxonomy down to what they already sell.
+
+Produce two lists:
+1. "keywords": SPECIFIC SUB-CATEGORIES / TYPES under this topic.
+   Cover these, roughly evenly, but ONLY where they genuinely exist:
+    a) the mainstream / long-established types
+    b) REGIONAL and TRADITIONAL types from every continent, including ones
+       little known in the US/Europe
+    c) EMERGING or ADJACENT types: recent hybrids, kinds that only became
+       popular recently, variants defined by a distinct positioning or attribute
+2. "hashtags": 4-6 BROAD, same-level hashtags for the category (no leading #).
+   These stay broad on purpose: hashtag scrapes are billed per tag.
+
+HARD RULES:
+- Every keyword must be a GENERIC KIND OF THING, never a brand, company, or
+  product line. Brands are what we DISCOVER later, not what we search for.
+- Every keyword must be a real, established term people actually use. Do NOT
+  invent plausible-sounding types to fill a bucket. If a category has no
+  regional variation, skip (b) entirely and return fewer items.
+- A shorter accurate list beats a padded one. Aim for 20-30 keywords only if
+  that many real ones exist.
+- Build the taxonomy FIRST, then write it out once per language listed below.
+  A type belongs in every language's list; only its spelling changes. Give the
+  name speakers of that language actually use — which for a foreign type is
+  usually the original name kept as-is (soju stays "soju"). Never drop a type
+  from a language for being foreign to it, and never translate a name that
+  speakers do not translate.
+- Think taxonomy, not marketing.
 
 Languages needed: ${languages}
 
-Rules:
-- All keywords and hashtags MUST be in the specified language
-- No generic single-word hashtags. Combine with qualifiers
-- Prefer phrases indicating consumer discovery or discussion
-- Return JSON: { results: [{ language: string, keywords: string[], hashtags: string[] }] }`;
+Return JSON: { results: [{ language: string, keywords: string[], hashtags: string[] }] }`;
+}
 
+type ScoutQuerySet = { language: string; keywords: string[]; hashtags: string[] };
+
+async function runFanoutPass(prompt: string): Promise<ScoutQuerySet[]> {
   const response = await getOpenAI().chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: 0.4,
+    // Higher than the old 0.4: we WANT variation across passes, since the union
+    // is the point. Determinism here would defeat the fan-out.
+    temperature: 0.7,
     messages: [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: prompt },
       { role: "user", content: "Generate the scout queries." },
     ],
   });
-
   const text = response.choices[0]?.message?.content ?? '{"results":[]}';
   const cleaned = text.replace(/^```(?:json)?\n?/m, "").replace(/```$/m, "").trim();
-  const parsed = JSON.parse(cleaned) as {
-    results: { language: string; keywords: string[]; hashtags: string[] }[];
+  const parsed = JSON.parse(cleaned) as { results?: ScoutQuerySet[] };
+  return parsed.results ?? [];
+}
+
+export async function generateScoutQueriesForSeed(
+  seed: SeedCandidateItem,
+  ctx: CompanyContext
+): Promise<ScoutQuerySet[]> {
+  const languages = seed.seedQueries.map((q) => q.language).join(", ");
+  const prompt = buildFanoutPrompt(seed, ctx, languages);
+
+  // language -> canonical(term) -> first-seen original casing
+  const keywords = new Map<string, Map<string, string>>();
+  const hashtags = new Map<string, Map<string, string>>();
+  const norm = (s: string) => s.trim().toLowerCase().replace(/^#/, "");
+
+  const absorb = (
+    into: Map<string, Map<string, string>>,
+    lang: string,
+    values: unknown
+  ): number => {
+    if (!Array.isArray(values)) return 0;
+    const bucket = into.get(lang) ?? new Map<string, string>();
+    into.set(lang, bucket);
+    let added = 0;
+    for (const raw of values) {
+      if (typeof raw !== "string") continue;
+      const value = raw.trim().replace(/^#/, "");
+      const key = norm(raw);
+      if (!key || bucket.has(key)) continue;
+      bucket.set(key, value);
+      added++;
+    }
+    return added;
   };
-  return parsed.results;
+
+  for (let pass = 0; pass < FANOUT_MAX_PASSES; pass++) {
+    let results: ScoutQuerySet[];
+    try {
+      results = await runFanoutPass(prompt);
+    } catch (err) {
+      // A failed pass is survivable: keep whatever earlier passes produced
+      // rather than losing the whole seed to one bad response.
+      logger.warn({ err, label: seed.label, pass }, "Fan-out pass failed");
+      continue;
+    }
+
+    let seen = 0;
+    let added = 0;
+    for (const r of results) {
+      if (!r?.language) continue;
+      seen += Array.isArray(r.keywords) ? r.keywords.length : 0;
+      added += absorb(keywords, r.language, r.keywords);
+      absorb(hashtags, r.language, r.hashtags);
+    }
+
+    // Stop when the pass stopped paying for itself, but only once we are past
+    // the canon-dumping passes (see FANOUT_MIN_PASSES).
+    if (pass + 1 >= FANOUT_MIN_PASSES && (seen === 0 || added / seen < FANOUT_MIN_NEW_RATIO)) {
+      logger.info(
+        { label: seed.label, passes: pass + 1, added, seen },
+        "Fan-out saturated"
+      );
+      break;
+    }
+  }
+
+  const out: ScoutQuerySet[] = [];
+  for (const [language, bucket] of keywords) {
+    out.push({
+      language,
+      keywords: [...bucket.values()],
+      hashtags: [...(hashtags.get(language)?.values() ?? [])],
+    });
+  }
+  logger.info(
+    { label: seed.label, languages: out.map((o) => `${o.language}:${o.keywords.length}`) },
+    "Fan-out complete"
+  );
+  return out;
 }
