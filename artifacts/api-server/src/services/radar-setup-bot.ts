@@ -494,12 +494,30 @@ export async function generateScoutQueriesForSeed(
 const FANOUT_MAX_HASHTAGS = Number(process.env.FANOUT_MAX_HASHTAGS ?? "6") || 6;
 
 function sanitizeHashtags(tags: string[], ctx: CompanyContext): string[] {
-  // Words drawn from the client's own strategy deck: never public tag language.
-  const businessJargon = new Set(
-    [...ctx.strategicPriorities, ctx.vertical ?? "", ctx.brandPositioning ?? ""]
-      .flatMap((s) => s.toLowerCase().split(/[^a-z0-9]+/))
-      .filter((w) => w.length > 3)
-  );
+  // Individual words lifted from the client's strategy deck. Note these are NOT
+  // banned on their own: "wellness" and "gifting" are ordinary high-volume tags
+  // that millions of real posts use. Only their CONCATENATION is the giveaway —
+  // "premium gifting" coming back as "premiumgifting" is the model echoing the
+  // brief, and no member of the public tags a post that way.
+  const jargonWords = [
+    ...ctx.strategicPriorities,
+    ctx.brandPositioning ?? "",
+  ]
+    .flatMap((s) => s.toLowerCase().split(/[^a-z0-9]+/))
+    .filter((w) => w.length > 3);
+
+  // Tags arrive as one token, so a coined compound can only be caught by trying
+  // to segment it back into two or more of those words.
+  const isCoinedCompound = (tag: string): boolean => {
+    const canSegment = (rest: string, used: number): boolean => {
+      if (rest.length === 0) return used >= 2;
+      return jargonWords.some(
+        (w) => rest.startsWith(w) && canSegment(rest.slice(w.length), used + 1)
+      );
+    };
+    return canSegment(tag, 0);
+  };
+
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of tags) {
@@ -508,10 +526,7 @@ function sanitizeHashtags(tags: string[], ctx: CompanyContext): string[] {
     // stripping a space invents a tag the model never proposed.
     if (!/^[a-z0-9]+$/.test(tag)) continue;
     if (tag.length < 3 || tag.length > 30) continue;
-    // Drop a tag if it is only the client's jargon glued together.
-    const words = tag.match(/[a-z]+/g) ?? [];
-    if (words.length > 0 && words.every((w) => businessJargon.has(w))) continue;
-    if (businessJargon.has(tag)) continue;
+    if (isCoinedCompound(tag)) continue;
     if (seen.has(tag)) continue;
     seen.add(tag);
     out.push(tag);
@@ -536,7 +551,7 @@ async function filterKeywordsToTopic(
   if (kws.length === 0) return { kept: [], dropped: [] };
   const prompt = `You are validating search keywords for the topic "${topic}".
 
-Keep a keyword only if BOTH tests pass. Drop it if either fails.
+Keep a keyword only if ALL THREE tests pass. Drop it if any fails.
 
 TEST 1 — category membership. The plain statement "<keyword> is a kind of
 ${topic}" must be literally true. Interpret the topic literally, including any
@@ -553,9 +568,21 @@ place, a protected origin or a foreign word: soju, pisco, champagne, prosecco,
 baijiu, cachaça, Turkish delight and Belgian chocolate ALL PASS, because no
 single company owns them. If unsure whether it is a company, keep it.
 
-Keywords may be in ${language}; judge their meaning. Judge ONLY these two tests
-— never drop a keyword for being niche, regional, traditional or unfamiliar.
-Obscurity is the signal we are hunting for.
+TEST 3 — a real thing, not a plausible-sounding invention. The keyword must be
+something that actually exists and is sold or made in the world, such that real
+people already post about it. Generation pads thin categories by combining the
+topic with an arbitrary flavour or ingredient, producing terms nobody has ever
+used ("gommose al pomodoro" / tomato gummies, "gommose ai funghi" / mushroom
+gummies). Ask: have I actually encountered this product, or am I only agreeing
+it sounds constructible? If the latter, drop it.
+Be careful in BOTH directions: a genuinely traditional item is real however
+obscure it sounds (Turkish lokum, Mexican pulparindo, aam papad, pâte de fruit
+ALL PASS). The test is existence, not familiarity. If a real product plausibly
+exists under this name, keep it — only drop inventions.
+
+Keywords may be in ${language}; judge their meaning. Judge ONLY these three
+tests — never drop a keyword merely for being niche, regional, traditional or
+unfamiliar. Obscurity is the signal we are hunting for; invention is not.
 
 Keywords:
 ${kws.map((k, i) => `${i + 1}. ${k}`).join("\n")}
