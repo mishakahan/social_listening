@@ -75,7 +75,15 @@ function planPlatformsForQuery(query: {
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
   }
-  if (query.geography !== "CN") {
+  // Google Trends is off by default: measured $12.09 for 120 records across 58
+  // runs — by far the worst value of any actor here — and it does not feed the
+  // gate at all. Its output lands in tp_keyword_interest, not tp_raw_signals, so
+  // it never reaches the significance or breadth tests; it only draws a
+  // search-interest line on the trend chart, and that line is empty for most
+  // entities anyway (the keywords we query GT with are the seed terms, while the
+  // entities that surface come from social posts, so the two rarely match).
+  // Set ENABLE_GOOGLE_TRENDS=true to bring it back once there is a reason to.
+  if (query.geography !== "CN" && process.env.ENABLE_GOOGLE_TRENDS === "true") {
     platforms.push({ platform: "google_trends", runMode: "backfill:google_trends", actorSlug: "apify/google-trends-scraper" });
   }
   return platforms;
