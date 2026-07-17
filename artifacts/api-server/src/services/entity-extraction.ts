@@ -307,7 +307,12 @@ export async function extractEntitiesForBatch(
 
 export async function runEntityExtraction(
   companyId: number,
-  options?: { batchSize?: number; actorRunId?: number; maxBatches?: number }
+  options?: {
+    batchSize?: number;
+    actorRunId?: number;
+    maxBatches?: number;
+    concurrency?: number;
+  }
 ): Promise<{ processed: number; entityLinks: number }> {
   if (!process.env.OPENAI_API_KEY) {
     logger.warn("OPENAI_API_KEY not set — skipping entity extraction");
@@ -316,24 +321,53 @@ export async function runEntityExtraction(
 
   const batchSize = options?.batchSize ?? 20;
   const maxBatches = options?.maxBatches ?? 50;
+  // Each batch is one LLM round-trip and they were run strictly one at a time,
+  // so the whole stage sat idle waiting on the network: ~60 signals/min, which
+  // is ~7 hours for a 25k backlog. Nothing about the work is sequential — the
+  // batches are disjoint sets of signals.
+  //
+  // This was previously unsafe: upsertEntity was select-then-insert, so two
+  // batches meeting the same new label both inserted and produced duplicate
+  // entities. It is now an atomic ON CONFLICT against a unique index, so
+  // concurrent batches converge on one row instead of racing.
+  const concurrency = Math.max(1, options?.concurrency ?? 6);
   let processed = 0;
   let batchCount = 0;
 
   while (batchCount < maxBatches) {
-    const pending = await storage.getUnextractedSignals(
+    // Claim enough work for every worker in this wave. Signals are marked
+    // done/failed by extractEntitiesForBatch, so the next fetch cannot hand the
+    // same rows out twice — waves are sequential, workers within a wave are not.
+    const wave = await storage.getUnextractedSignals(
       companyId,
-      batchSize,
+      batchSize * concurrency,
       options?.actorRunId
     );
-    if (pending.length === 0) break;
+    if (wave.length === 0) break;
 
-    await extractEntitiesForBatch(companyId, pending);
-    processed += pending.length;
-    batchCount++;
+    const batches: TpRawSignal[][] = [];
+    for (let i = 0; i < wave.length; i += batchSize) {
+      batches.push(wave.slice(i, i + batchSize));
+      if (batchCount + batches.length >= maxBatches) break;
+    }
 
-    if (pending.length < batchSize) break; // no more pending
+    // One rejection must not lose the whole wave: extractEntitiesForBatch marks
+    // its own signals failed, and allSettled lets the other workers finish.
+    const results = await Promise.allSettled(
+      batches.map((b) => extractEntitiesForBatch(companyId, b))
+    );
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        logger.warn({ err: r.reason, size: batches[i]!.length }, "Extraction batch failed");
+      } else {
+        processed += batches[i]!.length;
+      }
+    });
+    batchCount += batches.length;
+
+    if (wave.length < batchSize * concurrency) break; // drained
   }
 
-  logger.info({ companyId, processed, batchCount }, "Entity extraction run complete");
+  logger.info({ companyId, processed, batchCount, concurrency }, "Entity extraction run complete");
   return { processed, entityLinks: 0 };
 }
