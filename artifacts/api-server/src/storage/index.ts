@@ -1042,41 +1042,39 @@ export async function upsertEntity(
   entityType: string,
   alias?: string
 ): Promise<TpEntity> {
-  // Try to find existing entity
-  const existing = await db
-    .select()
-    .from(tpEntities)
-    .where(
-      and(
-        eq(tpEntities.companyId, companyId),
-        eq(tpEntities.canonicalLabel, canonicalLabel),
-        eq(tpEntities.entityType, entityType)
-      )
-    )
-    .limit(1);
-
-  if (existing.length > 0) {
-    const entity = existing[0]!;
-    // If alias provided and not already in aliases array, add it
-    if (alias && !entity.aliases.includes(alias)) {
-      const updatedRows = await db
-        .update(tpEntities)
-        .set({
-          aliases: sql`${tpEntities.aliases} || ${JSON.stringify([alias])}::jsonb`,
-          updatedAt: new Date(),
-        })
-        .where(eq(tpEntities.id, entity.id))
-        .returning();
-      return updatedRows[0]!;
-    }
-    return entity;
-  }
-
-  // Insert new entity
-  const aliases = alias ? [alias] : [];
+  // Atomic, via the unique index on (company_id, canonical_label).
+  //
+  // This was previously select-then-insert, which is a race: two concurrent
+  // extraction batches meeting the same new label both saw nothing and both
+  // inserted, producing duplicate entities. That blocked any parallelism in
+  // extraction (the slowest stage), so the whole pipeline was pinned to one LLM
+  // call at a time.
+  //
+  // The lookup is keyed on the LABEL ONLY, not (label, type). entityType is
+  // assigned per batch by the LLM and wobbles — the same word comes back as
+  // ingredient, brand, format or flavour on different batches — so keying on it
+  // let one real trend accumulate as several rows, each with a fraction of the
+  // mentions, and the gate judged the fractions. An existing entity therefore
+  // keeps its original type and simply absorbs the mention; the label is the
+  // trend, and the type is only a tag.
+  const aliasesToAdd = alias && alias !== canonicalLabel ? [alias] : [];
   const rows = await db
     .insert(tpEntities)
-    .values({ companyId, canonicalLabel, entityType, aliases })
+    .values({ companyId, canonicalLabel, entityType, aliases: aliasesToAdd })
+    .onConflictDoUpdate({
+      target: [tpEntities.companyId, tpEntities.canonicalLabel],
+      // DO UPDATE rather than DO NOTHING: nothing returns no row, and callers
+      // need the entity id. Append the alias only when it is genuinely new, so
+      // repeated sightings do not grow the array without bound.
+      set: {
+        aliases: aliasesToAdd.length
+          ? sql`CASE WHEN ${tpEntities.aliases} @> ${JSON.stringify(aliasesToAdd)}::jsonb
+                     THEN ${tpEntities.aliases}
+                     ELSE ${tpEntities.aliases} || ${JSON.stringify(aliasesToAdd)}::jsonb END`
+          : sql`${tpEntities.aliases}`,
+        updatedAt: new Date(),
+      },
+    })
     .returning();
   return rows[0]!;
 }

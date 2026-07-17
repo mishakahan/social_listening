@@ -326,7 +326,16 @@ export const tpEntities = pgTable("tp_entities", {
   deletedByUserId: integer("deleted_by_user_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+  },
+  // One entity per label per company. Deliberately NOT keyed on entity_type:
+  // the type is assigned per batch by the LLM and is not stable — the same word
+  // comes back as ingredient, brand, format or flavour depending on the batch —
+  // so including it in the key lets one real trend exist as several rows.
+  // Measured before this index: 991 duplicate groups hiding ~3,046 mentions from
+  // the gate; "gummy" alone existed six times and read as 55 mentions instead of
+  // 140. For trend detection the label IS the trend, so the label is the key.
+  (t) => [uniqueIndex("tp_entities_company_label_idx").on(t.companyId, t.canonicalLabel)]
+);
 
 // tp_category_attributes (Task #4) — controlled vocabulary of descriptors
 // (adjectives, attribute terms) per category. The LLM attribute-extraction

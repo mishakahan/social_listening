@@ -19,6 +19,7 @@
 // concurrently and would race this. Check first.
 import { db, tpEntities, tpSignalEntities, tpEntityTimeseries, tpEntityState } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
+import { canonicalizeLabel } from "../services/entity-canonical.js";
 
 const COMPANY_ID = Number(process.env.MERGE_COMPANY_ID ?? "1");
 const DRY_RUN = process.env.MERGE_DRY_RUN === "true";
@@ -38,15 +39,31 @@ async function main() {
     .from(tpEntities)
     .where(eq(tpEntities.companyId, COMPANY_ID))) as any[];
 
-  // Group on the case-folded label + type: that is the identity the
-  // canonicalizer would produce today.
+  // Group on the case-folded label ALONE, deliberately ignoring entityType.
+  //
+  // The type is assigned per batch by the LLM and it is not stable: the same
+  // word comes back as ingredient in one batch and flavour, format, brand or
+  // other in the next. Measured here: 545 labels are split across types, hiding
+  // 2,180 mentions — on top of the 442 pure case splits. "chocolate" exists as
+  // eight rows; "tequila" as four.
+  //
+  // For trend detection the label IS the trend: "tequila" rising is the same
+  // event whether a batch happened to call it an ingredient or a brand. The
+  // risk of merging on label alone is two genuinely different things sharing a
+  // word, so that was checked rather than assumed — of 53 groups where more than
+  // one type had real volume, every single one was the same thing classified
+  // inconsistently (water other/ingredient, wine ingredient/format, probiotic
+  // functional_benefit/ingredient). None were distinct entities.
+  // Key on canonicalizeLabel, not a bare lowercase: that is the exact string a
+  // future extraction will resolve to, so it also catches singular/plural pairs
+  // (Gummies -> gummy) that case-folding alone would miss.
   const groups = new Map<string, any[]>();
   for (const e of ents) {
-    const key = `${String(e.canonicalLabel).trim().toLowerCase()}|${e.entityType}`;
+    const key = canonicalizeLabel(String(e.canonicalLabel));
     groups.set(key, [...(groups.get(key) ?? []), e]);
   }
   const dupes = [...groups.entries()].filter(([, v]) => v.length > 1);
-  console.log(`${ents.length} entities -> ${dupes.length} case-duplicate groups\n`);
+  console.log(`${ents.length} entities -> ${dupes.length} duplicate groups (case + type)\n`);
 
   let merged = 0, linksMoved = 0, bucketsMoved = 0, deleted = 0;
 
@@ -88,34 +105,57 @@ async function main() {
     // 2. Merge daily buckets, summing where both rows covered the same day.
     const survBuckets = await retry(() => db.select().from(tpEntityTimeseries)
       .where(eq(tpEntityTimeseries.entityId, survivor.id)), "sel-surv-buckets");
-    const bucketKey = (b: any) => `${b.bucketDate}|${b.platform}|${b.geography}`;
-    const survByKey = new Map(survBuckets.map((b: any) => [bucketKey(b), b]));
+    // (entityId, platform, geography, bucketDate) is uniquely indexed, so a
+    // bucket can only be moved onto the survivor if the survivor has no bucket
+    // for that same slot. bucketDate is normalised because it arrives as a Date
+    // from one query and a string from another, and a mismatched key here reads
+    // as "no collision" and then violates the index.
+    const bucketKey = (b: any) =>
+      `${new Date(b.bucketDate).toISOString().slice(0, 10)}|${b.platform}|${b.geography}`;
+    const survByKey = new Map<string, any>(survBuckets.map((b: any) => [bucketKey(b), b]));
     const loserBuckets = await retry(() => db.select().from(tpEntityTimeseries)
       .where(inArray(tpEntityTimeseries.entityId, loserIds)), "sel-loser-buckets");
     for (const b of loserBuckets as any[]) {
-      const hit: any = survByKey.get(bucketKey(b));
+      const k = bucketKey(b);
+      const hit: any = survByKey.get(k);
       if (hit) {
-        await retry(() => db.update(tpEntityTimeseries).set({
-          mentions: (hit.mentions ?? 0) + (b.mentions ?? 0),
-          // Unique authors cannot be summed exactly without the author sets, so
-          // take the max: an undercount is safer than inventing breadth the
-          // entity does not have, since breadth gates confirmation.
-          uniqueAuthors: Math.max(hit.uniqueAuthors ?? 0, b.uniqueAuthors ?? 0),
-        } as any).where(eq(tpEntityTimeseries.id, hit.id)), "merge-bucket");
+        const mentions = (hit.mentions ?? 0) + (b.mentions ?? 0);
+        // Unique authors cannot be summed exactly without the author sets, so
+        // take the max: an undercount is safer than inventing breadth the
+        // entity does not have, since breadth gates confirmation.
+        const uniqueAuthors = Math.max(hit.uniqueAuthors ?? 0, b.uniqueAuthors ?? 0);
+        await retry(() => db.update(tpEntityTimeseries)
+          .set({ mentions, uniqueAuthors } as any)
+          .where(eq(tpEntityTimeseries.id, hit.id)), "merge-bucket");
+        // Keep the running totals in the map: a later loser hitting the same
+        // slot must fold into this same row, not overwrite it.
+        survByKey.set(k, { ...hit, mentions, uniqueAuthors });
+        await retry(() => db.delete(tpEntityTimeseries)
+          .where(eq(tpEntityTimeseries.id, b.id)), "drop-merged-bucket");
       } else {
         await retry(() => db.update(tpEntityTimeseries)
           .set({ entityId: survivor.id } as any)
           .where(eq(tpEntityTimeseries.id, b.id)), "move-bucket");
+        // The moved row now occupies that slot, so a second loser with the same
+        // slot must merge into it rather than collide. This was the bug: the map
+        // was built once from the survivor and never updated, so the second
+        // loser's move violated the unique index.
+        survByKey.set(k, { ...b, entityId: survivor.id });
       }
       bucketsMoved++;
     }
 
-    // 3. Roll mentions up onto the survivor.
+    // 3. Roll mentions up onto the survivor, and REWRITE its label to the
+    //    canonical form. This is what makes the merge stick: keep "Creatine"
+    //    and the next extraction resolves to "creatine", matches nothing, and
+    //    recreates the duplicate we just removed. The survivor must be the
+    //    string future lookups will actually produce.
     const total = rows.reduce((s, e) => s + (e.totalMentions ?? 0), 0);
     await retry(() => db.update(tpEntities).set({
+      canonicalLabel: key,
       totalMentions: total,
-      aliases: [...new Set([...(survivor.aliases ?? []), ...losers.flatMap((l) => [l.canonicalLabel, ...(l.aliases ?? [])])])]
-        .filter((a) => a !== survivor.canonicalLabel),
+      aliases: [...new Set([...(survivor.aliases ?? []), ...rows.map((r) => r.canonicalLabel), ...losers.flatMap((l) => l.aliases ?? [])])]
+        .filter((a) => a && a !== key),
       updatedAt: new Date(),
     } as any).where(eq(tpEntities.id, survivor.id)), "roll-up");
 
