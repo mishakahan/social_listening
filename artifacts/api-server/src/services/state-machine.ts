@@ -133,9 +133,38 @@ function determineNextState(
     return { state: "candidate", reason: `volume30d=${volume30d}<${dormantVol30}` };
   }
 
-  // Declining: week-over-week shrinking beyond threshold
-  if (growthWow < decliningThresh && volume30d >= Math.ceil(minVol / 2)) {
-    return { state: "declining", reason: `growthWow=${growthWow.toFixed(2)}<${decliningThresh.toFixed(2)}` };
+  // Declining: shrinking on BOTH weekly AND monthly windows.
+  //
+  // Previously this only checked growthWow, so a normal quiet week inside a
+  // strongly rising month read as "declining" — ashwagandha (growthWow=-0.44,
+  // growthMom=+1.25) and dark chocolate (-0.57, +1.33) both ended up on the
+  // radar as "declining" while the confirmation gate correctly said they were
+  // rising, because the gate reads the full 180-day series and this rule was
+  // reading one 7-day window in isolation. A trend truly declining does so on
+  // both timescales; requiring both prevents the state machine from
+  // contradicting the gate on a routine weekly wobble.
+  if (
+    growthWow < decliningThresh &&
+    growthMom < decliningThresh &&
+    volume30d >= Math.ceil(minVol / 2)
+  ) {
+    return { state: "declining", reason: `growthWow=${growthWow.toFixed(2)} growthMom=${growthMom.toFixed(2)} both<${decliningThresh.toFixed(2)}` };
+  }
+
+  // Exit from declining. Every other state has an entry rule and this one
+  // did not have an exit, so once the weekly-only declining rule marked an
+  // entity, it could not get out: the confirmed rule requires growthWow >= 0
+  // and the emerging rule requires growthWow > minWow*0.35, but a real trend
+  // in a normal quiet week has a negative growthWow. The fallback then kept it
+  // declining forever. Explicit exit: a declining entity with a solid positive
+  // MoM is no longer declining, regardless of the current week's wobble.
+  if (current === "declining" && growthMom > minWow && volume30d >= Math.ceil(minVol / 2)) {
+    // Which non-declining state to send it to depends on how loudly it is rising
+    // right now, mirroring the fresh-entity rules below.
+    if (growthWow >= 0 && volume30d >= minVol) {
+      return { state: "confirmed", reason: `declining→confirmed growthMom=${growthMom.toFixed(2)} v30=${volume30d}` };
+    }
+    return { state: "emerging", reason: `declining→emerging growthMom=${growthMom.toFixed(2)} growthWow=${growthWow.toFixed(2)}` };
   }
 
   // Peaking: growth decelerating (was high, now slowing)
