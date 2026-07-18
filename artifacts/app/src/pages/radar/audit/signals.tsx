@@ -40,7 +40,13 @@ interface RawSignal {
   actorRunId: number | null;
 }
 
-const PLATFORM_OPTIONS = ["all", "instagram", "tiktok", "reddit", "xiaohongshu", "google_trends"];
+// Hardcoded because deriving this from live signal counts would add a network
+// round-trip to every render of the filter menu. Update when the launch-batch
+// plan (services/launch-batch.ts) starts using a new platform. YouTube and X
+// were added there and never mirrored here, so the filter silently offered
+// xiaohongshu and google_trends (neither actually scraped for Western clients)
+// while hiding the platforms with actual data.
+const PLATFORM_OPTIONS = ["all", "tiktok", "youtube", "instagram", "reddit", "x"];
 const EXTRACTION_OPTIONS = ["all", "pending", "done", "failed"];
 const PAGE_SIZE = 50;
 

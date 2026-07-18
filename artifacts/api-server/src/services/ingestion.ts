@@ -674,6 +674,17 @@ function passesNoiseFloor(
   signal: NormalizedSignal,
   config: TpPipelineConfig
 ): boolean {
+  // The trudax reddit-scraper-lite actor's current output does not include
+  // upvote or comment counts on the item at all — the shape is
+  // {id, url, username, title, communityName, body, html, createdAt, ...}.
+  // Every Reddit post therefore computed engagementScore=0 and fell below
+  // the default noise floor of 3, so 100% of Reddit ingestion was silently
+  // dropped: 1,637 records fetched across 61 runs, 0 usable. Reddit's
+  // engagement model also differs from IG/TikTok (fresh posts often have
+  // 0 upvotes for hours), so a comment-count noise floor is the wrong
+  // filter for it in general. Skip it for Reddit; downstream filters
+  // (language, canonicalization, the gate) still apply.
+  if (signal.platform === "reddit") return true;
   return (signal.engagementScore ?? 0) >= config.noiseFloor;
 }
 
