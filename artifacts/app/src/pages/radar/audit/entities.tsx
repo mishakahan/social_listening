@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -84,8 +85,8 @@ interface EntityTypeConfig {
   color: string;
 }
 
-async function fetchEntityTypes(): Promise<EntityTypeConfig[]> {
-  const res = await fetch("/api/pipeline/companies/1/pipeline-config");
+async function fetchEntityTypes(companyId: number): Promise<EntityTypeConfig[]> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/pipeline-config`);
   if (!res.ok) throw new Error(await res.text());
   const cfg = (await res.json()) as { entityTypes?: EntityTypeConfig[] };
   return cfg.entityTypes ?? [];
@@ -95,11 +96,11 @@ function pct(v: number): string {
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
 }
 
-async function fetchEntityStates(state: string, geography: string): Promise<EntityState[]> {
+async function fetchEntityStates(companyId: number, state: string, geography: string): Promise<EntityState[]> {
   const params = new URLSearchParams();
   if (state !== "all") params.set("state", state);
   if (geography !== "all") params.set("geography", geography);
-  const res = await fetch(`/api/pipeline/companies/1/entity-states?${params}`);
+  const res = await fetch(`/api/pipeline/companies/${companyId}/entity-states?${params}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -110,18 +111,18 @@ async function fetchTimeseries(entityId: number): Promise<TimeseriesRow[]> {
   return res.json();
 }
 
-async function runStateMachine(): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/run-state-machine", { method: "POST" });
+async function runStateMachine(companyId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-state-machine`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function runTimeseries(): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/run-timeseries", { method: "POST" });
+async function runTimeseries(companyId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-timeseries`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function runEntityExtraction(): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/run-entity-extraction", { method: "POST" });
+async function runEntityExtraction(companyId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-entity-extraction`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
 }
 
@@ -247,10 +248,11 @@ function PipelinePanel({
   onRunStateMachine,
 }: PipelinePanelProps) {
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
 
   const { data: status, isLoading } = useQuery<PipelineRunStatus>({
-    queryKey: ["pipeline-run-status", 1],
-    queryFn: () => fetchPipelineRunStatus(1),
+    queryKey: ["pipeline-run-status", companyId],
+    queryFn: () => fetchPipelineRunStatus(companyId),
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
       // Poll every 3s while any step is still running. The tracker decides
@@ -277,10 +279,10 @@ function PipelinePanel({
   useEffect(() => {
     if (!tracker.anyRunning) return;
     const id = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", 1] });
+      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", companyId] });
     }, 3_000);
     return () => clearInterval(id);
-  }, [tracker.anyRunning, queryClient]);
+  }, [tracker.anyRunning, queryClient, companyId]);
 
   // When a long-running job completes, refresh the entity list so users see
   // updated states without having to click Refresh.
@@ -353,20 +355,21 @@ function PipelinePanel({
 }
 
 export default function EntitiesAuditPage() {
+  const companyId = useCompanyId();
   const [stateFilter, setStateFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [geoFilter, setGeoFilter] = useState("all");
   const [expanded, setExpanded] = useState<number | null>(null);
 
   const { data: allStates = [], isLoading, error, refetch } = useQuery({
-    queryKey: ["entity-states", stateFilter, geoFilter],
-    queryFn: () => fetchEntityStates(stateFilter, geoFilter),
+    queryKey: ["entity-states", companyId, stateFilter, geoFilter],
+    queryFn: () => fetchEntityStates(companyId, stateFilter, geoFilter),
     refetchOnWindowFocus: false,
   });
 
   const { data: entityTypes = [] } = useQuery({
-    queryKey: ["entity-types-config"],
-    queryFn: fetchEntityTypes,
+    queryKey: ["entity-types-config", companyId],
+    queryFn: () => fetchEntityTypes(companyId),
     refetchOnWindowFocus: false,
     staleTime: 60_000,
   });
@@ -390,7 +393,7 @@ export default function EntitiesAuditPage() {
   );
 
   const stateMachineMutation = useMutation({
-    mutationFn: runStateMachine,
+    mutationFn: () => runStateMachine(companyId),
     onSuccess: () => {
       markStartedRef.current?.("stateMachine");
       toast.success("State machine running — this page will refresh when it finishes");
@@ -399,7 +402,7 @@ export default function EntitiesAuditPage() {
   });
 
   const timeseriesMutation = useMutation({
-    mutationFn: runTimeseries,
+    mutationFn: () => runTimeseries(companyId),
     onSuccess: () => {
       markStartedRef.current?.("timeseries");
       toast.success("Timeseries aggregation running — this page will refresh when it finishes");
@@ -408,7 +411,7 @@ export default function EntitiesAuditPage() {
   });
 
   const extractionMutation = useMutation({
-    mutationFn: runEntityExtraction,
+    mutationFn: () => runEntityExtraction(companyId),
     onSuccess: () => {
       markStartedRef.current?.("extraction");
       toast.success("Entity extraction running — run Timeseries then State Machine when it finishes");

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -47,23 +48,23 @@ interface LongTailResponse {
 
 type SortKey = "posterior" | "uplift" | "current";
 
-async function fetchLongTail(): Promise<LongTailResponse> {
-  const res = await fetch("/api/pipeline/companies/1/long-tail");
+async function fetchLongTail(companyId: number): Promise<LongTailResponse> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/long-tail`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-async function runLongTail(): Promise<unknown> {
-  const res = await fetch("/api/pipeline/companies/1/run-long-tail", {
+async function runLongTail(companyId: number): Promise<unknown> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-long-tail`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-async function promoteEntity(entityId: number): Promise<unknown> {
+async function promoteEntity(companyId: number, entityId: number): Promise<unknown> {
   const res = await fetch(
-    `/api/pipeline/companies/1/entities/${entityId}/promote`,
+    `/api/pipeline/companies/${companyId}/entities/${entityId}/promote`,
     { method: "POST" }
   );
   if (!res.ok) throw new Error(await res.text());
@@ -143,29 +144,30 @@ function SortHeader({
 export default function EmergingLongTailPage() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [sortBy, setSortBy] = useState<SortKey>("posterior");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["long-tail"],
-    queryFn: fetchLongTail,
+    queryKey: ["long-tail", companyId],
+    queryFn: () => fetchLongTail(companyId),
     refetchOnWindowFocus: false,
   });
 
   const runMutation = useMutation({
-    mutationFn: runLongTail,
+    mutationFn: () => runLongTail(companyId),
     onSuccess: () => {
       toast.success("Long-tail re-evaluation complete");
-      queryClient.invalidateQueries({ queryKey: ["long-tail"] });
+      queryClient.invalidateQueries({ queryKey: ["long-tail", companyId] });
     },
     onError: (err: Error) => toast.error(err.message),
   });
 
   const promoteMutation = useMutation({
-    mutationFn: promoteEntity,
+    mutationFn: (entityId: number) => promoteEntity(companyId, entityId),
     onSuccess: () => {
       toast.success("Promoted to main radar");
-      queryClient.invalidateQueries({ queryKey: ["long-tail"] });
+      queryClient.invalidateQueries({ queryKey: ["long-tail", companyId] });
       queryClient.invalidateQueries({ queryKey: ["trends"] });
     },
     onError: (err: Error) => toast.error(err.message),

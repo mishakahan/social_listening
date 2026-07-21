@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -73,9 +74,9 @@ type SortKey =
   | "yoyGrowthPct"
   | "evidence";
 
-async function fetchTrends(sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
+async function fetchTrends(companyId: number, sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
   const res = await fetch(
-    `/api/pipeline/companies/1/trends?sortBy=${sortBy}&sortDir=${sortDir}`
+    `/api/pipeline/companies/${companyId}/trends?sortBy=${sortBy}&sortDir=${sortDir}`
   );
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(await res.text());
@@ -202,12 +203,13 @@ function GrowthCell({
 
 export default function TrendsListPage() {
   const [, navigate] = useLocation();
+  const companyId = useCompanyId();
   const [sortBy, setSortBy] = useState<SortKey>("signal");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data: trends = [], isLoading, error } = useQuery({
-    queryKey: ["trends", sortBy, sortDir],
-    queryFn: () => fetchTrends(sortBy, sortDir),
+    queryKey: ["trends", companyId, sortBy, sortDir],
+    queryFn: () => fetchTrends(companyId, sortBy, sortDir),
     refetchOnWindowFocus: false,
   });
 
@@ -581,16 +583,17 @@ interface CompositeResponse {
   windowDays: number;
 }
 
-async function fetchComposite(): Promise<CompositeResponse> {
-  const res = await fetch(`/api/pipeline/companies/1/composite-trends`);
+async function fetchComposite(companyId: number): Promise<CompositeResponse> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/composite-trends`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 function CompositeTrendsTab() {
+  const companyId = useCompanyId();
   const { data, isLoading, error } = useQuery({
-    queryKey: ["composite-trends"],
-    queryFn: fetchComposite,
+    queryKey: ["composite-trends", companyId],
+    queryFn: () => fetchComposite(companyId),
     refetchOnWindowFocus: false,
   });
 

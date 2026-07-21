@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -35,6 +36,7 @@ interface CategoryWithVocab {
 }
 
 async function fetchAttributes(
+  companyId: number,
   windowDays: number,
   categoryId: number | null
 ): Promise<{
@@ -45,14 +47,14 @@ async function fetchAttributes(
   params.set("windowDays", String(windowDays));
   if (categoryId !== null) params.set("categoryId", String(categoryId));
   const res = await fetch(
-    `/api/pipeline/companies/1/attributes?${params.toString()}`
+    `/api/pipeline/companies/${companyId}/attributes?${params.toString()}`
   );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-async function fetchCategories(): Promise<CategoryWithVocab[]> {
-  const res = await fetch("/api/pipeline/companies/1/categories");
+async function fetchCategories(companyId: number): Promise<CategoryWithVocab[]> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/categories`);
   if (!res.ok) throw new Error(await res.text());
   const data = (await res.json()) as { categories: CategoryWithVocab[] };
   return data.categories ?? [];
@@ -90,6 +92,7 @@ function DeltaCell({ deltaPct }: { deltaPct: number | null }) {
 }
 
 export default function AttributesPage() {
+  const companyId = useCompanyId();
   const [windowDays, setWindowDays] = useState(30);
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [reaggregating, setReaggregating] = useState(false);
@@ -103,20 +106,20 @@ export default function AttributesPage() {
     error: attrError,
     refetch: refetchAttrs,
   } = useQuery({
-    queryKey: ["attributes", windowDays, categoryIdFilter],
-    queryFn: () => fetchAttributes(windowDays, categoryIdFilter),
+    queryKey: ["attributes", companyId, windowDays, categoryIdFilter],
+    queryFn: () => fetchAttributes(companyId, windowDays, categoryIdFilter),
   });
 
   const { data: catData, isLoading: catLoading } = useQuery({
-    queryKey: ["categories"],
-    queryFn: fetchCategories,
+    queryKey: ["categories", companyId],
+    queryFn: () => fetchCategories(companyId),
   });
 
   const reaggregate = async () => {
     setReaggregating(true);
     try {
       const res = await fetch(
-        "/api/pipeline/companies/1/run-attribute-aggregation",
+        `/api/pipeline/companies/${companyId}/run-attribute-aggregation`,
         { method: "POST" }
       );
       if (!res.ok) throw new Error(await res.text());

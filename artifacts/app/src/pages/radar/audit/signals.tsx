@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useMemo, useEffect, useRef } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -64,6 +65,7 @@ interface FetchArgs {
 }
 
 async function fetchSignals(
+  companyId: number,
   args: FetchArgs
 ): Promise<{ signals: RawSignal[]; total: number }> {
   const params = new URLSearchParams({
@@ -85,18 +87,18 @@ async function fetchSignals(
     const d = new Date(args.extractedBefore + "T23:59:59.999");
     if (!isNaN(d.getTime())) params.set("extractedBefore", d.toISOString());
   }
-  const res = await fetch(`/api/pipeline/companies/1/signals?${params}`);
+  const res = await fetch(`/api/pipeline/companies/${companyId}/signals?${params}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-async function triggerExtraction(): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/run-entity-extraction", { method: "POST" });
+async function triggerExtraction(companyId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-entity-extraction`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function bulkDeleteSignals(signalIds: number[]): Promise<{ deleted: number }> {
-  const res = await fetch("/api/pipeline/companies/1/signals/bulk-delete", {
+async function bulkDeleteSignals(companyId: number, signalIds: number[]): Promise<{ deleted: number }> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/signals/bulk-delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ signalIds }),
@@ -130,6 +132,7 @@ function fmtDate(iso: string | null): string {
 
 export default function SignalsAuditPage() {
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [platform, setPlatform] = useState("all");
   const [extractionStatus, setExtractionStatus] = useState("all");
   const [page, setPage] = useState(0);
@@ -152,6 +155,7 @@ export default function SignalsAuditPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: [
       "signals",
+      companyId,
       platform,
       extractionStatus,
       page,
@@ -160,7 +164,7 @@ export default function SignalsAuditPage() {
       extractedAfter,
       extractedBefore,
     ],
-    queryFn: () => fetchSignals(fetchArgs),
+    queryFn: () => fetchSignals(companyId, fetchArgs),
     refetchOnWindowFocus: false,
   });
 
@@ -186,8 +190,8 @@ export default function SignalsAuditPage() {
   }
 
   const { data: pipelineStatus } = useQuery<PipelineRunStatus>({
-    queryKey: ["pipeline-run-status", 1],
-    queryFn: () => fetchPipelineRunStatus(1),
+    queryKey: ["pipeline-run-status", companyId],
+    queryFn: () => fetchPipelineRunStatus(companyId),
     refetchOnWindowFocus: false,
     staleTime: 10_000,
   });
@@ -200,13 +204,13 @@ export default function SignalsAuditPage() {
   useEffect(() => {
     if (!extractionRunning) return;
     const id = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", 1] });
+      queryClient.invalidateQueries({ queryKey: ["pipeline-run-status", companyId] });
     }, 3_000);
     return () => clearInterval(id);
-  }, [extractionRunning, queryClient]);
+  }, [extractionRunning, queryClient, companyId]);
 
   const extractionMutation = useMutation({
-    mutationFn: triggerExtraction,
+    mutationFn: () => triggerExtraction(companyId),
     onSuccess: () => {
       tracker.markStarted("extraction");
       toast.success("Entity extraction running — this page will refresh when it finishes");
@@ -230,7 +234,7 @@ export default function SignalsAuditPage() {
     : null;
 
   const deleteMutation = useMutation({
-    mutationFn: bulkDeleteSignals,
+    mutationFn: (signalIds: number[]) => bulkDeleteSignals(companyId, signalIds),
     onSuccess: ({ deleted }) => {
       toast.success(`Deleted ${deleted} signal${deleted !== 1 ? "s" : ""}`);
       setSelected(new Set());

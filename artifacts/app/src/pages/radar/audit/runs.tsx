@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -84,8 +85,8 @@ const isRunnable  = isRetryable;
 // signals from it. Only succeeded runs with a dataset qualify.
 const isIngestable = (r: ActorRun) => r.status === "succeeded" && !!r.apifyDatasetId;
 
-async function fetchRuns(): Promise<ActorRun[]> {
-  const res = await fetch("/api/pipeline/companies/1/actor-runs");
+async function fetchRuns(companyId: number): Promise<ActorRun[]> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/actor-runs`);
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -103,8 +104,8 @@ async function cancelRunApi(id: number): Promise<ActorRun> {
   return res.json();
 }
 
-async function bulkCancelApi(runIds: number[]): Promise<void> {
-  const res = await fetch(`/api/pipeline/companies/1/actor-runs/bulk-cancel`, {
+async function bulkCancelApi(companyId: number, runIds: number[]): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/actor-runs/bulk-cancel`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ runIds }),
@@ -112,8 +113,8 @@ async function bulkCancelApi(runIds: number[]): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function bulkDeleteApi(runIds: number[]): Promise<void> {
-  const res = await fetch(`/api/pipeline/companies/1/actor-runs`, {
+async function bulkDeleteApi(companyId: number, runIds: number[]): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/actor-runs`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ runIds }),
@@ -129,9 +130,9 @@ async function bulkRetryApi(runIds: number[]): Promise<{ ok: number; failed: num
   return { ok, failed };
 }
 
-async function bulkReIngestApi(runIds: number[]): Promise<{ ok: number; failed: number; okIds: number[] }> {
+async function bulkReIngestApi(companyId: number, runIds: number[]): Promise<{ ok: number; failed: number; okIds: number[] }> {
   // No bulk re-ingest endpoint — fan out to the per-run ingestion trigger.
-  const results = await Promise.allSettled(runIds.map((id) => reIngestRunApi(id)));
+  const results = await Promise.allSettled(runIds.map((id) => reIngestRunApi(companyId, id)));
   const okIds: number[] = [];
   results.forEach((r, i) => {
     if (r.status === "fulfilled") okIds.push(runIds[i]!);
@@ -145,8 +146,8 @@ async function fetchRunOutput(id: number): Promise<{ items: unknown[]; total: nu
   return res.json();
 }
 
-async function reIngestRunApi(runId: number): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/run-ingestion", {
+async function reIngestRunApi(companyId: number, runId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-ingestion`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ runId }),
@@ -247,12 +248,13 @@ function OutputDialog({ run, onClose }: { run: ActorRun; onClose: () => void }) 
 
 export default function RunsAuditPage() {
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [viewingRun, setViewingRun] = useState<ActorRun | null>(null);
 
   const { data: runs = [], isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["actor-runs"],
-    queryFn: fetchRuns,
+    queryKey: ["actor-runs", companyId],
+    queryFn: () => fetchRuns(companyId),
     refetchInterval: 15_000,
   });
 
@@ -280,7 +282,7 @@ export default function RunsAuditPage() {
   });
 
   const bulkCancelMutation = useMutation({
-    mutationFn: (ids: number[]) => bulkCancelApi(ids),
+    mutationFn: (ids: number[]) => bulkCancelApi(companyId, ids),
     onSuccess: (_, ids) => {
       queryClient.setQueryData<ActorRun[]>(["actor-runs"], (old = []) =>
         old.map((r) =>
@@ -296,7 +298,7 @@ export default function RunsAuditPage() {
   });
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: (ids: number[]) => bulkDeleteApi(ids),
+    mutationFn: (ids: number[]) => bulkDeleteApi(companyId, ids),
     onSuccess: (_, ids) => {
       queryClient.setQueryData<ActorRun[]>(["actor-runs"], (old = []) =>
         old.filter((r) => !ids.includes(r.id))
@@ -324,7 +326,7 @@ export default function RunsAuditPage() {
   });
 
   const bulkReIngestMutation = useMutation({
-    mutationFn: (ids: number[]) => bulkReIngestApi(ids),
+    mutationFn: (ids: number[]) => bulkReIngestApi(companyId, ids),
     onSuccess: ({ ok, failed, okIds }) => {
       // Optimistically mark only the runs whose re-ingest request actually
       // succeeded so the row chip updates immediately. Any failures are

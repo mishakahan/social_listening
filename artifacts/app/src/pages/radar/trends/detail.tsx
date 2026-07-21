@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -105,8 +106,8 @@ const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
   google_trends: { label: "GT", className: "bg-blue-500 text-white border-0" },
 };
 
-async function fetchTrend(id: string): Promise<TrendDetail> {
-  const res = await fetch(`/api/pipeline/companies/1/trends/${id}`);
+async function fetchTrend(companyId: number, id: string): Promise<TrendDetail> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/trends/${id}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -283,10 +284,11 @@ function VerdictChips({
 export default function TrendDetailPage() {
   const { trendId } = useParams<{ trendId: string }>();
   const [, navigate] = useLocation();
+  const companyId = useCompanyId();
 
   const { data: trend, isLoading, error } = useQuery({
-    queryKey: ["trend", trendId],
-    queryFn: () => fetchTrend(trendId!),
+    queryKey: ["trend", companyId, trendId],
+    queryFn: () => fetchTrend(companyId, trendId!),
     enabled: !!trendId,
   });
 

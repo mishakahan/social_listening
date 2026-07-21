@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useCompanyId } from "@/hooks/use-company";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -30,11 +31,12 @@ interface TimeseriesResponse {
 }
 
 async function fetchTimeseries(
+  companyId: number,
   trendId: number,
   windowDays: number
 ): Promise<TimeseriesResponse> {
   const res = await fetch(
-    `/api/pipeline/companies/1/trends/${trendId}/timeseries?windowDays=${windowDays}`
+    `/api/pipeline/companies/${companyId}/trends/${trendId}/timeseries?windowDays=${windowDays}`
   );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -53,9 +55,10 @@ export function TrendTimeseriesChart({
   trendId: number;
   windowDays?: number;
 }) {
+  const companyId = useCompanyId();
   const { data, isLoading, error } = useQuery({
-    queryKey: ["trend-timeseries", trendId, windowDays],
-    queryFn: () => fetchTimeseries(trendId, windowDays),
+    queryKey: ["trend-timeseries", companyId, trendId, windowDays],
+    queryFn: () => fetchTimeseries(companyId, trendId, windowDays),
   });
 
   return (

@@ -1,5 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
+import { CompanySwitcher } from "@/components/CompanySwitcher";
 import {
   LayoutDashboard, Search, ClipboardCheck, PlayCircle, TrendingUp,
   Settings, Radar, ChevronRight, Activity, Tag, Sparkles, Layers,
@@ -54,8 +55,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 border-b border-border bg-background flex items-center px-6">
+        <header className="h-14 border-b border-border bg-background flex items-center justify-between px-6">
           <Breadcrumbs location={location} />
+          <CompanySwitcher />
         </header>
         <main className="flex-1 min-h-0 overflow-auto">
           {children}

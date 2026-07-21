@@ -41,6 +41,41 @@ router.get("/companies/default", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/pipeline/companies
+// List all companies (feeds the frontend company switcher). Registered before
+// the "/companies/:id/*" routes so the exact path wins.
+// ---------------------------------------------------------------------------
+router.get("/companies", async (_req, res) => {
+  try {
+    const companies = await storage.getAllCompanies();
+    res.json(companies);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to list companies");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies  { name }
+// Create a company (used to add the fast-food demo company).
+// ---------------------------------------------------------------------------
+const createCompanySchema = z.object({ name: z.string().trim().min(1).max(120) });
+router.post("/companies", async (req, res) => {
+  const parsed = createCompanySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "name is required (1-120 chars)" });
+    return;
+  }
+  try {
+    const company = await storage.createCompany(parsed.data.name);
+    res.status(201).json(company);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to create company");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/pipeline/companies/:id/setup-radar/generate
 // Body: { brief: string }
 // ---------------------------------------------------------------------------
