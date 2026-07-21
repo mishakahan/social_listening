@@ -11,8 +11,24 @@
 
 // Basic English singularization for one word. Handles the common cases without
 // pulling in a full stemming library (which would over-merge).
+// Words that are ALREADY SINGULAR despite ending in "s". Without this guard the
+// trailing-"s" rule below mangles them, and the damage is invisible because the
+// mangled form becomes the canonical label: "citrus" was surfacing on the live
+// radar as "citru" with 27 mentions. Food vocabulary is full of these.
+const SINGULAR_ENDING_IN_S = new Set([
+  "molasses", "brussels", "swiss", "bolognese", "caprese", "anise",
+]);
+
+// Latin/Greek-derived singulars (-us, -is) and true double-s words are never
+// plurals in this vocabulary: citrus, hummus, couscous, asparagus, hibiscus,
+// oasis, glass. Checked before any rule so the "es" rule can't strip them either.
+function isAlreadySingular(w: string): boolean {
+  return SINGULAR_ENDING_IN_S.has(w) || /(?:us|is|ss)$/.test(w);
+}
+
 function singularizeWord(word: string): string {
   const w = word;
+  if (isAlreadySingular(w)) return w;
   // ...ies -> ...y  (gummies -> gummy, candies -> candy)
   if (w.length > 3 && w.endsWith("ies")) return w.slice(0, -3) + "y";
   // ...sses/...ches/...shes/...xes/...zes -> drop "es" (boxes -> box, dishes -> dish)

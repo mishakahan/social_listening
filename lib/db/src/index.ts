@@ -25,9 +25,11 @@ export const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 15_000,
   // Ceiling on a single query. Long enough for the heaviest aggregate, short
-  // enough that a dead socket surfaces instead of hanging the run.
-  statement_timeout: 60_000,
-  query_timeout: 60_000,
+  // enough that a dead socket surfaces instead of hanging the run. 60s was too
+  // tight once the entity count grew: it killed a timeseries run and the first
+  // Reddit re-ingest on legitimate big reads, not on dead sockets.
+  statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? "180000") || 180_000,
+  query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS ?? "180000") || 180_000,
 });
 
 // A pool-level error (Neon dropping an idle client) is emitted on the pool, not

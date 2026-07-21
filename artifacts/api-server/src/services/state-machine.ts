@@ -7,6 +7,7 @@ import {
   gateConfigFromPipeline,
 } from "./confirmation-gate.js";
 import { judgeSpecificityBatch, type SpecificityResult } from "./specificity.js";
+import { withDbRetry } from "./db-retry.js";
 import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
@@ -204,7 +205,7 @@ async function ensureKnowledgeItem(
   const states: TrendState[] = ["emerging", "confirmed", "peaking", "resurgent"];
   if (!states.includes(entityState.state as TrendState)) return;
 
-  const entity = (await storage.getEntities(companyId)).find(
+  const entity = (await withDbRetry("getEntities", () => storage.getEntities(companyId))).find(
     (e) => e.id === entityState.entityId
   );
   if (!entity) return;
@@ -219,7 +220,7 @@ async function ensureKnowledgeItem(
     )
   );
 
-  const ki = await storage.upsertKnowledgeItem({
+  const ki = await withDbRetry("upsertKnowledgeItem", () => storage.upsertKnowledgeItem({
     companyId,
     category: entity.entityType,
     topicLabel: entity.canonicalLabel,
@@ -231,10 +232,12 @@ async function ensureKnowledgeItem(
     archived: entityState.state === "dormant",
     signalStrength,
     evidenceCount: metrics.volume30d,
-  } as any);
+  } as any));
 
   if (!entityState.knowledgeItemId) {
-    await storage.updateEntityState(entityStateId, { knowledgeItemId: ki.id } as any);
+    await withDbRetry("updateEntityState:knowledgeItemId", () =>
+      storage.updateEntityState(entityStateId, { knowledgeItemId: ki.id } as any)
+    );
   }
 }
 
@@ -246,35 +249,18 @@ async function ensureKnowledgeItem(
 // Neon dropping a connection. The pool now surfaces that as a thrown error
 // rather than hanging (see lib/db), but one blip must not abandon a run that is
 // most of the way done: retry the entity, then skip it and carry on.
-async function withDbRetry<T>(
-  label: string,
-  fn: () => Promise<T>,
-  attempts = 3
-): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i < attempts - 1) {
-        // Linear backoff: a dropped Neon connection is replaced on next acquire,
-        // so a short pause is enough — no need for aggressive exponential waits.
-        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
-        logger.warn({ label, attempt: i + 1 }, "DB call failed, retrying");
-      }
-    }
-  }
-  throw lastErr;
-}
 
 export async function runStateMachine(
   companyId: number
 ): Promise<{ processed: number; transitions: number }> {
+  // These three run before any per-entity work, and they were unprotected: a
+  // single transient Neon blip on the heavy delta query killed a whole run at
+  // startup, before a single entity was processed. Retry them like everything
+  // else in the loop.
   const [entities, config, deltas] = await Promise.all([
-    storage.getEntities(companyId),
-    storage.getPipelineConfig(companyId),
-    computeDeltasForCompany(companyId),
+    withDbRetry("getEntities:init", () => storage.getEntities(companyId)),
+    withDbRetry("getPipelineConfig", () => storage.getPipelineConfig(companyId)),
+    withDbRetry("computeDeltas", () => computeDeltasForCompany(companyId)),
   ]);
   const deltaByEntity = new Map(deltas.map((d) => [d.entityId, d]));
   let processed = 0;
@@ -301,7 +287,9 @@ export async function runStateMachine(
 
     for (const [geography, rows] of geoGroups) {
       const metrics = computeMetrics(rows);
-      const entityState = await storage.getOrCreateEntityState(companyId, entity.id, geography);
+      const entityState = await withDbRetry("getOrCreateEntityState", () =>
+        storage.getOrCreateEntityState(companyId, entity.id, geography)
+      );
       const currentState = entityState.state as TrendState;
       const { state: nextState, reason } = determineNextState(currentState, metrics, config);
 
@@ -309,7 +297,8 @@ export async function runStateMachine(
       // We assign the same delta values to every (entity, geography) state row.
       const delta = deltaByEntity.get(entity.id);
 
-      const updated = await storage.updateEntityState(entityState.id, {
+      const updated = await withDbRetry("updateEntityState:metrics", () =>
+        storage.updateEntityState(entityState.id, {
         state: nextState,
         stateEnteredAt: nextState !== currentState ? new Date() : entityState.stateEnteredAt,
         lastTransitionReason: reason,
@@ -327,7 +316,8 @@ export async function runStateMachine(
         momPrior: delta?.momPrior ?? null,
         yoyCurrent: delta?.yoyCurrent ?? null,
         yoyPrior: delta?.yoyPrior ?? null,
-      } as any);
+      } as any)
+      );
 
       if (nextState !== currentState) {
         transitions++;
@@ -369,14 +359,18 @@ export async function runStateMachine(
             logger.warn({ err: e, label: entity.canonicalLabel }, "specificity judge failed — keeping by default");
           }
           if (specificity) {
-            await storage.updateEntityState(entityState.id, {
-              specificityVerdict: {
-                specific: specificity.specific,
-                reason: specificity.reason,
-                label: entity.canonicalLabel,
-                judgedAt: new Date().toISOString(),
-              },
-            } as any);
+            // captured so the closure keeps the narrowed non-null type
+            const spec = specificity;
+            await withDbRetry("updateEntityState:specificity", () =>
+              storage.updateEntityState(entityState.id, {
+                specificityVerdict: {
+                  specific: spec.specific,
+                  reason: spec.reason,
+                  label: entity.canonicalLabel,
+                  judgedAt: new Date().toISOString(),
+                },
+              } as any)
+            );
           }
         }
         if (verdict.decision === "pass" && specificity && !specificity.specific) {
@@ -384,18 +378,31 @@ export async function runStateMachine(
           verdict.reasons.push(`not specific: ${specificity.reason}`);
         }
 
-        await storage.updateEntityState(entityState.id, {
-          confirmationVerdict: {
-            decision: finalDecision,
-            reasons: verdict.reasons,
-            significanceP: verdict.significance.pValue,
-            entropyBits: verdict.breadth.entropyBits,
-            evaluatedAt: new Date().toISOString(),
-          },
-        } as any);
+        const v = verdict;
+        const decided = finalDecision;
+        await withDbRetry("updateEntityState:verdict", () =>
+          storage.updateEntityState(entityState.id, {
+            confirmationVerdict: {
+              decision: decided,
+              reasons: v.reasons,
+              significanceP: v.significance.pValue,
+              entropyBits: v.breadth.entropyBits,
+              evaluatedAt: new Date().toISOString(),
+            },
+          } as any)
+        );
+      } else if (entityState.confirmationVerdict) {
+        // NOT a surfacing state, but a verdict from a previous run is still on
+        // the row. Leaving it there makes the radar claim a pass the entity no
+        // longer holds: `juneshine` sat on the radar for two days as "pass" on a
+        // 46h-old verdict, evaluated back when it was still emerging. A verdict
+        // only ever describes the state it was computed for, so clear it.
+        await withDbRetry("updateEntityState:clearVerdict", () =>
+          storage.updateEntityState(entityState.id, { confirmationVerdict: null } as any)
+        );
       }
 
-      if (finalDecision === null || finalDecision === "pass") {
+      if (finalDecision === "pass") {
         await ensureKnowledgeItem(companyId, entityState.id, updated, metrics, config.radarSurfaceMinSignalStrength);
       } else {
         // Gate HOLD. Holds must be retroactive: if this entity was surfaced to
@@ -405,13 +412,23 @@ export async function runStateMachine(
         // (not deleting) keeps the row for audit while removing it from the
         // trends list, which filters on `archived`.
         if (updated.knowledgeItemId) {
-          await storage.updateKnowledgeItem(updated.knowledgeItemId, {
-            archived: true,
-          } as any);
+          await withDbRetry("updateKnowledgeItem:archive", () =>
+            storage.updateKnowledgeItem(updated.knowledgeItemId!, {
+              archived: true,
+            } as any)
+          );
         }
+        // `verdict` is null when the entity is not in a surfacing state at all
+        // (the gate never ran), so it must not be dereferenced here.
         logger.info(
-          { entityId: entity.id, label: entity.canonicalLabel, geography, reasons: verdict!.reasons },
-          "Confirmation gate HOLD — not surfacing to radar"
+          {
+            entityId: entity.id,
+            label: entity.canonicalLabel,
+            geography,
+            state: nextState,
+            reasons: verdict ? verdict.reasons : [`not a surfacing state (${nextState})`],
+          },
+          "Not surfacing to radar"
         );
       }
       processed++;

@@ -48,6 +48,28 @@ test("leaves already-singular and mass nouns alone", () => {
   assert.equal(canonicalizeLabel("Honey"), "honey");
 });
 
+// Regression: the trailing-"s" rule stripped these into nonsense, and because
+// the mangled form BECAME the canonical label the damage was invisible —
+// "citrus" reached the live radar as "citru" with 27 mentions.
+test("does not mangle singular words that end in s", () => {
+  assert.equal(canonicalizeLabel("Citrus"), "citrus");
+  assert.equal(canonicalizeLabel("Hummus"), "hummus");
+  assert.equal(canonicalizeLabel("Couscous"), "couscous");
+  assert.equal(canonicalizeLabel("Asparagus"), "asparagus");
+  assert.equal(canonicalizeLabel("Hibiscus"), "hibiscus");
+  assert.equal(canonicalizeLabel("Molasses"), "molasses");
+  assert.equal(canonicalizeLabel("Swiss"), "swiss");
+});
+
+test("still singularizes real plurals after the -us/-is guard", () => {
+  assert.equal(canonicalizeLabel("Chips"), "chip");
+  assert.equal(canonicalizeLabel("Dates"), "date");
+  assert.equal(canonicalizeLabel("Oats"), "oat");
+  assert.equal(canonicalizeLabel("Glasses"), "glass");
+  assert.equal(canonicalizeLabel("Gummies"), "gummy");
+  assert.equal(canonicalizeLabel("Dishes"), "dish");
+});
+
 test("handles empty / whitespace", () => {
   assert.equal(canonicalizeLabel(""), "");
   assert.equal(canonicalizeLabel("   "), "");
