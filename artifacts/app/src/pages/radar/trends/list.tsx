@@ -62,6 +62,8 @@ const STATE_CONFIG: Record<string, { label: string; className: string }> = {
 const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
   instagram: { label: "IG", className: "bg-pink-500 text-white border-0" },
   tiktok: { label: "TT", className: "bg-gray-900 text-white border-0" },
+  youtube: { label: "YT", className: "bg-red-600 text-white border-0" },
+  x: { label: "X", className: "bg-black text-white border-0" },
   reddit: { label: "RD", className: "bg-orange-500 text-white border-0" },
   xiaohongshu: { label: "XHS", className: "bg-red-500 text-white border-0" },
   google_trends: { label: "GT", className: "bg-blue-500 text-white border-0" },
