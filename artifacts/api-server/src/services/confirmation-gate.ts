@@ -155,7 +155,14 @@ export function gateConfigFromPipeline(config: TpPipelineConfig): GateConfig {
   return {
     significanceAlpha: (c.gateSignificanceAlpha as number) ?? 0.05,
     permutations: (c.gatePermutations as number) ?? 1000,
-    minSourceEntropyBits: (c.gateMinSourceEntropyBits as number) ?? 1.0,
+    // Per-company config columns for the gate were never added, so these read as
+    // undefined and fall through to the defaults. GATE_MIN_ENTROPY_BITS lets a
+    // run override the breadth threshold without a schema change — used to loosen
+    // breadth for a deliberately single-platform-heavy scrape (e.g. TikTok fan-out)
+    // where 1.0 bits holds almost everything. Default stays 1.0.
+    minSourceEntropyBits:
+      (c.gateMinSourceEntropyBits as number) ??
+      (Number(process.env.GATE_MIN_ENTROPY_BITS) || 1.0),
     minUniqueAuthors: (c.gateMinUniqueAuthors as number) ?? 3,
     enabled: (c.gateEnabled as boolean) ?? true,
   };
