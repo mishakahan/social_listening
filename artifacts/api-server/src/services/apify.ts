@@ -26,9 +26,28 @@ export function getApifyClient(): ApifyClient {
   return _client;
 }
 
-// Derive the public webhook URL from environment
+// Apify can't reach localhost / private hosts, and rejects such webhook URLs
+// at launch. Treat those as "no public URL" so the pipeline falls back to
+// polling instead of sending an unreachable webhook.
+function isPubliclyReachable(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    if (host === "localhost" || host.endsWith(".local")) return false;
+    if (host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") return false;
+    if (/^10\./.test(host) || /^192\.168\./.test(host)) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Derive the public webhook URL from environment. Returns null when there is no
+// publicly reachable URL (e.g. local dev), so runs are polled instead.
 export function getWebhookBaseUrl(): string | null {
-  if (process.env.SERVER_URL) return process.env.SERVER_URL;
+  if (process.env.SERVER_URL && isPubliclyReachable(process.env.SERVER_URL)) {
+    return process.env.SERVER_URL;
+  }
   // Replit exposes the first domain in REPLIT_DOMAINS
   if (process.env.REPLIT_DOMAINS) {
     const domain = process.env.REPLIT_DOMAINS.split(",")[0]!.trim();
@@ -52,33 +71,157 @@ function normalizeGeo(geography: string): string {
   return "";
 }
 
-// Map our generic query payload to the input format each actor expects
+// Default backfill window (months) for actors that support a date range.
+const BACKFILL_MONTHS = 6;
+
+// Per-actor result cap. Env-overridable so a cheap verification pass can use a
+// small cap (e.g. 40) before a full-depth run at the default 200.
+const RESULT_CAP = Number(process.env.BACKFILL_RESULT_CAP ?? "200") || 200;
+
+// Instagram is by far the most expensive actor per result (~85% of scrape
+// cost), so it gets its own, smaller cap. Trend detection needs enough posts
+// to measure volume + author diversity, not hundreds. Env-overridable.
+const IG_RESULT_CAP = Number(process.env.IG_RESULT_CAP ?? "40") || 40;
+
+// Cap how many hashtag variants we expand to on IG — each variant is a
+// separate (billed) scrape, so we keep this small. Popular tags don't need
+// singular+plural both; this mainly helps sparse/niche tags.
+const IG_MAX_VARIANT_TAGS = Number(process.env.IG_MAX_VARIANT_TAGS ?? "4") || 4;
+
+function ymd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Returns { afterDate, beforeDate } for a BACKFILL_MONTHS window ending at `today`.
+function backfillWindow(today: Date): { afterDate: string; beforeDate: string } {
+  const after = new Date(today);
+  after.setMonth(after.getMonth() - BACKFILL_MONTHS);
+  return { afterDate: ymd(after), beforeDate: ymd(today) };
+}
+
+// Instagram matches EXACT hashtag strings, so #functionalgummies and
+// #functionalgummy are different tags. To avoid missing a variant the
+// generator didn't emit, expand each tag into a small, bounded set of common
+// morphological variants (singular/plural). Empty tags on IG just return
+// nothing, so extra variants are cheap.
+export function expandHashtagVariants(raw: string): string[] {
+  // normalize: drop leading #, spaces, underscores, hyphens; lowercase
+  const base = raw.replace(/^#+/, "").replace(/[\s_-]+/g, "").toLowerCase();
+  if (!base) return [];
+  const out = new Set<string>([base]);
+  // plural/singular toggles
+  if (base.endsWith("ies")) {
+    out.add(base.slice(0, -3) + "y"); // gummies -> gummy
+  } else if (base.endsWith("s")) {
+    out.add(base.slice(0, -1)); // pastilles -> pastille
+  } else {
+    out.add(base + "s"); // pastille -> pastilles
+    if (base.endsWith("y")) out.add(base.slice(0, -1) + "ies"); // gummy -> gummies
+  }
+  return [...out];
+}
+
+// Map our generic query payload to the input format each actor expects.
+// `today` is injectable for deterministic date-window tests.
 export function buildActorInput(
   actorSlug: string,
   runMode: string,
-  input: QueryInput
+  input: QueryInput,
+  today: Date = new Date()
 ): Record<string, unknown> {
   const tags = input.hashtags.map((h) => (h.startsWith("#") ? h.slice(1) : h));
   const kws = input.keywords;
   const geo = normalizeGeo(input.geography);
 
   switch (actorSlug) {
-    case "apify/instagram-scraper":
-      // apify/instagram-scraper v3+ expects directUrls for hashtag exploration
+    case "apify/instagram-scraper": {
+      // apify/instagram-scraper v3+ expects directUrls for hashtag exploration.
+      // Expand each hashtag into its common variants so we don't miss
+      // #functionalgummy just because the generator produced #functionalgummies.
+      // Cap the number of tag variants — each is a separately-billed scrape.
+      const expanded = [...new Set(tags.flatMap((h) => expandHashtagVariants(h)))]
+        .slice(0, IG_MAX_VARIANT_TAGS);
       return {
-        directUrls: tags.map((h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`),
+        directUrls: expanded.map(
+          (h) => `https://www.instagram.com/explore/tags/${encodeURIComponent(h)}/`
+        ),
         resultsType: runMode === "backfill:ig_reels" ? "reels" : "posts",
-        resultsLimit: 200,
+        resultsLimit: IG_RESULT_CAP,
         addParentData: false,
       };
+    }
 
     case "clockworks/tiktok-scraper":
       return {
         hashtags: tags,
         keywords: kws,
-        maxItems: 200,
+        maxItems: RESULT_CAP,
         ...(geo ? { countryCode: geo } : {}),
       };
+
+    case "scrapeforge/tiktok-posts": {
+      // Takes a single keyword + single hashtag (not arrays). Use the primary
+      // of each. datePosted is a preset window, not exact dates — TikTok can't
+      // do precise date boundaries, so "last-6-months" is the closest match.
+      const primaryKw = (kws.find((k) => k.trim().length > 0) ?? input.topicLabel).trim();
+      const primaryTag = tags.find((t) => t.trim().length > 0) ?? "";
+      return {
+        // Must set scrapeMode explicitly — it defaults to "profiles", which
+        // searches for a USER named e.g. "gummies" and returns nothing.
+        scrapeMode: "keyword",
+        keyword: primaryKw,
+        hashtag: primaryTag,
+        datePosted: "last-6-months",
+        maxResults: RESULT_CAP,
+        sortBy: "relevance",
+        ...(geo ? { region: geo } : {}),
+      };
+    }
+
+    case "streamers/youtube-scraper": {
+      // YouTube has deep, date-queryable history (videos back years), which is
+      // the point of adding it: it can supply the historical depth the
+      // significance test needs, unlike recent-only IG/Reddit. Free-text search
+      // over the keyword variants; oldestPostDate sets the earliest video date.
+      const { afterDate } = backfillWindow(today);
+      return {
+        searchQueries: kws,
+        oldestPostDate: afterDate,
+        sortingOrder: "date",
+        maxResults: RESULT_CAP,
+      };
+    }
+
+    case "xquik/x-tweet-scraper": {
+      // X is free-text search (not hashtag-bound), so we pass all keyword
+      // variants as searchTerms — no hashtag-variant preprocessing needed here.
+      // X wants dates as YYYY-MM-DD_HH:MM:SS_UTC.
+      const { afterDate, beforeDate } = backfillWindow(today);
+      const xDate = (d: string) => `${d}_00:00:00_UTC`;
+      return {
+        searchTerms: kws,
+        since: xDate(afterDate),
+        until: xDate(beforeDate),
+        maxItems: RESULT_CAP,
+        ...(input.language ? { lang: input.language } : {}),
+      };
+    }
+
+    case "benthepythondev/reddit-archive-scraper": {
+      // Archive actor (PullPush) supports a true after/before date window, so we
+      // can do a real 6-month backfill. It takes a single searchQuery, so we use
+      // the primary keyword. Comments are the cost driver and irrelevant to
+      // mention counts, so they stay off.
+      const primary = (kws.find((k) => k.trim().length > 0) ?? input.topicLabel).trim();
+      const { afterDate, beforeDate } = backfillWindow(today);
+      return {
+        searchQuery: primary,
+        afterDate,
+        beforeDate,
+        maxPosts: RESULT_CAP,
+        includeComments: false,
+      };
+    }
 
     case "trudax/reddit-scraper-lite": {
       // Reddit doesn't use hashtags. Run one search per keyword instead of joining
@@ -97,7 +240,7 @@ export function buildActorInput(
     case "easyapi/all-in-one-rednote-xiaohongshu-scraper":
       return {
         keywords: kws.concat(tags),
-        maxItems: 200,
+        maxItems: RESULT_CAP,
       };
 
     case "apify/google-trends-scraper":

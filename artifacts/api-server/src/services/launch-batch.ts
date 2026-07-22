@@ -15,7 +15,22 @@ type PlatformPlan = {
   platform: string;
   runMode: string;
   actorSlug: string;
+  // Restrict this run to a single keyword. Used for actors that accept only one
+  // search term, so the query's full keyword list is covered by N runs instead
+  // of being silently truncated to the first.
+  keywordOverride?: string;
 };
+
+// The TikTok actor takes ONE keyword per run, so buildActorInput used keywords[0]
+// and dropped the rest: a 33-keyword "Alcoholic beverages" query only ever
+// searched "beer" on TikTok, and soju never reached the platform where a soju
+// trend would most obviously live. Fan out to one run per keyword instead.
+// Affordable because TikTok is the cheapest actor we run by an order of
+// magnitude — measured $0.0096/run, vs $0.39 YouTube and $0.27 Instagram — so
+// covering all 466 keywords costs ~$4.4 rather than the ~1 cent per extra term
+// it looks like it should. Capped so a runaway fan-out cannot surprise us.
+const TIKTOK_MAX_KEYWORD_RUNS =
+  Number(process.env.TIKTOK_MAX_KEYWORD_RUNS ?? "80") || 80;
 
 function planPlatformsForQuery(query: {
   keywords: string[] | null;
@@ -23,16 +38,52 @@ function planPlatformsForQuery(query: {
   geography: string | null;
 }): PlatformPlan[] {
   const platforms: PlatformPlan[] = [];
+  // IG is the cost driver (~85% of spend). Posts alone carry the hashtag
+  // signal; reels are dropped to halve IG cost. Re-add if reels prove needed.
   platforms.push({ platform: "instagram", runMode: "backfill:ig_posts", actorSlug: "apify/instagram-scraper" });
-  platforms.push({ platform: "instagram", runMode: "backfill:ig_reels", actorSlug: "apify/instagram-scraper" });
-  platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "clockworks/tiktok-scraper" });
+  const tiktokKeywords = (query.keywords ?? [])
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0)
+    .slice(0, TIKTOK_MAX_KEYWORD_RUNS);
+  if (tiktokKeywords.length === 0) {
+    // No keywords: fall back to one run, which buildActorInput fills from the
+    // topic label.
+    platforms.push({ platform: "tiktok", runMode: "backfill:tiktok", actorSlug: "scrapeforge/tiktok-posts" });
+  } else {
+    for (const keyword of tiktokKeywords) {
+      platforms.push({
+        platform: "tiktok",
+        runMode: "backfill:tiktok",
+        actorSlug: "scrapeforge/tiktok-posts",
+        keywordOverride: keyword,
+      });
+    }
+  }
   if (query.keywords && query.keywords.length > 0 && query.language !== "zh-CN") {
+    // reddit-scraper-lite is recent-only but reliably returns data; the
+    // archive actor (benthepythondev) promised date backfill but returned 0
+    // even on direct calls, so we use the lite scraper until a working
+    // date-capable Reddit actor is found. (Mapping for the archive actor is
+    // kept in buildActorInput for when that happens.)
     platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
+    // X: free-text keyword search with a real since/until date window.
+    platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper" });
+    // YouTube: deep date-queryable history — the main lever for the depth the
+    // significance test needs (unlike recent-only IG/Reddit).
+    platforms.push({ platform: "youtube", runMode: "backfill:youtube_search", actorSlug: "streamers/youtube-scraper" });
   }
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
   }
-  if (query.geography !== "CN") {
+  // Google Trends is off by default: measured $12.09 for 120 records across 58
+  // runs — by far the worst value of any actor here — and it does not feed the
+  // gate at all. Its output lands in tp_keyword_interest, not tp_raw_signals, so
+  // it never reaches the significance or breadth tests; it only draws a
+  // search-interest line on the trend chart, and that line is empty for most
+  // entities anyway (the keywords we query GT with are the seed terms, while the
+  // entities that surface come from social posts, so the two rarely match).
+  // Set ENABLE_GOOGLE_TRENDS=true to bring it back once there is a reason to.
+  if (query.geography !== "CN" && process.env.ENABLE_GOOGLE_TRENDS === "true") {
     platforms.push({ platform: "google_trends", runMode: "backfill:google_trends", actorSlug: "apify/google-trends-scraper" });
   }
   return platforms;
@@ -117,7 +168,12 @@ export async function launchBatch(
     const platforms = planPlatformsForQuery(query);
 
     for (const p of platforms) {
-      const actorInput = buildActorInput(p.actorSlug, p.runMode, queryInput);
+      // Single-keyword actors (TikTok) get one run per keyword, so narrow the
+      // input to just that term. Everything else sees the full keyword list.
+      const runInput = p.keywordOverride
+        ? { ...queryInput, keywords: [p.keywordOverride] }
+        : queryInput;
+      const actorInput = buildActorInput(p.actorSlug, p.runMode, runInput);
 
       const run = await storage.createActorRun({
         companyId,
@@ -126,7 +182,7 @@ export async function launchBatch(
         platform: p.platform,
         runMode: p.runMode,
         status: "queued",
-        inputPayload: queryInput,
+        inputPayload: runInput,
         launchBatchId: batchId,
       });
 

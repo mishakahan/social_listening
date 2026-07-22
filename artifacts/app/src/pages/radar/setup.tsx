@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +25,7 @@ interface WatchTopicDraft {
 
 export default function RadarSetupPage() {
   const [, navigate] = useLocation();
+  const companyId = useCompanyId();
   const [brief, setBrief] = useState("");
   const [watchTopics, setWatchTopics] = useState<WatchTopicDraft[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,7 +59,7 @@ export default function RadarSetupPage() {
       const cleanedWatchTopics = watchTopics
         .map((t) => ({ title: t.title.trim(), description: t.description.trim() }))
         .filter((t) => t.title.length > 0);
-      const res = await fetch("/api/pipeline/companies/1/setup-radar/generate", {
+      const res = await fetch(`/api/pipeline/companies/${companyId}/setup-radar/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brief, watchTopics: cleanedWatchTopics }),
@@ -77,7 +79,7 @@ export default function RadarSetupPage() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [brief, watchTopics, isReady, isSubmitting, navigate]);
+  }, [companyId, brief, watchTopics, isReady, isSubmitting, navigate]);
 
   return (
     <div className="p-8 max-w-3xl mx-auto">

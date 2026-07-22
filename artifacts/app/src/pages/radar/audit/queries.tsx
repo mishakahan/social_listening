@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useState } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -53,8 +54,8 @@ function formatRelative(iso: string | null): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
 
-async function fetchQueries(): Promise<ScoutQuery[]> {
-  const res = await fetch("/api/pipeline/companies/1/scout-queries");
+async function fetchQueries(companyId: number): Promise<ScoutQuery[]> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/scout-queries`);
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -75,8 +76,8 @@ async function deleteQueryApi(id: number): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function bulkDeleteQueriesApi(queryIds: number[]): Promise<void> {
-  const res = await fetch(`/api/pipeline/companies/1/scout-queries/bulk`, {
+async function bulkDeleteQueriesApi(companyId: number, queryIds: number[]): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/scout-queries/bulk`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ queryIds }),
@@ -84,8 +85,8 @@ async function bulkDeleteQueriesApi(queryIds: number[]): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
-async function launchScrapers(queryIds: number[]): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/scout-queries/launch", {
+async function launchScrapers(companyId: number, queryIds: number[]): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/scout-queries/launch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ queryIds }),
@@ -176,18 +177,19 @@ function CellEntry({ query, selected, onSelect, onToggle, onDelete, isToggling, 
 export default function QueriesAuditPage() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const { data: queries = [], isLoading, error } = useQuery({
-    queryKey: ["scout-queries"],
-    queryFn: fetchQueries,
+    queryKey: ["scout-queries", companyId],
+    queryFn: () => fetchQueries(companyId),
     refetchOnWindowFocus: false,
   });
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, next }: { id: number; next: boolean }) => patchQuery(id, next),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ScoutQuery[]>(["scout-queries"], (old = []) =>
+      queryClient.setQueryData<ScoutQuery[]>(["scout-queries", companyId], (old = []) =>
         old.map((q) => (q.id === updated.id ? updated : q))
       );
       toast.success(updated.active ? "Query activated" : "Query deactivated");
@@ -198,7 +200,7 @@ export default function QueriesAuditPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteQueryApi(id),
     onSuccess: (_, id) => {
-      queryClient.setQueryData<ScoutQuery[]>(["scout-queries"], (old = []) =>
+      queryClient.setQueryData<ScoutQuery[]>(["scout-queries", companyId], (old = []) =>
         old.filter((q) => q.id !== id)
       );
       setSelectedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
@@ -208,10 +210,10 @@ export default function QueriesAuditPage() {
   });
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: (ids: number[]) => bulkDeleteQueriesApi(ids),
+    mutationFn: (ids: number[]) => bulkDeleteQueriesApi(companyId, ids),
     onSuccess: (_, ids) => {
       const idSet = new Set(ids);
-      queryClient.setQueryData<ScoutQuery[]>(["scout-queries"], (old = []) =>
+      queryClient.setQueryData<ScoutQuery[]>(["scout-queries", companyId], (old = []) =>
         old.filter((q) => !idSet.has(q.id))
       );
       setSelectedIds(new Set());
@@ -224,7 +226,7 @@ export default function QueriesAuditPage() {
     mutationFn: async ({ ids, active }: { ids: number[]; active: boolean }) =>
       Promise.all(ids.map((id) => patchQuery(id, active))),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ScoutQuery[]>(["scout-queries"], (old = []) => {
+      queryClient.setQueryData<ScoutQuery[]>(["scout-queries", companyId], (old = []) => {
         const map = new Map(updated.map((q) => [q.id, q]));
         return old.map((q) => map.get(q.id) ?? q);
       });
@@ -235,7 +237,7 @@ export default function QueriesAuditPage() {
   });
 
   const launchMutation = useMutation({
-    mutationFn: () => launchScrapers(Array.from(selectedIds)),
+    mutationFn: () => launchScrapers(companyId, Array.from(selectedIds)),
     onSuccess: () => {
       toast.success("Scrapers launched!");
       navigate("/radar/audit/runs");

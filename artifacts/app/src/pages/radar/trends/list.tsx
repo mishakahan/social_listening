@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -61,6 +62,8 @@ const STATE_CONFIG: Record<string, { label: string; className: string }> = {
 const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
   instagram: { label: "IG", className: "bg-pink-500 text-white border-0" },
   tiktok: { label: "TT", className: "bg-gray-900 text-white border-0" },
+  youtube: { label: "YT", className: "bg-red-600 text-white border-0" },
+  x: { label: "X", className: "bg-black text-white border-0" },
   reddit: { label: "RD", className: "bg-orange-500 text-white border-0" },
   xiaohongshu: { label: "XHS", className: "bg-red-500 text-white border-0" },
   google_trends: { label: "GT", className: "bg-blue-500 text-white border-0" },
@@ -73,9 +76,9 @@ type SortKey =
   | "yoyGrowthPct"
   | "evidence";
 
-async function fetchTrends(sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
+async function fetchTrends(companyId: number, sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
   const res = await fetch(
-    `/api/pipeline/companies/1/trends?sortBy=${sortBy}&sortDir=${sortDir}`
+    `/api/pipeline/companies/${companyId}/trends?sortBy=${sortBy}&sortDir=${sortDir}`
   );
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(await res.text());
@@ -202,12 +205,13 @@ function GrowthCell({
 
 export default function TrendsListPage() {
   const [, navigate] = useLocation();
+  const companyId = useCompanyId();
   const [sortBy, setSortBy] = useState<SortKey>("signal");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data: trends = [], isLoading, error } = useQuery({
-    queryKey: ["trends", sortBy, sortDir],
-    queryFn: () => fetchTrends(sortBy, sortDir),
+    queryKey: ["trends", companyId, sortBy, sortDir],
+    queryFn: () => fetchTrends(companyId, sortBy, sortDir),
     refetchOnWindowFocus: false,
   });
 
@@ -390,11 +394,13 @@ function SingleEntityTab({
                       <div className="text-sm font-medium text-foreground leading-tight">
                         {trend.title}
                       </div>
-                      {(trend.geography || trend.territoryTag) && (
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {[trend.geography, trend.territoryTag].filter(Boolean).join(" · ")}
-                        </div>
-                      )}
+                      {(() => {
+                        const geo = trend.geography === "Global" ? null : trend.geography;
+                        const meta = [geo, trend.territoryTag].filter(Boolean).join(" · ");
+                        return meta ? (
+                          <div className="text-xs text-muted-foreground mt-0.5">{meta}</div>
+                        ) : null;
+                      })()}
                     </div>
 
                     {/* Signal */}
@@ -579,16 +585,17 @@ interface CompositeResponse {
   windowDays: number;
 }
 
-async function fetchComposite(): Promise<CompositeResponse> {
-  const res = await fetch(`/api/pipeline/companies/1/composite-trends`);
+async function fetchComposite(companyId: number): Promise<CompositeResponse> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/composite-trends`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 function CompositeTrendsTab() {
+  const companyId = useCompanyId();
   const { data, isLoading, error } = useQuery({
-    queryKey: ["composite-trends"],
-    queryFn: fetchComposite,
+    queryKey: ["composite-trends", companyId],
+    queryFn: () => fetchComposite(companyId),
     refetchOnWindowFocus: false,
   });
 

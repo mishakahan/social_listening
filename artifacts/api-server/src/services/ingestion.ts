@@ -183,6 +183,19 @@ function normalizeTikTok(item: Record<string, unknown>): NormalizedSignal | null
   };
 }
 
+// lite actor gives an absolute link/url; archive gives a relative permalink.
+function normalizeRedditUrl(item: Record<string, unknown>): string {
+  const direct = String(item["link"] ?? item["url"] ?? "");
+  if (direct) return direct;
+  const permalink = String(item["permalink"] ?? "");
+  if (permalink) {
+    return permalink.startsWith("http")
+      ? permalink
+      : `https://www.reddit.com${permalink}`;
+  }
+  return "";
+}
+
 function normalizeReddit(item: Record<string, unknown>): NormalizedSignal | null {
   const sourceId = String(item["id"] ?? "");
   if (!sourceId) return null;
@@ -190,12 +203,18 @@ function normalizeReddit(item: Record<string, unknown>): NormalizedSignal | null
   const body = String(item["body"] ?? item["selftext"] ?? "");
   const text = [title, body].filter(Boolean).join(" ");
   const { language, confidence } = detectLanguage(text);
+  // trudax lite: createdAt/created. benthepythondev archive: created_iso/created_utc.
   const postedAt = item["createdAt"]
     ? new Date(String(item["createdAt"]))
+    : item["created_iso"]
+    ? new Date(String(item["created_iso"]))
     : item["created"]
     ? new Date(Number(item["created"]) * 1000)
+    : item["created_utc"]
+    ? new Date(Number(item["created_utc"]) * 1000)
     : null;
-  // trudax/reddit-scraper-lite uses upVotes, numberOfComments, username, link
+  // trudax lite: upVotes, numberOfComments, username, link.
+  // archive: score, num_comments, author, permalink.
   const engScore    = Number(item["upVotes"] ?? item["score"] ?? item["ups"] ?? 0);
   const engComments = Number(item["numberOfComments"] ?? item["numComments"] ?? item["num_comments"] ?? 0);
   const { score, composite } = computeEngagement("reddit",
@@ -206,7 +225,7 @@ function normalizeReddit(item: Record<string, unknown>): NormalizedSignal | null
     platform: "reddit",
     sourceActor: "trudax/reddit-scraper-lite",
     sourceId,
-    sourceUrl: String(item["link"] ?? item["url"] ?? ""),
+    sourceUrl: normalizeRedditUrl(item),
     postedAt,
     authorHandle: String(item["username"] ?? item["author"] ?? "") || null,
     authorFollowers: null,
@@ -222,6 +241,111 @@ function normalizeReddit(item: Record<string, unknown>): NormalizedSignal | null
     engagementComments: engComments || null,
     engagementShares: null,
     engagementViews: null,
+    engagementSaves: null,
+    engagementScore: score,
+    engagementComposite: composite,
+    commercialIntent: false,
+    commercialIntentConfidence: null,
+    backfillDerived: false,
+    retainReason: null,
+    raw: item,
+    metadata: {},
+  };
+}
+
+// xquik/x-tweet-scraper output. Author info can be nested under `author` or
+// flattened (authorUsername/authorFollowers). Retweets map to "shares".
+export function normalizeX(item: Record<string, unknown>): NormalizedSignal | null {
+  const sourceId = String(item["id"] ?? "");
+  if (!sourceId) return null;
+  const text = String(item["text"] ?? item["full_text"] ?? "");
+  const { language, confidence } = detectLanguage(text);
+  const author = (item["author"] as Record<string, unknown> | undefined) ?? {};
+  const authorHandle =
+    String(author["username"] ?? item["authorUsername"] ?? "") || null;
+  const authorFollowers =
+    Number(author["followers"] ?? item["authorFollowers"] ?? 0) || null;
+  const authorVerified = Boolean(author["verified"] ?? item["verified"] ?? false);
+  const postedAt = item["createdAt"] ? new Date(String(item["createdAt"])) : null;
+
+  const engLikes    = Number(item["likeCount"] ?? item["favoriteCount"] ?? 0);
+  const engShares   = Number(item["retweetCount"] ?? 0);
+  const engComments = Number(item["replyCount"] ?? 0);
+  const engViews    = Number(item["viewCount"] ?? 0);
+  const { score, composite } = computeEngagement("x",
+    { likes: engLikes, comments: engComments, shares: engShares, views: engViews, saves: 0 },
+    { x: { likes: 1, retweets: 2, replies: 2 } }
+  );
+  return {
+    platform: "x",
+    sourceActor: "xquik/x-tweet-scraper",
+    sourceId,
+    sourceUrl: String(item["url"] ?? item["tweetUrl"] ?? ""),
+    postedAt: postedAt && !isNaN(postedAt.getTime()) ? postedAt : null,
+    authorHandle,
+    authorFollowers,
+    authorTier: "nano",
+    authorVerified,
+    text: text || null,
+    hashtags: [],
+    mentions: [],
+    language,
+    languageConfidence: confidence || null,
+    geography: null,
+    engagementLikes: engLikes || null,
+    engagementComments: engComments || null,
+    engagementShares: engShares || null,
+    engagementViews: engViews || null,
+    engagementSaves: null,
+    engagementScore: score,
+    engagementComposite: composite,
+    commercialIntent: false,
+    commercialIntentConfidence: null,
+    backfillDerived: false,
+    retainReason: null,
+    raw: item,
+    metadata: {},
+  };
+}
+
+// streamers/youtube-scraper output. One video = one signal. The channel is the
+// "author"; views/likes/comments are the engagement. text = title + description.
+export function normalizeYouTube(item: Record<string, unknown>): NormalizedSignal | null {
+  const sourceId = String(item["id"] ?? "");
+  if (!sourceId) return null;
+  const title = String(item["title"] ?? "");
+  const desc = String(item["text"] ?? item["description"] ?? "");
+  const text = [title, desc].filter(Boolean).join(" ");
+  const { language, confidence } = detectLanguage(text);
+  const postedAt = item["date"] ? new Date(String(item["date"])) : null;
+
+  const engLikes    = Number(item["likes"] ?? item["likeCount"] ?? 0);
+  const engComments = Number(item["commentsCount"] ?? item["commentCount"] ?? 0);
+  const engViews    = Number(item["viewCount"] ?? item["views"] ?? 0);
+  const { score, composite } = computeEngagement("youtube",
+    { likes: engLikes, comments: engComments, shares: 0, views: engViews, saves: 0 },
+    { youtube: { likes: 1, comments: 2, views: 0.001 } }
+  );
+  return {
+    platform: "youtube",
+    sourceActor: "streamers/youtube-scraper",
+    sourceId,
+    sourceUrl: String(item["url"] ?? ""),
+    postedAt: postedAt && !isNaN(postedAt.getTime()) ? postedAt : null,
+    authorHandle: String(item["channelName"] ?? "") || null,
+    authorFollowers: Number(item["numberOfSubscribers"] ?? 0) || null,
+    authorTier: "nano",
+    authorVerified: false,
+    text: text || null,
+    hashtags: [],
+    mentions: [],
+    language,
+    languageConfidence: confidence || null,
+    geography: null,
+    engagementLikes: engLikes || null,
+    engagementComments: engComments || null,
+    engagementShares: null,
+    engagementViews: engViews || null,
     engagementSaves: null,
     engagementScore: score,
     engagementComposite: composite,
@@ -297,6 +421,8 @@ function normalizeItem(
     case "instagram": return normalizeInstagram(item);
     case "tiktok": return normalizeTikTok(item);
     case "reddit": return normalizeReddit(item);
+    case "x": return normalizeX(item);
+    case "youtube": return normalizeYouTube(item);
     case "xiaohongshu": return normalizeXhs(item);
     default: return null;
   }
@@ -548,6 +674,17 @@ function passesNoiseFloor(
   signal: NormalizedSignal,
   config: TpPipelineConfig
 ): boolean {
+  // The trudax reddit-scraper-lite actor's current output does not include
+  // upvote or comment counts on the item at all — the shape is
+  // {id, url, username, title, communityName, body, html, createdAt, ...}.
+  // Every Reddit post therefore computed engagementScore=0 and fell below
+  // the default noise floor of 3, so 100% of Reddit ingestion was silently
+  // dropped: 1,637 records fetched across 61 runs, 0 usable. Reddit's
+  // engagement model also differs from IG/TikTok (fresh posts often have
+  // 0 upvotes for hours), so a comment-count noise floor is the wrong
+  // filter for it in general. Skip it for Reddit; downstream filters
+  // (language, canonicalization, the gate) still apply.
+  if (signal.platform === "reddit") return true;
   return (signal.engagementScore ?? 0) >= config.noiseFloor;
 }
 

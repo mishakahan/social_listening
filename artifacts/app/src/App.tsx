@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Suspense, lazy } from "react";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/shells/AppLayout";
+import { CompanyProvider } from "@/hooks/use-company";
 
 const RadarSetupPage = lazy(() => import("@/pages/radar/setup"));
 const SeedsAuditPage = lazy(() => import("@/pages/radar/audit/seeds"));
@@ -52,13 +53,15 @@ function RadarRouter() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <RadarRouter />
-        </WouterRouter>
-        <Toaster />
-        <Sonner />
-      </TooltipProvider>
+      <CompanyProvider>
+        <TooltipProvider>
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+            <RadarRouter />
+          </WouterRouter>
+          <Toaster />
+          <Sonner />
+        </TooltipProvider>
+      </CompanyProvider>
     </QueryClientProvider>
   );
 }

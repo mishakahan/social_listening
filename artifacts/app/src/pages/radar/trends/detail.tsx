@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
+import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -14,6 +15,8 @@ import {
   Minus,
   Globe,
   Tag,
+  Check,
+  X,
   BarChart2,
 } from "lucide-react";
 import {
@@ -32,6 +35,9 @@ interface EvidenceItem {
   url?: string;
   publishedAt?: string;
   engagementScore?: number;
+  engagementLikes?: number | null;
+  engagementViews?: number | null;
+  engagementComments?: number | null;
   platform?: string;
   author?: string;
   excerpt?: string;
@@ -67,6 +73,19 @@ interface TrendDetail {
   description?: string;
   evidence?: EvidenceItem[];
   updatedAt?: string;
+  confirmationVerdict?: {
+    decision: "pass" | "hold";
+    reasons: string[];
+    significanceP: number;
+    entropyBits: number;
+    evaluatedAt: string;
+  } | null;
+  specificityVerdict?: {
+    specific: boolean;
+    reason: string;
+    label: string;
+    judgedAt: string;
+  } | null;
 }
 
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
@@ -87,8 +106,8 @@ const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
   google_trends: { label: "GT", className: "bg-blue-500 text-white border-0" },
 };
 
-async function fetchTrend(id: string): Promise<TrendDetail> {
-  const res = await fetch(`/api/pipeline/companies/1/trends/${id}`);
+async function fetchTrend(companyId: number, id: string): Promise<TrendDetail> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/trends/${id}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -163,20 +182,113 @@ function formatDate(iso?: string) {
   });
 }
 
-function formatEngagement(n?: number) {
+function formatCount(n?: number | null) {
   if (n == null) return null;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toString();
 }
 
+// Raw platform metrics people intuitively recognise, in preference order.
+// Falls back to the composite signal score only if no raw metric is present.
+function evidenceMetrics(ev: {
+  engagementViews?: number | null;
+  engagementLikes?: number | null;
+  engagementComments?: number | null;
+  engagementScore?: number;
+}): { label: string; value: string }[] {
+  const parts: { label: string; value: string }[] = [];
+  if (ev.engagementViews) parts.push({ label: "views", value: formatCount(ev.engagementViews)! });
+  if (ev.engagementLikes) parts.push({ label: "likes", value: formatCount(ev.engagementLikes)! });
+  if (ev.engagementComments) parts.push({ label: "comments", value: formatCount(ev.engagementComments)! });
+  if (parts.length === 0 && ev.engagementScore)
+    parts.push({ label: "signal", value: formatCount(ev.engagementScore)! });
+  return parts;
+}
+
+// One gate-check chip: green tick if it passed, red cross if it didn't.
+function VerdictChip({
+  pass,
+  label,
+  detail,
+  title,
+}: {
+  pass: boolean;
+  label: string;
+  detail: string;
+  title?: string;
+}) {
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border ${
+        pass
+          ? "bg-green-500/10 text-green-700 dark:text-green-300 border-green-500/30"
+          : "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/30"
+      }`}
+    >
+      {pass ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+      <span className="font-medium">{label}</span>
+      <span className="opacity-70">{detail}</span>
+    </span>
+  );
+}
+
+// Renders the "why confirmed / why held" chip row from the stored gate verdict.
+// Significance passes below alpha=0.05; breadth passes at >=1.0 bits (the gate's
+// own thresholds). Specificity comes from the cached LLM judgment.
+function VerdictChips({
+  verdict,
+  specificity,
+}: {
+  verdict?: TrendDetail["confirmationVerdict"];
+  specificity?: TrendDetail["specificityVerdict"];
+}) {
+  if (!verdict && !specificity) return null;
+  const held = verdict?.decision === "hold";
+  return (
+    <div className="mt-3">
+      <div className="text-xs font-medium text-muted-foreground mb-1.5">
+        {held ? "Why it was held" : "Why it passed the gate"}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {verdict && (
+          <>
+            <VerdictChip
+              pass={verdict.significanceP <= 0.05}
+              label="Rising"
+              detail={`p=${verdict.significanceP.toFixed(3)}`}
+              title="Beats the entity's own historical noise (permutation test)."
+            />
+            <VerdictChip
+              pass={verdict.entropyBits >= 1.0}
+              label="Broad"
+              detail={`${verdict.entropyBits.toFixed(2)} bits`}
+              title="Author diversity across platforms (Shannon entropy)."
+            />
+          </>
+        )}
+        {specificity && (
+          <VerdictChip
+            pass={specificity.specific}
+            label="Specific"
+            detail={specificity.specific ? "trackable" : "generic"}
+            title={specificity.reason}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function TrendDetailPage() {
   const { trendId } = useParams<{ trendId: string }>();
   const [, navigate] = useLocation();
+  const companyId = useCompanyId();
 
   const { data: trend, isLoading, error } = useQuery({
-    queryKey: ["trend", trendId],
-    queryFn: () => fetchTrend(trendId!),
+    queryKey: ["trend", companyId, trendId],
+    queryFn: () => fetchTrend(companyId, trendId!),
     enabled: !!trendId,
   });
 
@@ -258,7 +370,7 @@ export default function TrendDetailPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mt-3">
-          {trend.geography && (
+          {trend.geography && trend.geography !== "Global" && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
               <Globe className="h-3 w-3" />
               {trend.geography}
@@ -282,6 +394,11 @@ export default function TrendDetailPage() {
             );
           })}
         </div>
+
+        <VerdictChips
+          verdict={trend.confirmationVerdict}
+          specificity={trend.specificityVerdict}
+        />
 
         {trend.description && (
           <p className="text-sm text-muted-foreground mt-3 leading-relaxed">{trend.description}</p>
@@ -393,14 +510,20 @@ export default function TrendDetailPage() {
                             {ev.excerpt}
                           </p>
                         )}
-                        {ev.engagementScore != null && (
-                          <p className="text-xs text-muted-foreground mt-1.5">
-                            Engagement:{" "}
-                            <span className="font-medium text-foreground">
-                              {formatEngagement(ev.engagementScore)}
-                            </span>
-                          </p>
-                        )}
+                        {(() => {
+                          const metrics = evidenceMetrics(ev);
+                          if (metrics.length === 0) return null;
+                          return (
+                            <p className="text-xs text-muted-foreground mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                              {metrics.map((m) => (
+                                <span key={m.label}>
+                                  <span className="font-medium text-foreground">{m.value}</span>{" "}
+                                  {m.label}
+                                </span>
+                              ))}
+                            </p>
+                          );
+                        })()}
                       </div>
                       {ev.url && (
                         <Button

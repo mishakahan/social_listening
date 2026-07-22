@@ -1,4 +1,5 @@
 import { logger } from "../lib/logger.js";
+import { withDbRetry } from "./db-retry.js";
 import * as storage from "../storage/index.js";
 import { db } from "@workspace/db";
 import { tpRawSignals, tpSignalEntities, tpEntities } from "@workspace/db";
@@ -100,13 +101,13 @@ interface BucketAccumulator {
 export async function runTimeseriesAggregation(
   companyId: number,
   windowDays = 90
-): Promise<{ bucketsWritten: number }> {
+): Promise<{ bucketsWritten: number; bucketsFailed: number }> {
   const since = daysAgo(windowDays);
   const signals = await fetchSignalsForAggregation(companyId, since);
 
   if (signals.length === 0) {
     logger.info({ companyId }, "No signals for timeseries aggregation");
-    return { bucketsWritten: 0 };
+    return { bucketsWritten: 0, bucketsFailed: 0 };
   }
 
   // Group by (entityId, platform, geography, bucketDate)
@@ -130,6 +131,7 @@ export async function runTimeseriesAggregation(
   const entityCompanyMap = new Map(entities.map((e) => [e.id, e.companyId]));
 
   let bucketsWritten = 0;
+  let bucketsFailed = 0;
 
   for (const [key, acc] of buckets) {
     const [entityIdStr, platform, geography, bucketDate] = key.split("|");
@@ -149,14 +151,24 @@ export async function runTimeseriesAggregation(
       backfillDerived: acc.backfillDerived,
     };
 
+    // Retry before giving up: a Neon connection drop mid-run used to lose the
+    // bucket outright. A lost bucket is invisible downstream (the state machine
+    // just sees a smaller series) so it must not pass quietly.
     try {
-      await storage.upsertEntityTimeseries(data);
+      await withDbRetry("upsertEntityTimeseries", () => storage.upsertEntityTimeseries(data));
       bucketsWritten++;
     } catch (err) {
+      bucketsFailed++;
       logger.warn({ err, entityId, platform, geography, bucketDate }, "Failed to upsert timeseries bucket");
     }
   }
 
-  logger.info({ companyId, bucketsWritten, signalCount: signals.length }, "Timeseries aggregation complete");
-  return { bucketsWritten };
+  if (bucketsFailed > 0) {
+    logger.error(
+      { companyId, bucketsWritten, bucketsFailed },
+      "Timeseries aggregation INCOMPLETE — buckets lost after retries; verdicts computed on this data will be understated"
+    );
+  }
+  logger.info({ companyId, bucketsWritten, bucketsFailed, signalCount: signals.length }, "Timeseries aggregation complete");
+  return { bucketsWritten, bucketsFailed };
 }

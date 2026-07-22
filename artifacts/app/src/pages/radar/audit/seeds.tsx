@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useState } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -50,18 +51,19 @@ interface SeedCandidates {
   createdAt: string;
 }
 
-async function fetchSeedCandidates(): Promise<SeedCandidates | null> {
-  const res = await fetch("/api/pipeline/companies/1/seed-candidates");
+async function fetchSeedCandidates(companyId: number): Promise<SeedCandidates | null> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/seed-candidates`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 async function patchSeedCandidate(
+  companyId: number,
   candidateId: number,
   payload: SeedItem[]
 ): Promise<SeedCandidates> {
-  const res = await fetch(`/api/pipeline/companies/1/seed-candidates/${candidateId}`, {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/seed-candidates/${candidateId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ payload }),
@@ -70,8 +72,8 @@ async function patchSeedCandidate(
   return res.json();
 }
 
-async function commitSeeds(candidateId: number): Promise<void> {
-  const res = await fetch("/api/pipeline/companies/1/seeds/commit", {
+async function commitSeeds(companyId: number, candidateId: number): Promise<void> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/seeds/commit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidateId }),
@@ -257,12 +259,13 @@ function LoadingSkeleton() {
 export default function SeedsAuditPage() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [localItems, setLocalItems] = useState<SeedItem[] | null>(null);
   const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set());
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["seed-candidates"],
-    queryFn: fetchSeedCandidates,
+    queryKey: ["seed-candidates", companyId],
+    queryFn: () => fetchSeedCandidates(companyId),
     refetchOnWindowFocus: false,
   });
 
@@ -270,9 +273,9 @@ export default function SeedsAuditPage() {
   const candidateId = data?.id ?? 0;
 
   const patchMutation = useMutation({
-    mutationFn: (updated: SeedItem[]) => patchSeedCandidate(candidateId, updated),
+    mutationFn: (updated: SeedItem[]) => patchSeedCandidate(companyId, candidateId, updated),
     onSuccess: (updated) => {
-      queryClient.setQueryData(["seed-candidates"], updated);
+      queryClient.setQueryData(["seed-candidates", companyId], updated);
       toast.success("Saved");
     },
     onError: (err: Error) => {
@@ -281,7 +284,7 @@ export default function SeedsAuditPage() {
   });
 
   const commitMutation = useMutation({
-    mutationFn: () => commitSeeds(candidateId),
+    mutationFn: () => commitSeeds(companyId, candidateId),
     onSuccess: () => {
       toast.success("Seeds committed!");
       navigate("/radar/audit/queries");

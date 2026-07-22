@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The BOX — Trend Confirmation Pipeline</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --ink:#1c2430; --muted:#5b6675; --line:#c9d2de;
+    --card:#ffffff; --up:#eef2f7; --up-br:#d3dce7; --rail:#b8c4d3;
+    --gate:#8a5a2b; --gate-bg:#fbf1e6; --gate-br:#e3c39a;
+    --pass:#1f9d55; --pass-bg:#e9f7ef; --pass-br:#b7e3c8;
+    --hold:#6b7686; --hold-bg:#eceef1; --hold-br:#d3d8df;
+    --gold:#a67c00; --gold-bg:#fbf6e6; --gold-br:#e7d79a;
+    --new:#b5701f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:30px 30px 40px}
+  header h1{font-size:25px;font-weight:800;letter-spacing:-.02em;margin:0 0 6px}
+  header p{font-size:14px;color:var(--muted);margin:0;max-width:820px;line-height:1.5}
+  .legend{font-size:12px;color:var(--new);margin-top:10px;font-weight:600}
+  .legend b{color:var(--new)}
+
+  .cluster{display:grid;grid-template-columns:172px 1fr;gap:16px;background:var(--card);
+    border:1px solid var(--up-br);border-radius:14px;padding:15px 18px;margin-top:14px}
+  .cluster .side{border-right:1px solid var(--line);padding-right:14px}
+  .cluster .side .rng{font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.05em}
+  .cluster .side .nm{font-size:16px;font-weight:800;line-height:1.15;margin-top:3px}
+  .cluster ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+  .cluster li{font-size:13px;line-height:1.4;color:var(--ink);padding-left:16px;position:relative}
+  .cluster li::before{content:"›";position:absolute;left:2px;color:var(--rail);font-weight:800}
+  .cluster li b{font-weight:800}
+  .cluster li .m{color:var(--muted)}
+  .new::before{content:"◆"!important;color:var(--new)!important;font-size:9px!important;top:4px!important}
+  .tag{display:inline-block;font-size:10.5px;font-weight:800;color:#fff;background:var(--new);
+    border-radius:5px;padding:1px 6px;margin-left:6px;vertical-align:1px;letter-spacing:.03em}
+
+  .platnote{margin-top:9px;background:var(--up);border:1px dashed var(--up-br);border-radius:9px;
+    padding:8px 11px;font-size:12px;color:var(--muted);line-height:1.4}
+  .platnote b{color:var(--ink)}
+
+  .arrow{display:flex;justify-content:center;margin:9px 0 -2px;color:var(--muted);font-size:18px}
+
+  .gate{background:var(--gate-bg);border:1.5px solid var(--gate-br);border-radius:16px;padding:16px 18px 18px;margin-top:14px}
+  .gate .ghead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px}
+  .gate .gtag{font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;
+    color:#fff;background:var(--gate);padding:3px 8px;border-radius:6px}
+  .gate .gt{font-size:16px;font-weight:800}
+  .gate .gsub{font-size:12px;color:var(--muted);margin:3px 0 13px;line-height:1.45}
+  .checks{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .check{background:var(--card);border:1px solid var(--gate-br);border-radius:12px;padding:12px 13px 13px}
+  .check .cq{font-size:14px;font-weight:800;margin-bottom:3px}
+  .check .cd{font-size:11.5px;color:var(--muted);line-height:1.4}
+  .check .ck{font-size:10.5px;color:var(--gate);font-weight:800;margin-top:8px;text-transform:uppercase;letter-spacing:.03em}
+
+  .outs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+  .out{border-radius:14px;padding:14px 16px;border:1.5px solid}
+  .out.pass{background:var(--pass-bg);border-color:var(--pass-br)}
+  .out.hold{background:var(--hold-bg);border-color:var(--hold-br)}
+  .out .oh{display:flex;align-items:center;gap:9px;margin-bottom:4px}
+  .out .dot{width:11px;height:11px;border-radius:50%}
+  .out.pass .dot{background:var(--pass)} .out.hold .dot{background:var(--hold)}
+  .out .ot{font-size:15px;font-weight:800}
+  .out.pass .ot{color:var(--pass)} .out.hold .ot{color:var(--hold)}
+  .out .od{font-size:12.5px;color:var(--muted);line-height:1.45}
+
+  .proof{margin-top:20px;background:var(--gold-bg);border:1.5px solid var(--gold-br);border-radius:14px;
+    padding:15px 20px;display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+  .proof .plabel{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--gold)}
+  .proof .pmain{font-size:13.5px;font-weight:700;line-height:1.4;flex:1;min-width:260px}
+  .proof .pstats{display:flex;gap:24px}
+  .proof .stat .v{font-size:21px;font-weight:800;line-height:1;color:var(--pass)}
+  .proof .stat .k{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.3}
+
+  @media (max-width:760px){
+    .cluster{grid-template-columns:1fr} .cluster .side{border-right:0;border-bottom:1px solid var(--line);padding:0 0 10px}
+    .checks{grid-template-columns:1fr} .outs{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>The BOX — how a social post becomes a trusted trend</h1>
+    <p>Everything flows top to bottom. Stages 1–6 get clean, counted data; stage 7 — the gate — is the
+       honest check that decides what’s real. The hard part isn’t collecting posts; it’s that last step.</p>
+    <div class="legend"><b>◆ / tag</b> = built or fixed in this engagement.</div>
+  </header>
+
+  <div class="cluster">
+    <div class="side"><div class="rng">STAGES 1–2</div><div class="nm">Scout &amp; scrape</div></div>
+    <div>
+      <ul>
+        <li><b>Company brief → search terms.</b> <span class="m">An LLM turns the brief into topics + keywords to watch.</span></li>
+        <li><b>Apify actors fan out per query</b> <span class="m">— Instagram · TikTok · Reddit · X · Google Trends · YouTube</span><span class="tag">YouTube added</span></li>
+        <li class="new"><b>Deeper history.</b> <span class="m">YouTube reaches years back and pulled the most data of any source.</span></li>
+      </ul>
+      <div class="platnote"><b>Platform history:</b> Instagram &amp; Reddit are recent-only. TikTok, YouTube &amp; Google Trends go back in time — so we can actually see a <b>rise</b>, not just a snapshot.</div>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="cluster">
+    <div class="side"><div class="rng">STAGES 3–5</div><div class="nm">Clean, extract &amp; count</div></div>
+    <div>
+      <ul>
+        <li><b>Ingestion.</b> <span class="m">Normalize every platform’s messy data into one signal shape.</span></li>
+        <li><b>Entity extraction (LLM).</b> <span class="m">Pull out the <em>things</em> people talk about — an ingredient, a brand.</span></li>
+        <li class="new"><b>Canonicalization.</b> <span class="m">Merge variants (gummy/gummies, Athletic Brewing / Co) so signal doesn’t split — while keeping “gummy bears” distinct.</span></li>
+        <li class="new"><b>Timeseries.</b> <span class="m">Daily buckets per entity — mentions + unique authors — <b>zero-filled</b> so “quiet then rising” is visible.</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="cluster">
+    <div class="side"><div class="rng">STAGE 6</div><div class="nm">Flag rising</div></div>
+    <div>
+      <ul>
+        <li><b>Growth state machine</b> <span class="m">flags candidates whose mentions are picking up (emerging / confirmed / peaking / resurgent).</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="gate">
+    <div class="ghead">
+      <span class="gtag">Stage 7 · The Gate</span>
+      <span class="gt">Is this actually a trend, or just noise?</span>
+    </div>
+    <div class="gsub">A flagged “rising” thing must clear all three checks before it reaches the radar. <b>This is the piece built in this engagement.</b></div>
+    <div class="checks">
+      <div class="check"><div class="cq">1 · Rising?</div>
+        <div class="cd">Compared against its <em>own</em> history — quiet before, busy now. Not just steady-and-popular.</div>
+        <div class="ck">Significance test</div></div>
+      <div class="check"><div class="cq">2 · Broad?</div>
+        <div class="cd">Many different people across several platforms — not one loud account posting ten times.</div>
+        <div class="ck">Source-breadth test</div></div>
+      <div class="check"><div class="cq">3 · Specific?</div>
+        <div class="cd">A real trackable trend, not a generic word. “Coffee”, “salt” get held; “creatine”, “ashwagandha” pass.</div>
+        <div class="ck">Specificity check</div></div>
+    </div>
+  </div>
+
+  <div class="outs">
+    <div class="out pass">
+      <div class="oh"><span class="dot"></span><span class="ot">PASS → Radar</span></div>
+      <div class="od">Cleared all three. Surfaces as a trend, with the real posts behind it one click away.</div>
+    </div>
+    <div class="out hold">
+      <div class="oh"><span class="dot"></span><span class="ot">HOLD → kept off the radar</span></div>
+      <div class="od">Failed a check. Held back — a valid, honest answer. A confirm means something <em>because</em> holds are the norm.</div>
+    </div>
+  </div>
+
+  <div class="proof">
+    <div>
+      <div class="plabel">Backtest · proven on real data</div>
+      <div class="pmain">Tested against your Exploding Topics benchmark: confirmed the real trends, rejected the flat everyday noise.</div>
+    </div>
+    <div class="pstats">
+      <div class="stat"><div class="v">2</div><div class="k">real trends confirmed<br>(Non-Homog. Milk p=0.014 · JuneShine p=0.02)</div></div>
+      <div class="stat"><div class="v">10/10</div><div class="k">noise terms<br>correctly held</div></div>
+      <div class="stat"><div class="v">0</div><div class="k">false<br>positives</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

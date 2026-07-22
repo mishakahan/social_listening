@@ -326,7 +326,16 @@ export const tpEntities = pgTable("tp_entities", {
   deletedByUserId: integer("deleted_by_user_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+  },
+  // One entity per label per company. Deliberately NOT keyed on entity_type:
+  // the type is assigned per batch by the LLM and is not stable — the same word
+  // comes back as ingredient, brand, format or flavour depending on the batch —
+  // so including it in the key lets one real trend exist as several rows.
+  // Measured before this index: 991 duplicate groups hiding ~3,046 mentions from
+  // the gate; "gummy" alone existed six times and read as 55 mentions instead of
+  // 140. For trend detection the label IS the trend, so the label is the key.
+  (t) => [uniqueIndex("tp_entities_company_label_idx").on(t.companyId, t.canonicalLabel)]
+);
 
 // tp_category_attributes (Task #4) — controlled vocabulary of descriptors
 // (adjectives, attribute terms) per category. The LLM attribute-extraction
@@ -579,6 +588,24 @@ export const tpEntityState = pgTable(
     .notNull()
     .$type<Record<string, string>>()
     .default({}),
+  // Confirmation gate verdict (fourth-stage check). Nullable + additive:
+  // null means the gate has not evaluated this state yet, or is disabled.
+  // decision "hold" means the candidate did not surface to the radar.
+  confirmationVerdict: jsonb("confirmation_verdict").$type<{
+    decision: "pass" | "hold";
+    reasons: string[];
+    significanceP: number;
+    entropyBits: number;
+    evaluatedAt: string;
+  }>(),
+  // Cached specificity judgment (LLM) so it's not re-judged every run. Keyed
+  // implicitly by this entity-state row; cleared if the entity's label changes.
+  specificityVerdict: jsonb("specificity_verdict").$type<{
+    specific: boolean;
+    reason: string;
+    label: string;
+    judgedAt: string;
+  }>(),
   computedAt: timestamp("computed_at").defaultNow().notNull(),
   },
   (t) => [uniqueIndex("tp_entity_state_geo_idx").on(t.entityId, t.geography)]

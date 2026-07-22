@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useCompanyId } from "@/hooks/use-company";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -140,14 +141,15 @@ function slugifyCategoryLabel(input: string): string {
     .slice(0, 60);
 }
 
-async function fetchCategoriesApi(): Promise<CategoryVocabUI[]> {
-  const res = await fetch("/api/pipeline/companies/1/categories");
+async function fetchCategoriesApi(companyId: number): Promise<CategoryVocabUI[]> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/categories`);
   if (!res.ok) throw new Error(await res.text());
   const data = (await res.json()) as { categories: CategoryVocabUI[] };
   return data.categories ?? [];
 }
 
 async function patchCategoriesApi(
+  companyId: number,
   categories: CategoryVocabUI[]
 ): Promise<CategoryVocabUI[]> {
   const payload = {
@@ -160,7 +162,7 @@ async function patchCategoriesApi(
       })),
     })),
   };
-  const res = await fetch("/api/pipeline/companies/1/categories", {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/categories`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -172,9 +174,10 @@ async function patchCategoriesApi(
 
 function CategoriesEditor() {
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const { data, isLoading, error } = useQuery({
-    queryKey: ["categories"],
-    queryFn: fetchCategoriesApi,
+    queryKey: ["categories", companyId],
+    queryFn: () => fetchCategoriesApi(companyId),
   });
 
   const [local, setLocal] = useState<CategoryVocabUI[] | null>(null);
@@ -192,13 +195,13 @@ function CategoriesEditor() {
 
   const mutation = useMutation({
     mutationFn: async (args: { seq: number; payload: CategoryVocabUI[] }) => {
-      const saved = await patchCategoriesApi(args.payload);
+      const saved = await patchCategoriesApi(companyId, args.payload);
       return { seq: args.seq, saved };
     },
     onSuccess: ({ seq, saved }) => {
       if (seq < latestAckedRef.current) return; // stale response, ignore
       latestAckedRef.current = seq;
-      queryClient.setQueryData(["categories"], saved);
+      queryClient.setQueryData(["categories", companyId], saved);
       // Only reconcile local state if no newer edits are pending; otherwise
       // the user's in-flight edits would be reverted.
       if (seq === reqSeqRef.current) setLocal(saved);
@@ -457,14 +460,14 @@ function slugifyTypeId(input: string): string {
     .slice(0, 40);
 }
 
-async function fetchConfig(): Promise<PipelineConfig> {
-  const res = await fetch("/api/pipeline/companies/1/pipeline-config");
+async function fetchConfig(companyId: number): Promise<PipelineConfig> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/pipeline-config`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-async function patchConfig(patch: Partial<PipelineConfig>): Promise<PipelineConfig> {
-  const res = await fetch("/api/pipeline/companies/1/pipeline-config", {
+async function patchConfig(companyId: number, patch: Partial<PipelineConfig>): Promise<PipelineConfig> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/pipeline-config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1016,12 +1019,13 @@ function EntityTypesEditor({ types, onSave, isSaving, ready }: EntityTypesEditor
 
 function FlushDataCard() {
   const queryClient = useQueryClient();
+  const companyId = useCompanyId();
   const [confirmText, setConfirmText] = useState("");
   const [open, setOpen] = useState(false);
 
   const flushMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/pipeline/companies/1/flush-data", {
+      const res = await fetch(`/api/pipeline/companies/${companyId}/flush-data`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: "FLUSH" }),
@@ -1151,9 +1155,10 @@ export default function ControlPanelPage() {
 }
 
 function ControlPanelInner() {
+  const companyId = useCompanyId();
   const { data: config, isLoading, error } = useQuery({
-    queryKey: ["pipeline-config"],
-    queryFn: fetchConfig,
+    queryKey: ["pipeline-config", companyId],
+    queryFn: () => fetchConfig(companyId),
     refetchOnWindowFocus: false,
   });
 
@@ -1165,14 +1170,14 @@ function ControlPanelInner() {
 
   const queryClient = useQueryClient();
   const saveMutation = useMutation({
-    mutationFn: patchConfig,
+    mutationFn: (patch: Partial<PipelineConfig>) => patchConfig(companyId, patch),
     onSuccess: (updated) => {
       setLocal(updated);
       // Keep the react-query cache in sync so navigating away and back
       // within the configured staleTime doesn't re-hydrate `local` from a
       // stale snapshot (which would silently hide just-saved fields like
       // coreVocabulary, authorAllowlist, etc.).
-      queryClient.setQueryData(["pipeline-config"], updated);
+      queryClient.setQueryData(["pipeline-config", companyId], updated);
     },
     onError: (err: Error) => {
       toast.error(err.message || "Failed to save");

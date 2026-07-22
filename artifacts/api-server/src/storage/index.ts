@@ -1,4 +1,5 @@
 import { db } from "@workspace/db";
+import { canonicalizeLabel } from "../services/entity-canonical.js";
 import {
   companies,
   users,
@@ -1041,41 +1042,39 @@ export async function upsertEntity(
   entityType: string,
   alias?: string
 ): Promise<TpEntity> {
-  // Try to find existing entity
-  const existing = await db
-    .select()
-    .from(tpEntities)
-    .where(
-      and(
-        eq(tpEntities.companyId, companyId),
-        eq(tpEntities.canonicalLabel, canonicalLabel),
-        eq(tpEntities.entityType, entityType)
-      )
-    )
-    .limit(1);
-
-  if (existing.length > 0) {
-    const entity = existing[0]!;
-    // If alias provided and not already in aliases array, add it
-    if (alias && !entity.aliases.includes(alias)) {
-      const updatedRows = await db
-        .update(tpEntities)
-        .set({
-          aliases: sql`${tpEntities.aliases} || ${JSON.stringify([alias])}::jsonb`,
-          updatedAt: new Date(),
-        })
-        .where(eq(tpEntities.id, entity.id))
-        .returning();
-      return updatedRows[0]!;
-    }
-    return entity;
-  }
-
-  // Insert new entity
-  const aliases = alias ? [alias] : [];
+  // Atomic, via the unique index on (company_id, canonical_label).
+  //
+  // This was previously select-then-insert, which is a race: two concurrent
+  // extraction batches meeting the same new label both saw nothing and both
+  // inserted, producing duplicate entities. That blocked any parallelism in
+  // extraction (the slowest stage), so the whole pipeline was pinned to one LLM
+  // call at a time.
+  //
+  // The lookup is keyed on the LABEL ONLY, not (label, type). entityType is
+  // assigned per batch by the LLM and wobbles — the same word comes back as
+  // ingredient, brand, format or flavour on different batches — so keying on it
+  // let one real trend accumulate as several rows, each with a fraction of the
+  // mentions, and the gate judged the fractions. An existing entity therefore
+  // keeps its original type and simply absorbs the mention; the label is the
+  // trend, and the type is only a tag.
+  const aliasesToAdd = alias && alias !== canonicalLabel ? [alias] : [];
   const rows = await db
     .insert(tpEntities)
-    .values({ companyId, canonicalLabel, entityType, aliases })
+    .values({ companyId, canonicalLabel, entityType, aliases: aliasesToAdd })
+    .onConflictDoUpdate({
+      target: [tpEntities.companyId, tpEntities.canonicalLabel],
+      // DO UPDATE rather than DO NOTHING: nothing returns no row, and callers
+      // need the entity id. Append the alias only when it is genuinely new, so
+      // repeated sightings do not grow the array without bound.
+      set: {
+        aliases: aliasesToAdd.length
+          ? sql`CASE WHEN ${tpEntities.aliases} @> ${JSON.stringify(aliasesToAdd)}::jsonb
+                     THEN ${tpEntities.aliases}
+                     ELSE ${tpEntities.aliases} || ${JSON.stringify(aliasesToAdd)}::jsonb END`
+          : sql`${tpEntities.aliases}`,
+        updatedAt: new Date(),
+      },
+    })
     .returning();
   return rows[0]!;
 }
@@ -1128,7 +1127,10 @@ export async function resolveSynonym(
   if (rows.length > 0) {
     return rows[0]!.canonicalLabel;
   }
-  return alias;
+  // No hand-curated synonym: fall back to automatic canonicalization so trivial
+  // variants (Gummies/Gummy) collapse without needing a manual table entry,
+  // while multi-word products (gummy bears) stay distinct.
+  return canonicalizeLabel(alias);
 }
 
 // ---------------------------------------------------------------------------
@@ -1866,9 +1868,29 @@ export interface TrendEvidence {
   url: string | null;
   publishedAt: string | null;
   engagementScore: number | null;
+  engagementLikes: number | null;
+  engagementViews: number | null;
+  engagementComments: number | null;
   platform: string;
   author: string | null;
   excerpt: string | null;
+}
+
+// The stored gate verdict + specificity judgment, surfaced verbatim so the
+// trend detail UI can show *why* an entity confirmed or was held.
+export interface TrendConfirmationVerdict {
+  decision: "pass" | "hold";
+  reasons: string[];
+  significanceP: number;
+  entropyBits: number;
+  evaluatedAt: string;
+}
+
+export interface TrendSpecificityVerdict {
+  specific: boolean;
+  reason: string;
+  label: string;
+  judgedAt: string;
 }
 
 export async function getTrendDetail(
@@ -1880,6 +1902,8 @@ export async function getTrendDetail(
       growthMomPct: number;
       volume7d: number;
       volume30d: number;
+      confirmationVerdict: TrendConfirmationVerdict | null;
+      specificityVerdict: TrendSpecificityVerdict | null;
     })
   | null
 > {
@@ -1931,6 +1955,8 @@ export async function getTrendDetail(
       updatedAt: ki.updatedAt.toISOString(),
       volume7d: 0,
       volume30d: 0,
+      confirmationVerdict: null,
+      specificityVerdict: null,
       evidence: [],
     };
   }
@@ -1962,6 +1988,9 @@ export async function getTrendDetail(
     url: r.sig.sourceUrl ?? null,
     publishedAt: r.sig.postedAt?.toISOString() ?? null,
     engagementScore: r.sig.engagementScore ?? null,
+    engagementLikes: r.sig.engagementLikes ?? null,
+    engagementViews: r.sig.engagementViews ?? null,
+    engagementComments: r.sig.engagementComments ?? null,
     platform: r.sig.platform,
     author: r.sig.authorHandle ?? null,
     excerpt: r.sig.text?.slice(0, 300) ?? null,
@@ -1992,6 +2021,8 @@ export async function getTrendDetail(
     updatedAt: ki.updatedAt.toISOString(),
     volume7d: es.volume7d,
     volume30d: es.volume30d,
+    confirmationVerdict: es.confirmationVerdict ?? null,
+    specificityVerdict: es.specificityVerdict ?? null,
     evidence,
   };
 }
