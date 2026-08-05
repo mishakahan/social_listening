@@ -396,9 +396,72 @@ HARD RULES:
       borrowings, not laziness: if a plain local phrase exists, that phrase wins.
 - Think taxonomy, not marketing.
 
-Languages needed: ${languages}
+Languages needed (EXACTLY these, no others — do not add a language beyond
+this list, and do not translate or rename a language: if asked for "es", the
+result's language field must be the literal string "es", never "Spanish",
+"es-MX" or any other spelling of it): ${languages}
 
 Return JSON: { results: [{ language: string, keywords: string[], hashtags: string[] }] }`;
+}
+
+// Fan-out review finding: buildFanoutPrompt's "Languages needed" line was
+// advisory only — nothing enforced it. Across 3-6 independent passes at
+// temperature 0.7 (deliberately high, see runFanoutPass), the model does not
+// reliably echo back the same language string it was given: one pass
+// returns "es", another "Spanish"; one seed's 8 fan-out passes for a single
+// requested language ("es") came back as "en", "es", "fr", "English",
+// "Spanish", "Portuguese", "French" — three languages that were never
+// requested at all, for a LATAM seed whose actual markets are Spanish/
+// Portuguese only. absorb() used to key its accumulation Map by that raw
+// string with no validation, so "es" and "Spanish" became two separate
+// buckets, each independently filled with a near-duplicate ~20-40 term set
+// — measured on a real 14-seed batch: 1,874 total keywords where 828 was
+// the previous like-for-like baseline, a 2.3x inflation with zero benefit
+// (en/English generate the exact same searches; fr/it aren't spoken in any
+// of this radar's LATAM markets). At ~$0.10/keyword on TikTok, that is real,
+// silent budget waste on every future scrape. Prompt wording alone did not
+// fix this reliably (see the note above): this needed the same code-level
+// guarantee the file already uses for hashtag format and jargon-compound
+// detection — never trust the model to self-police something mechanical.
+const LANGUAGE_ALIASES: Record<string, string> = {
+  spanish: "es",
+  español: "es",
+  castellano: "es",
+  portuguese: "pt",
+  português: "pt",
+  english: "en",
+  french: "fr",
+  français: "fr",
+  italian: "it",
+  italiano: "it",
+  german: "de",
+  deutsch: "de",
+  chinese: "zh-cn",
+  mandarin: "zh-cn",
+};
+
+// Maps whatever language string a fan-out pass returned back to the exact
+// requested language code, so "es" and "Spanish" collapse into one bucket
+// instead of two, and a language nobody asked for (fr, it, en for a
+// Spanish/Portuguese-only seed) is dropped rather than silently unioned in.
+// Returns null — meaning "drop this language's results" — for anything that
+// doesn't match a requested language, even loosely (a regional variant like
+// "pt-BR" still matches a requested "pt").
+function normalizeLanguageTag(raw: string, requested: string[]): string | null {
+  const cleaned = raw.trim().toLowerCase();
+  const exact = requested.find((r) => r.toLowerCase() === cleaned);
+  if (exact) return exact;
+  const aliasCode = LANGUAGE_ALIASES[cleaned];
+  if (aliasCode) {
+    const aliasMatch = requested.find((r) => {
+      const rl = r.toLowerCase();
+      return rl === aliasCode || rl.startsWith(`${aliasCode}-`);
+    });
+    if (aliasMatch) return aliasMatch;
+  }
+  const base = cleaned.split(/[-_]/)[0];
+  const baseMatch = requested.find((r) => r.toLowerCase().split(/[-_]/)[0] === base);
+  return baseMatch ?? null;
 }
 
 type ScoutQuerySet = { language: string; keywords: string[]; hashtags: string[] };
@@ -424,7 +487,8 @@ export async function generateScoutQueriesForSeed(
   seed: SeedCandidateItem,
   ctx: CompanyContext
 ): Promise<ScoutQuerySet[]> {
-  const languages = seed.seedQueries.map((q) => q.language).join(", ");
+  const requestedLanguages = seed.seedQueries.map((q) => q.language);
+  const languages = requestedLanguages.join(", ");
   const prompt = buildFanoutPrompt(seed, ctx, languages);
 
   // language -> canonical(term) -> first-seen original casing
@@ -492,9 +556,22 @@ export async function generateScoutQueriesForSeed(
     let added = 0;
     for (const r of results) {
       if (!r?.language) continue;
+      // Collapse the model's raw echo ("es", "Spanish", "es-MX", ...) onto
+      // the exact requested language code, and DROP results for a language
+      // that was never requested at all (fr/it/en fan-out on a Spanish/
+      // Portuguese-only LATAM seed). See the comment above
+      // normalizeLanguageTag for the measured cost of not doing this.
+      const canonicalLang = normalizeLanguageTag(r.language, requestedLanguages);
+      if (!canonicalLang) {
+        logger.warn(
+          { label: seed.label, returned: r.language, requested: requestedLanguages },
+          "Fan-out pass returned an unrequested language — dropped"
+        );
+        continue;
+      }
       seen += Array.isArray(r.keywords) ? r.keywords.length : 0;
-      added += absorb(keywords, r.language, r.keywords);
-      absorb(hashtags, r.language, r.hashtags);
+      added += absorb(keywords, canonicalLang, r.keywords);
+      absorb(hashtags, canonicalLang, r.hashtags);
     }
 
     // Stop when the pass stopped paying for itself, but only once we are past

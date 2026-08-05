@@ -76,7 +76,11 @@
 //   COMPANY_ID=2 TRIALS=8 pnpm exec tsx --env-file=../../.env src/scripts/eval-seed-breadth.ts
 //   SKIP_GENERATION=1 pnpm exec tsx --env-file=../../.env src/scripts/eval-seed-breadth.ts
 
-import { generateSeedCandidates, type WatchTopic } from "../services/radar-setup-bot.js";
+import {
+  generateSeedCandidates,
+  generateScoutQueriesForSeed,
+  type WatchTopic,
+} from "../services/radar-setup-bot.js";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import OpenAI from "openai";
@@ -86,6 +90,14 @@ const TRIALS = Number(process.env.TRIALS ?? 8);
 const COMPANY_ID = Number(process.env.COMPANY_ID ?? 2);
 const USER_ID = Number(process.env.USER_ID ?? 1);
 const SKIP_GENERATION = process.env.SKIP_GENERATION === "1";
+// FIX ROUND 5, Fix 3: run ONLY the like-for-like keyword comparison (see
+// runLikeForLikeKeywordComparison below) instead of the label-focused main
+// flow. Separate mode, like SKIP_GENERATION, because expanding seeds
+// through the real fan-out (generateScoutQueriesForSeed) is materially more
+// expensive per seed than the raw seedQueries[] keywords the main flow
+// uses — bundling it into every run would make the common case slow for no
+// reason.
+const LIKE_FOR_LIKE = process.env.LIKE_FOR_LIKE === "1";
 // Items per judge call. Judging is a fixed classification task, not
 // creative generation, so batching many items per call is safe and keeps
 // the OpenAI call count (and therefore wall time) manageable.
@@ -219,42 +231,79 @@ async function runPool<T>(jobs: (() => Promise<T>)[], limit: number): Promise<T[
 
 async function judgeChunk(chunk: JudgeItem[]): Promise<JudgeResult[]> {
   if (chunk.length === 0) return [];
+  // FIX ROUND 5, Fix 1: this prompt used to ask a TAXONOMY question ("is
+  // this a category or an instance?"), which is a grammar question and it
+  // is why "pollo" (chicken — a real, broad category with many cuts,
+  // preparations, and dishes) kept getting misfiled as an instance, and why
+  // "Avocado sauces MX" — the single narrowest seed in the entire measured
+  // dataset — got called "category" instead of the instance it empirically
+  // is. The question that actually matters, now that real scraped-entity
+  // breadth exists to check against, is the EMPIRICAL one below. The
+  // anchors are real measured data from the OLD, already-scraped seeds
+  // (see fix round 3's ground-truth join), not invented examples.
   const prompt = `You are judging short phrases used as social-listening search terms /
-topic labels for a food-and-drink trend radar. Classify each item into
-EXACTLY ONE of three buckets:
+topic labels for a food-and-drink trend radar. For each item, answer this
+question: if this term were searched on social media, would it return a
+BROAD SLICE of conversation in which many different specific things get
+mentioned — or would it mostly return posts about ONE specific thing?
 
-1. "category" — a broad CATEGORY of food/drink conversation, with many
-   different members, a reasonable thing to search broadly for trends:
-   "chocolate", "condiments", "sauces", "coffee formats", "breakfast
-   burritos" (a broad food format with many fillings/styles), "food delivery
-   apps", "protein sources", "café colombiano" (Colombian coffee as a
-   broad category of coffee, not one specific drink).
+This is an empirical question about what a search would surface, not a
+grammar question about whether the phrase sounds general or specific. Judge
+by what real measurement shows, using these ANCHORS — real seeds from this
+exact radar, with the number of distinct things (entities) their actual
+scraped posts surfaced:
 
-2. "instance" — ONE SPECIFIC product, dish, flavour, or brand that is
-   itself just one example that could appear inside a broader category:
-   "pistachio cream" (an instance of chocolate/spread flavours),
-   "chimichurri" (an instance of sauces), "spicy mayo" (an instance of
-   condiments), "guacamole" (an instance of dips), "oat milk latte" (an
-   instance of coffee formats), "ketchup", "maionese" (mayonnaise as one
-   specific condiment product, not the category "condiments").
+  NARROW (searching this mostly returns posts about one thing) — "instance":
+    "Avocado sauces MX" (245 distinct things found — the narrowest seed measured)
+    "Spicy mayo trends BR" (384 distinct things found)
+    "Chimichurri trends AR" (455 distinct things found)
 
-3. "not-a-food-term" — the phrase is NOT a food or drink noun at all: it is
-   meta/analyst language about the food (trends, tendencias, tendências,
-   preferences, preferencias, behaviours, consumo, options, opciones,
-   novidades, popular, habits, hábitos, consumption, insights,
-   "comportamiento de pedido"), or a BARE geography with no food word
+  BROAD (searching this returns a wide spread of different things) — "category":
+    "Food delivery trends MX" (856 distinct things found — the broadest seed measured)
+    "Savory snack flavors CL" (816 distinct things found)
+    "Plant-based protein trends PE" (806 distinct things found)
+
+Classify each item into EXACTLY ONE of three buckets:
+
+1. "category" — searching this would return a BROAD slice of conversation:
+   many different specific products/dishes/flavours would come up. Like the
+   BROAD anchors above: "chocolate", "condiments", "sauces", "coffee
+   formats", "pollo" (chicken — many cuts, dishes, and preparations get
+   posted under it), "breakfast burritos" (many different fillings/styles).
+
+2. "instance" — searching this would mostly return posts about ONE
+   specific thing, even if that thing has minor variations. Like the NARROW
+   anchors above: "pistachio cream", "chimichurri", "spicy mayo",
+   "guacamole", "oat milk latte", "ketchup", "maionese" (mayonnaise: one
+   specific condiment product, not the broad category "condiments").
+
+3. "not-a-food-term" — the phrase is DEAD-END analyst language that would
+   not meaningfully retrieve conversation about this topic AT ALL, in any
+   language or domain: pure meta/analysis vocabulary with no topic content
+   of its own (trends, tendencias, tendências, preferences, preferencias,
+   behaviours, consumo, options, opciones, novidades, popular, habits,
+   hábitos, consumption, insights), or a BARE geography with no other word
    attached (a country or city name alone: "Colombia", "Brasil", "Perú",
-   "México" by itself). If a geography is inside a real food phrase
-   ("café colombiano", "comida mexicana"), that is category or instance, not
-   this bucket — only a geography with NO food word at all lands here.
+   "México" by itself).
+   Do NOT use this bucket for a real operational/topic word just because it
+   isn't literally "food" — "entrega", "delivery", "pedidos", "aplicativo de
+   entrega" are genuine, on-topic search terms for a food-delivery-apps or
+   ordering-behaviour seed (real posts exist under them, about a real part
+   of this radar's scope) and must be judged as category or instance like
+   any other topic word, using the same broad-vs-narrow question above. This
+   bucket is only for words that retrieve nothing usable about ANY topic —
+   not for on-topic words that merely aren't a food noun.
+   If a geography is inside a real phrase ("café colombiano", "comida
+   mexicana"), that is category or instance, not this bucket — only a
+   geography with NOTHING else attached lands here.
 
 Some phrases carry a wrapper suffix — a 2-letter country/geography code
-appended after a real food phrase, or a word like "trends"/"formats"/
-"usage" appended to make a topic label. Judge the underlying food/topic
-noun phrase, ignoring a trailing country code: "Chimichurri trends AR" is
-judged on "chimichurri" (instance). "Coffee formats AR" is judged on
-"coffee formats" (category — "formats" here names a class of variation,
-not one variant, so it stays a category even with the suffix).
+appended after a real phrase, or a word like "trends"/"formats"/"usage"
+appended to make a topic label. Judge the underlying phrase, ignoring a
+trailing country code: "Chimichurri trends AR" is judged on "chimichurri"
+(instance, per the NARROW anchor above). "Coffee formats AR" is judged on
+"coffee formats" (category — "formats" here names a class of variation, not
+one variant, so it stays broad even with the suffix).
 
 For each item, decide "category", "instance", or "not-a-food-term", and
 give a one-sentence reason.
@@ -463,10 +512,104 @@ export function evaluateLabelInstanceGate(
 }
 
 // ---------------------------------------------------------------------------
+// FIX ROUND 5, Fix 3: like-for-like keyword comparison. Fix rounds 2-4's
+// keyword numbers compared OLD (post-fan-out, 36-80 keywords/topic, written
+// by generateScoutQueriesForSeed + filters) against NEW (the raw 5-8
+// seedQueries[] keywords straight out of generateSeedItems, before any
+// fan-out) — different pipeline stages, so that comparison could not show a
+// rise or a fall in either direction (documented and retracted in fix round
+// 4's report). This expands a freshly generated trial's seeds through the
+// SAME fan-out pipeline that produced the OLD committed keywords, so both
+// sides are the same stage.
+//
+// generateScoutQueriesForSeed itself makes NO database writes — confirmed
+// by reading its full implementation (radar-setup-bot.ts) and its only
+// other caller, scripts/regen-queries-fanout.ts, where persistence
+// (storage.createScoutQuery) is a separate step the caller does AFTER
+// getting the result back, gated behind `if (DRY_RUN) continue` — i.e. the
+// function returns data, persistence is the caller's choice. This script
+// never calls storage.createScoutQuery or any write path: the expanded
+// queries exist only in the newExpandedKeywordPairs array below, for the
+// duration of this process. No Apify call anywhere in this path either —
+// generateScoutQueriesForSeed only calls OpenAI (the fan-out passes plus
+// the keyword/hashtag filters), matching the constraint that this fix
+// needs an LLM call, not a scrape.
+//
+// Only ONE trial is generated here (not the main flow's 8) because
+// expanding every seed through 3-6 fan-out passes plus per-language filters
+// is materially more expensive per seed than the main flow's raw-keyword
+// sampling; one real trial is enough to prove the like-for-like comparison
+// is achievable and to report real, honest numbers, at a bounded cost.
+async function runLikeForLikeKeywordComparison(): Promise<void> {
+  console.log(`\n=== FIX 3: like-for-like keyword comparison (OLD post-fan-out vs NEW post-fan-out) ===`);
+  console.log(
+    `Expands ONE freshly generated trial's seeds through generateScoutQueriesForSeed — the same\n` +
+      `fan-out pipeline that produced the OLD committed keywords — so both sides are the same\n` +
+      `pipeline stage. In-memory only: no DB writes, no Apify call. See the comment above this\n` +
+      `function for how that was confirmed.\n`
+  );
+
+  const { keywordPairs: oldKeywordPairs } = await fetchOldBaseline(COMPANY_ID);
+  const { brief, watchTopics } = await fetchGenerationInput(COMPANY_ID);
+
+  console.log(`Generating one fresh trial of seeds...`);
+  const { companyContext, seedItems } = await generateSeedCandidates(brief, COMPANY_ID, USER_ID, watchTopics);
+  console.log(`${seedItems.length} seeds generated. Expanding each through generateScoutQueriesForSeed (no DB writes, no Apify)...\n`);
+
+  const newExpandedKeywordPairs: { label: string; keyword: string }[] = [];
+  for (const seed of seedItems) {
+    console.log(`  expanding "${seed.label}"...`);
+    const expanded = await generateScoutQueriesForSeed(seed, companyContext);
+    let total = 0;
+    for (const e of expanded) {
+      total += e.keywords.length;
+      for (const k of e.keywords) newExpandedKeywordPairs.push({ label: seed.label, keyword: k });
+    }
+    console.log(`    -> ${total} expanded keywords across ${expanded.length} language(s)`);
+  }
+
+  console.log(
+    `\nTotal: OLD ${oldKeywordPairs.length} post-fan-out keywords (14 committed topics) vs ` +
+      `NEW ${newExpandedKeywordPairs.length} post-fan-out keywords (${seedItems.length} freshly generated topics, 1 trial) ` +
+      `— same pipeline stage on both sides.\n`
+  );
+
+  const [oldVerdicts, newVerdicts] = await Promise.all([
+    judgeAll(oldKeywordPairs.map((p) => ({ text: p.keyword, source: `old-kw(expanded) of "${p.label}"` }))),
+    judgeAll(newExpandedKeywordPairs.map((p) => ({ text: p.keyword, source: `new-kw(expanded) of "${p.label}"` }))),
+  ]);
+
+  dumpVerdicts("OLD keywords (post-fan-out, like-for-like)", oldVerdicts);
+  dumpVerdicts("NEW keywords (post-fan-out, like-for-like)", newVerdicts);
+
+  console.log(`\n=== LIKE-FOR-LIKE SUMMARY (same pipeline stage on both sides) ===`);
+  const oldSum = summarize("OLD kw (LFL)", oldVerdicts);
+  const newSum = summarize("NEW kw (LFL)", newVerdicts);
+  console.log(
+    `\nlike-for-like keywords instance:        OLD ${oldSum.instancePct.toFixed(1)}%  vs  NEW ${newSum.instancePct.toFixed(1)}%`
+  );
+  console.log(
+    `like-for-like keywords not-a-food-term: OLD ${oldSum.notFoodPct.toFixed(1)}%  vs  NEW ${newSum.notFoodPct.toFixed(1)}%`
+  );
+  console.log(
+    `\nInformational only — NOT gated. Ground truth in this file (fetchEntityBreadth) validates the\n` +
+      `LABEL judge specifically; this comparison is now same-pipeline-stage, unlike fix rounds 2-4's\n` +
+      `keyword numbers, but it is still judge opinion on ONE fresh trial, not independently checked\n` +
+      `against scraped-entity breadth the way labels are (there is no per-keyword breadth measurement).`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
 async function main() {
+  if (LIKE_FOR_LIKE) {
+    console.log(`seed-breadth eval — company ${COMPANY_ID} (LIKE_FOR_LIKE: fix-3 keyword comparison only)\n`);
+    await runLikeForLikeKeywordComparison();
+    return;
+  }
+
   console.log(`seed-breadth eval — company ${COMPANY_ID}${SKIP_GENERATION ? " (SKIP_GENERATION: ground-truth + OLD-label-judge only, no seed generation)" : ` x ${TRIALS} trials`}\n`);
 
   const { labels: oldLabels, keywordPairs: oldKeywordPairs } = await fetchOldBaseline(COMPANY_ID);
