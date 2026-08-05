@@ -189,7 +189,7 @@ ${watchTopics
   const watchTopicRules = hasWatchTopics
     ? `- Every watch topic above MUST be covered by at least two seeds; distribute the ${targetCount} seeds across all of them.
 - Each seed must set watchTopic to exactly one of the provided watch topic titles (verbatim).
-- Seeds must concretely operationalize their watch topic into specific, trackable social-listening topics.`
+- Seeds must cover their watch topic BROADLY at category level, so that specific products can be discovered from the data rather than named up front.`
     : `- Cover all strategicPriorities at least once`;
 
   const systemPrompt = `You are a trend-intelligence analyst building a social-listening seed list for ${companyName}.
@@ -197,10 +197,10 @@ ${watchTopics
 Company context:
 ${JSON.stringify(ctx, null, 2)}
 ${watchTopicsBlock}
-Generate exactly ${targetCount} seed items. Each seed is a specific topic to track on social media.
+Generate exactly ${targetCount} seed items. Each seed is a CATEGORY of conversation to sweep on social media, not a specific product.
 
 For each seed, produce:
-- label: short descriptive label (e.g. "Pistachio cream IT", "Functional chocolate DE")
+- label: short descriptive category label (e.g. "Chocolate IT", "Condiments MX")
 - description: 1-2 sentences explaining what this topic covers and why it's relevant
 - geography: one of the targetGeographies (ISO-2 code) or "GLOBAL"
 - productCategoryLink: closest product category from: productCategories or ["chocolate","confectionery","gifting","functional-food","beverage","snack","other"]
@@ -220,7 +220,12 @@ Rules:
 - Cover all targetGeographies at least once
 ${watchTopicRules}
 - Distribute seeds across different territory tags
-- Be specific and concrete: "pistachio cream" not just "chocolate"
+- Stay at CATEGORY level: "chocolate" not "pistachio cream", "condiments" not "spicy mayo".
+  Naming a specific product here pre-decides the answer — the specific trends must
+  come OUT of the scraped conversation, not go IN as a guess.
+- Keywords within a seed should be broad entry points into that category
+  (the category name, how people talk about it, common adjacent terms) rather
+  than an enumeration of specific products.
 - Return JSON array only`;
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
