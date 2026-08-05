@@ -49,7 +49,7 @@ interface TrendDetail {
   state:
     | "candidate"
     | "emerging"
-    | "confirmed"
+    | "sustained"
     | "peaking"
     | "declining"
     | "dormant"
@@ -93,7 +93,7 @@ interface TrendDetail {
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
   candidate: { label: "Candidate", className: "bg-gray-500 text-white border-0" },
   emerging: { label: "Emerging", className: "bg-amber-500 text-white border-0" },
-  confirmed: { label: "Confirmed", className: "bg-green-500 text-white border-0" },
+  sustained: { label: "Sustained", className: "bg-green-500 text-white border-0" },
   peaking: { label: "Peaking", className: "bg-orange-500 text-white border-0" },
   declining: { label: "Declining", className: "bg-blue-500 text-white border-0" },
   dormant: { label: "Dormant", className: "bg-gray-400 text-white border-0" },

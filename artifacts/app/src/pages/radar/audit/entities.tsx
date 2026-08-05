@@ -64,7 +64,7 @@ interface TimeseriesRow {
 const STATE_COLORS: Record<string, string> = {
   candidate: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
   emerging: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  confirmed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  sustained: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
   peaking: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
   declining: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
   dormant: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
@@ -75,7 +75,7 @@ const STATE_COLORS: Record<string, string> = {
 // (so historical rows still render with a chip).
 const FALLBACK_TYPE_COLOR = "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300";
 
-const STATE_OPTIONS = ["all", "candidate", "emerging", "confirmed", "peaking", "declining", "dormant", "resurgent"];
+const STATE_OPTIONS = ["all", "candidate", "emerging", "sustained", "peaking", "declining", "dormant", "resurgent"];
 
 interface EntityTypeConfig {
   id: string;
@@ -341,7 +341,7 @@ function PipelinePanel({
         <PipelineStepRow
           index={3}
           title="State Machine"
-          description="Advances entities through their lifecycle (candidate → emerging → confirmed → peaking → declining → dormant)."
+          description="Advances entities through their lifecycle (candidate → emerging → sustained → peaking → declining → dormant)."
           step={sm}
           lastRunAt={status.stateMachine.lastComputedAt}
           autoTrigger="after every scout pull + nightly 02:30 UTC"
@@ -457,10 +457,10 @@ export default function EntitiesAuditPage() {
           <p className="text-muted-foreground text-sm max-w-3xl">
             Step 5 of 5 — Entities are the named concepts — trends, ingredients, products, places —
             that the LLM extracted from raw signals. Each entity progresses through a lifecycle: it
-            starts as a candidate, may advance to emerging or confirmed as mention volume and
+            starts as a candidate, may advance to emerging or sustained as mention volume and
             week-over-week growth cross configured thresholds across multiple platforms, and eventually
             peaks, declines, or goes dormant. v7d is the mention count over the last 7 days; WoW and
-            MoM are week-over-week and month-over-month growth rates. Entities reaching "confirmed" or
+            MoM are week-over-week and month-over-month growth rates. Entities reaching "sustained" or
             above are surfaced to the Radar. The 30-day sparkline shows daily mention volume. Use "Run
             Timeseries" to recompute mention buckets from signals, then "Run State Machine" to advance
             entities through lifecycle transitions based on the latest data.

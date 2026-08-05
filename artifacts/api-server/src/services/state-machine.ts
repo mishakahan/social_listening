@@ -16,8 +16,8 @@ import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@works
 
 type TrendState =
   | "candidate"   // seen < 3 times
-  | "emerging"    // consistent growth, not yet confirmed
-  | "confirmed"   // 3+ weeks of upward trend
+  | "emerging"    // consistent growth, not yet sustained
+  | "sustained"   // 3+ weeks of upward trend
   | "peaking"     // growth rate decelerating
   | "declining"   // week-over-week volume falling
   | "dormant"     // near-zero activity
@@ -73,7 +73,7 @@ function stdDev(values: number[]): number {
 // State transition logic
 // ---------------------------------------------------------------------------
 
-interface Metrics {
+export interface Metrics {
   volume7d: number;
   volume30d: number;
   volume90d: number;
@@ -105,7 +105,7 @@ function computeMetrics(rows: TpEntityTimeseries[]): Metrics {
   return { volume7d: v7, volume30d: v30, volume90d: v90, velocity, growthWow, growthMom, volatility };
 }
 
-function determineNextState(
+export function determineNextState(
   current: TrendState,
   metrics: Metrics,
   config: TpPipelineConfig
@@ -154,7 +154,7 @@ function determineNextState(
 
   // Exit from declining. Every other state has an entry rule and this one
   // did not have an exit, so once the weekly-only declining rule marked an
-  // entity, it could not get out: the confirmed rule requires growthWow >= 0
+  // entity, it could not get out: the sustained rule requires growthWow >= 0
   // and the emerging rule requires growthWow > minWow*0.35, but a real trend
   // in a normal quiet week has a negative growthWow. The fallback then kept it
   // declining forever. Explicit exit: a declining entity with a solid positive
@@ -163,23 +163,23 @@ function determineNextState(
     // Which non-declining state to send it to depends on how loudly it is rising
     // right now, mirroring the fresh-entity rules below.
     if (growthWow >= 0 && volume30d >= minVol) {
-      return { state: "confirmed", reason: `declining→confirmed growthMom=${growthMom.toFixed(2)} v30=${volume30d}` };
+      return { state: "sustained", reason: `declining→sustained growthMom=${growthMom.toFixed(2)} v30=${volume30d}` };
     }
     return { state: "emerging", reason: `declining→emerging growthMom=${growthMom.toFixed(2)} growthWow=${growthWow.toFixed(2)}` };
   }
 
   // Peaking: growth decelerating (was high, now slowing)
   if (
-    (current === "confirmed" || current === "peaking") &&
+    (current === "sustained" || current === "peaking") &&
     growthWow < minWow * 0.2 &&
     growthMom > minWow * 0.3
   ) {
     return { state: "peaking", reason: `peaking growthWow=${growthWow.toFixed(2)} growthMom=${growthMom.toFixed(2)}` };
   }
 
-  // Confirmed: strong sustained growth
+  // Sustained: strong sustained growth
   if (growthMom > minWow && volume30d >= minVol && growthWow >= 0) {
-    return { state: "confirmed", reason: `confirmed growthMom=${growthMom.toFixed(2)} v30=${volume30d}` };
+    return { state: "sustained", reason: `sustained growthMom=${growthMom.toFixed(2)} v30=${volume30d}` };
   }
 
   // Emerging: early growth signal
@@ -202,7 +202,7 @@ async function ensureKnowledgeItem(
   metrics: Metrics,
   minSignalStrength: number
 ): Promise<void> {
-  const states: TrendState[] = ["emerging", "confirmed", "peaking", "resurgent"];
+  const states: TrendState[] = ["emerging", "sustained", "peaking", "resurgent"];
   if (!states.includes(entityState.state as TrendState)) return;
 
   const entity = (await withDbRetry("getEntities", () => storage.getEntities(companyId))).find(
@@ -332,7 +332,7 @@ export async function runStateMachine(
       // its own noise (significance) and be broad-based (source diversity).
       // Only surfacing states are gated; the verdict is persisted for audit.
       const gateCfg = gateConfigFromPipeline(config);
-      const surfacingStates: TrendState[] = ["emerging", "confirmed", "peaking", "resurgent"];
+      const surfacingStates: TrendState[] = ["emerging", "sustained", "peaking", "resurgent"];
       let verdict: ReturnType<typeof confirmationVerdict> | null = null;
       let finalDecision: "pass" | "hold" | null = null;
       if (surfacingStates.includes(nextState)) {
