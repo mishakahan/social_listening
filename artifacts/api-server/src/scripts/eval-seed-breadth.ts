@@ -80,6 +80,7 @@ import { generateSeedCandidates, type WatchTopic } from "../services/radar-setup
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import OpenAI from "openai";
+import { pathToFileURL } from "node:url";
 
 const TRIALS = Number(process.env.TRIALS ?? 8);
 const COMPANY_ID = Number(process.env.COMPANY_ID ?? 2);
@@ -352,6 +353,15 @@ function dumpVerdicts(title: string, results: JudgeResult[]): void {
 function printGroundTruthValidation(breadth: BreadthRow[], oldLabelVerdicts: JudgeResult[]): void {
   console.log(`\n=== GROUND TRUTH: empirical entity breadth per OLD seed (company ${COMPANY_ID}) ===`);
   console.log(`(tp_scout_queries -> tp_raw_signals -> tp_signal_entities, DISTINCT entity_id, real scraped data)\n`);
+
+  if (breadth.length === 0) {
+    console.log(
+      `No scraped data for company ${COMPANY_ID} — the tp_scout_queries -> tp_raw_signals -> tp_signal_entities ` +
+        `join returned zero rows (no seeds committed, or none have been scraped yet). Skipping ground-truth validation.`
+    );
+    return;
+  }
+
   const verdictByLabel = new Map(oldLabelVerdicts.map((v) => [v.text, v]));
   breadth.forEach((row, i) => {
     const v = verdictByLabel.get(row.label);
@@ -409,6 +419,47 @@ function printGroundTruthValidation(breadth: BreadthRow[], oldLabelVerdicts: Jud
         ? "PARTIAL — the judge's instance calls concentrate at the empirically narrow end, but it is not fully reliable (see misses above). Treat judge-based instance rates as a directionally-useful but imprecise signal, not an exact number."
         : "FAILED — the judge's instance calls do not track empirical narrowness at all. Do not trust judge-based instance rates.";
   console.log(`\nVALIDATION VERDICT: ${verdict}`);
+}
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE GATE — extracted as a pure, exported, unit-tested function
+// (fix round 4) rather than left as inline arithmetic in main(). Fix round
+// 3's only executed run used SKIP_GENERATION=1, which returns before this
+// gate ever runs — the reported PASS was computed by hand from separately
+// -captured numbers. A gate nobody has run is a gate nobody knows works,
+// which is the same failure this whole task's history has been about. See
+// eval-seed-breadth.test.ts for the covered cases (observed case, the
+// reviewer's Avocado-sauces-corrected sensitivity case, a case that must
+// fail, the exact boundary, and OLD=0).
+//
+// Justification for the rule itself (unchanged from fix round 3): PASS if
+// NEW's label-instance rate is at most half of OLD's measured rate.
+// "Halved" is the plain-language standard for "materially different" — a
+// judge that is only PARTIALLY validated against real scraped-entity
+// breadth (see printGroundTruthValidation above: both its instance calls
+// land in the empirical bottom 3, but it misses the single worst offender)
+// cannot be trusted to a point or two, so the bar has to be wide enough to
+// survive that imprecision.
+//
+// Boundary behaviour, made explicit rather than left to fall out of a `<=`
+// by accident:
+//   - NEW exactly equal to half of OLD -> PASS. "At most half" includes
+//     exactly half; a clean 2x improvement is the bar being met, not missed.
+//   - OLD = 0 (no instance labels in the baseline at all) -> bar is 0, so
+//     PASS only if NEW is also exactly 0. There is nothing to "halve" from a
+//     zero baseline; zero-tolerance is the only definition that neither
+//     divides by zero nor silently auto-passes an arbitrary NEW value.
+export interface LabelInstanceGateResult {
+  bar: number;
+  pass: boolean;
+}
+
+export function evaluateLabelInstanceGate(
+  oldInstancePct: number,
+  newInstancePct: number
+): LabelInstanceGateResult {
+  const bar = oldInstancePct / 2;
+  return { bar, pass: newInstancePct <= bar };
 }
 
 // ---------------------------------------------------------------------------
@@ -480,51 +531,22 @@ async function main() {
   console.log(`keywords  instance:        OLD ${oldKwSum.instancePct.toFixed(1)}%  vs  NEW ${newKwSum.instancePct.toFixed(1)}%  (not ground-truth-validated; reported, not gated)`);
   console.log(`keywords  not-a-food-term: OLD ${oldKwSum.notFoodPct.toFixed(1)}%  vs  NEW ${newKwSum.notFoodPct.toFixed(1)}%  (not ground-truth-validated; reported, not gated)`);
 
-  // =========================================================================
-  // ACCEPTANCE — FIX ROUND 3: every previous bar (the reviewer's >=90%, and
-  // my own >=30pt margin against a 14.3% OLD base rate, which no NEW value
-  // could ever satisfy) was invented, not evidence. This is grounded in the
-  // one thing actually measured against reality this round:
-  //
-  //   1. Real scraped data: seeds whose label names a specific product
-  //      (Avocado sauces MX, Chimichurri trends AR, Spicy mayo trends BR —
-  //      the client's own three examples) surfaced 245-455 distinct
-  //      entities. Category-level seeds surfaced up to 856. That is a
-  //      measured 2-3.5x breadth loss for naming a product up front — no
-  //      judge opinion in that number, it is a straight COUNT(DISTINCT) over
-  //      what was actually scraped.
-  //   2. The LLM judge's "instance" calls on the OLD labels are a PARTIAL
-  //      match to that empirical ranking (see VALIDATION VERDICT above): both
-  //      of its 2 "instance" calls sit in the empirically narrowest 3, but it
-  //      MISSED the single worst offender (Avocado sauces MX, judged
-  //      "category"). So the judge's instance rate is directionally right —
-  //      pointed at real narrowness, not noise — but not a precise
-  //      instrument; a 2.9% vs a 3.5% NEW rate would not be a meaningfully
-  //      different result given this margin of error.
-  //   3. Given (1) and the PARTIAL validation in (2), the only defensible
-  //      acceptance bar is a MATERIAL, not marginal, drop in how often the
-  //      judge calls a label "instance" — large enough that it survives the
-  //      judge's demonstrated imprecision. "Halved" is the plain-language
-  //      standard for "materially different" and is symmetric (it doesn't
-  //      pick a number that happens to make either the OLD or NEW result
-  //      pass or fail): PASS if NEW's label-instance rate is at most half of
-  //      OLD's measured 14.3%, i.e. NEW <= 7.15%.
-  //
-  //   Keyword-level "instance" and "not-a-food-term" gates are DROPPED
-  //   entirely — ground truth in this round only validates the LABEL judge
-  //   (fetchEntityBreadth is joined at the topic_label / scout-query level;
-  //   there is no equivalent per-keyword breadth measurement). Keyword
-  //   numbers remain printed above for visibility, including the fact that
-  //   NEW's not-a-food-term rate on keywords did NOT fall after Fix A
-  //   (flagged as an open concern in the report, not resolved this round —
-  //   out of this round's explicit scope).
-  // =========================================================================
-  const LABEL_INSTANCE_HALVING_BAR = oldLabelSum.instancePct / 2;
-  const labelInstancePass = newLabelSum.instancePct <= LABEL_INSTANCE_HALVING_BAR;
+  // ACCEPTANCE — the only gated metric. See evaluateLabelInstanceGate above
+  // for the full justification and the boundary/OLD=0 behaviour, and
+  // eval-seed-breadth.test.ts for its unit tests. Keyword-level "instance"
+  // and "not-a-food-term" are DROPPED from acceptance entirely — ground
+  // truth in this round only validates the LABEL judge (fetchEntityBreadth
+  // is joined at the topic_label / scout-query level; there is no
+  // equivalent per-keyword breadth measurement). Keyword numbers remain
+  // printed above for visibility only.
+  const { bar: labelInstanceBar, pass: labelInstancePass } = evaluateLabelInstanceGate(
+    oldLabelSum.instancePct,
+    newLabelSum.instancePct
+  );
 
   console.log(
     `\nlabels instance (the ONLY gated metric): ${labelInstancePass ? "PASS" : "FAIL"}` +
-      `  (need NEW <= half of OLD's measured ${oldLabelSum.instancePct.toFixed(1)}% = ${LABEL_INSTANCE_HALVING_BAR.toFixed(1)}%;` +
+      `  (need NEW <= half of OLD's measured ${oldLabelSum.instancePct.toFixed(1)}% = ${labelInstanceBar.toFixed(1)}%;` +
       ` got NEW=${newLabelSum.instancePct.toFixed(1)}%)`
   );
   console.log(
@@ -536,9 +558,20 @@ async function main() {
   );
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+// Guard against running main() as a side effect of import. Fix round 4:
+// eval-seed-breadth.test.ts imports evaluateLabelInstanceGate from this
+// file — without this guard, that import alone re-triggers the entire
+// script (real DB reads, real OpenAI judge calls, and a real 8-trial paid
+// seed-generation loop), which is exactly the unauthorized regeneration
+// this task has been explicitly told not to do. Verified: before this
+// guard existed, running the test file did in fact kick off trial 1 of a
+// real generation loop before being caught and killed.
+const isMainModule = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+if (isMainModule) {
+  main()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}
