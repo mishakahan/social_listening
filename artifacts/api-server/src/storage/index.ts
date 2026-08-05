@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
 import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
+import { wasSearchedFor, normalizeTerm } from "../services/discovery-origin.js";
 import {
   companies,
   users,
@@ -1751,6 +1752,10 @@ export interface EnrichedTrend {
   description: string | null;
   topicLabel: string | null;
   updatedAt: string;
+  // True when no configured seed keyword/hashtag/topic-label went looking for
+  // this trend's title — it was surfaced by extraction reading real posts
+  // rather than by a query we wrote. See services/discovery-origin.ts.
+  discovered: boolean;
 }
 
 export type TrendSortBy =
@@ -1782,6 +1787,38 @@ async function getCoreVocabularyMatcher(
   return (s) => !!s && set.has(s.trim().toLowerCase());
 }
 
+/**
+ * Load the company's seed vocabulary — every keyword, hashtag, and topic
+ * label from its scout queries — normalized into a single flat set for
+ * `wasSearchedFor` matching. This is the "what did we go looking for" side
+ * of the discovered-vs-searched-for classification surfaced on the trends
+ * radar (see services/discovery-origin.ts).
+ *
+ * NOTE: this selects one row per column today. A future pass may need to
+ * select `watchTopic` too and build a term→topic map rather than a flat set
+ * — if so, add the column to the `select` below and fold its values into
+ * `seedTerms` alongside keywords/hashtags/topicLabel, rather than issuing a
+ * second query.
+ */
+async function getSeedVocabulary(companyId: number): Promise<Set<string>> {
+  const seedRows = await db
+    .select({
+      keywords: tpScoutQueries.keywords,
+      hashtags: tpScoutQueries.hashtags,
+      topicLabel: tpScoutQueries.topicLabel,
+    })
+    .from(tpScoutQueries)
+    .where(eq(tpScoutQueries.companyId, companyId));
+
+  const seedTerms = new Set<string>();
+  for (const r of seedRows) {
+    for (const k of r.keywords ?? []) seedTerms.add(normalizeTerm(String(k)));
+    for (const h of r.hashtags ?? []) seedTerms.add(normalizeTerm(String(h)));
+    if (r.topicLabel) seedTerms.add(normalizeTerm(r.topicLabel));
+  }
+  return seedTerms;
+}
+
 export async function getTrendsEnriched(
   companyId: number,
   filters?: { archived?: boolean; sortBy?: TrendSortBy; sortDir?: SortDir }
@@ -1808,6 +1845,7 @@ export async function getTrendsEnriched(
   // from the radar immediately — without needing to re-run the state machine
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+  const seedTerms = await getSeedVocabulary(companyId);
 
   const mapped = rows
     .filter((r) =>
@@ -1830,6 +1868,7 @@ export async function getTrendsEnriched(
       yoyPrior: r.es.yoyPrior ?? null,
       platforms: r.es.platformsSeen ?? [],
       evidenceCount: r.ki.evidenceCount ?? 0,
+      discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
       geography: r.es.geography,
       territoryTag: r.es.territoryTag ?? null,
       summary: r.ki.summary ?? null,
@@ -1926,6 +1965,7 @@ export async function getTrendDetail(
   // surfaces stay consistent with the list endpoint — a bookmarked trend whose
   // label is in the company's stoplist becomes a 404.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+  const seedTerms = await getSeedVocabulary(companyId);
 
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
@@ -1950,6 +1990,7 @@ export async function getTrendDetail(
       yoyPrior: null,
       platforms: [],
       evidenceCount: ki.evidenceCount ?? 0,
+      discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
       geography: ki.geographicScope ?? "Global",
       territoryTag: null,
       summary: ki.summary ?? null,
@@ -2024,6 +2065,7 @@ export async function getTrendDetail(
     yoyPrior: es.yoyPrior ?? null,
     platforms: es.platformsSeen ?? [],
     evidenceCount: ki.evidenceCount ?? 0,
+    discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
     geography: es.geography,
     territoryTag: es.territoryTag ?? null,
     summary: ki.summary ?? null,

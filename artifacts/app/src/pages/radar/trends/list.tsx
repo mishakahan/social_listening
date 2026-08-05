@@ -47,6 +47,7 @@ interface Trend {
   geography?: string;
   territoryTag?: string;
   summary?: string;
+  discovered?: boolean;
 }
 
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
@@ -393,6 +394,14 @@ function SingleEntityTab({
                     <div>
                       <div className="text-sm font-medium text-foreground leading-tight">
                         {trend.title}
+                        {trend.discovered && (
+                          <span
+                            title="No keyword we searched for matches this — extraction surfaced it from real posts"
+                            className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700"
+                          >
+                            Discovered
+                          </span>
+                        )}
                       </div>
                       {(() => {
                         const geo = trend.geography === "Global" ? null : trend.geography;
