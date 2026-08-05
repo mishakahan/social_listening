@@ -31,3 +31,39 @@ test("accent-insensitive matching works both ways", () => {
   const s = new Set(["jamon serrano"].map(normalizeTerm));
   assert.equal(wasSearchedFor("jamón", s), true);
 });
+
+// Regression: company 2's live radar badged "empanada" (singular) as
+// DISCOVERED even though the seed vocabulary contains "empanadas a
+// domicilio" (plural). Word-level matching was exact-string-only, so
+// "empanada" !== "empanadas" fell through to "discovered". Fails without the
+// singularizeWord-based plural equivalence in wasSearchedFor.
+test("a singular label matches a plural word inside a multi-word seed (empanada bug)", () => {
+  const s = new Set(["empanadas a domicilio"].map(normalizeTerm));
+  assert.equal(wasSearchedFor("empanada", s), true);
+});
+
+// This repo already shipped a bug where a naive trailing-"s" strip turned
+// "citrus" into "citru" (and similarly mangled "hibiscus", "focus",
+// "molasses"), corrupting 30 live entities. entity-canonical.ts's
+// singularizeWord carries an isAlreadySingular guard against exactly this.
+// Reusing that function (rather than writing new plural logic here) must not
+// reintroduce the bug: "citrus" should match only genuine "citrus" seeds,
+// never the mangled "citru" form.
+test("does not mangle citrus-class words through the matching path", () => {
+  const s = new Set(["citrus soda", "hibiscus tea"].map(normalizeTerm));
+  assert.equal(wasSearchedFor("citrus", s), true);
+  assert.equal(wasSearchedFor("hibiscus", s), true);
+  // if the guard were missing, "citrus" would get stemmed to "citru" and a
+  // genuinely different word "citru" would wrongly match it
+  assert.equal(wasSearchedFor("citru", s), false);
+});
+
+// Multi-word label vs multi-word seed is deliberately NOT matched on a
+// shared content word: evaluated and rejected, see discovery-origin.ts —
+// it flipped the anchor-required "whey protein" (company 1) to seeded via
+// the unrelated seed "protein gummies". Locking in the current (unmatched)
+// behavior so a future change can't silently reintroduce that regression.
+test("a multi-word label is NOT matched against a multi-word seed on a shared word alone", () => {
+  const s = new Set(["protein gummies"].map(normalizeTerm));
+  assert.equal(wasSearchedFor("whey protein", s), false);
+});
