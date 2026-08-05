@@ -214,7 +214,10 @@ ${watchTopicField}- seedQueries: one entry per relevant language for this geogra
   - CN → [{ language: "zh-CN", ... }]
   - GLOBAL → [{ language: "en", ... }]
   - FR → [{ language: "fr", ... }]
-  - Each entry has: keywords (5-8 phrases in that language), hashtags (5-8 hashtags in that language, no # prefix)
+  - Each entry has: keywords (5-8 phrases in that language), hashtags (5-8 hashtags in that language, no # prefix).
+    Every keyword must be a term about the FOOD OR DRINK ITSELF — something a
+    real person would type or post while talking about what they are eating
+    or drinking, never a word about the analysis being done on it.
 
 Rules:
 - Cover all targetGeographies at least once
@@ -226,6 +229,18 @@ ${watchTopicRules}
 - Keywords within a seed should be broad entry points into that category
   (the category name, how people talk about it, common adjacent terms) rather
   than an enumeration of specific products.
+- A keyword must name food, drink, an ingredient, a dish, a format, or how
+  people describe eating or drinking it — never our own analysis of it.
+  Exclude:
+    * meta/analyst words: trends, tendencias, tendências, preferences,
+      preferencias, behaviours, behaviors, consumo, options, opciones,
+      novidades, popular, habits, hábitos, consumption, insights
+    * a bare geography as its own standalone keyword: a country or city name
+      alone is not a food term anyone searches or posts under. It is fine
+      INSIDE a real food phrase ("café colombiano", "comida mexicana"), just
+      never on its own as a keyword ("Colombia", "México" by itself).
+  Test every keyword: would someone post this while talking about the food
+  or drink itself, not while talking about a market or a trend report?
 - Return JSON array only`;
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
