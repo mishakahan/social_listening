@@ -7,6 +7,7 @@ import {
   gateConfigFromPipeline,
 } from "./confirmation-gate.js";
 import { judgeSpecificityBatch, type SpecificityResult } from "./specificity.js";
+import { isWellFormed } from "./well-formedness.js";
 import { withDbRetry } from "./db-retry.js";
 import type { TpEntityState, TpEntityTimeseries, TpPipelineConfig } from "@workspace/db";
 
@@ -339,10 +340,19 @@ export async function runStateMachine(
         verdict = confirmationVerdict(buildGateInput(rows), gateCfg);
         finalDecision = verdict.decision;
 
+        // Well-formedness check: pure, deterministic, no LLM call. Runs before
+        // the specificity judge so malformed labels ("non-alcoholic", "brunch")
+        // never incur an OpenAI request.
+        const wellFormed = isWellFormed(entity.canonicalLabel);
+        if (verdict.decision === "pass" && !wellFormed.wellFormed) {
+          finalDecision = "hold";
+          verdict.reasons.push(`not well-formed: ${wellFormed.reason}`);
+        }
+
         // Specificity check: only bother judging entities that PASSED significance
-        // + breadth (a small set). A generic everyday term ("coffee", "salt")
-        // gets held even if it's rising + broad. Cached per entity-state so the
-        // LLM only runs once per label.
+        // + breadth + well-formedness (a small set). A generic everyday term
+        // ("coffee", "salt") gets held even if it's rising + broad. Cached per
+        // entity-state so the LLM only runs once per label.
         let specificity: SpecificityResult | null =
           (entityState.specificityVerdict &&
           (entityState.specificityVerdict as any).label === entity.canonicalLabel
@@ -351,7 +361,7 @@ export async function runStateMachine(
                 reason: (entityState.specificityVerdict as any).reason,
               }
             : null);
-        if (verdict.decision === "pass" && !specificity) {
+        if (verdict.decision === "pass" && wellFormed.wellFormed && !specificity) {
           try {
             const judged = await judgeSpecificityBatch([entity.canonicalLabel]);
             specificity = judged.get(entity.canonicalLabel.toLowerCase()) ?? null;
@@ -373,6 +383,7 @@ export async function runStateMachine(
             );
           }
         }
+
         if (verdict.decision === "pass" && specificity && !specificity.specific) {
           finalDecision = "hold";
           verdict.reasons.push(`not specific: ${specificity.reason}`);
