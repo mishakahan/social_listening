@@ -1,11 +1,21 @@
 // One-shot repair for evidence already split across a modifier and its compound
-// ("non-alcoholic" 26 mentions vs "non-alcoholic beer" 39). Registers the
+// ("non-alcoholic" 73 mentions vs "non-alcoholic beer" 64). Registers the
 // modifier as an alias of the compound and archives the orphan, so the volume
 // consolidates instead of the modifier simply vanishing from the radar.
 //
+// ROUND 1 SHIPPED A DATA-LOSS BUG: findCompoundParent picked the best
+// candidate PARENT by weight, but never compared that parent's weight to the
+// MODIFIER's own weight. "vegan" (479 mentions) got archived into "vegan
+// chocolate" (28) — evidence went backwards, not consolidated. Fixed in
+// findCompoundParent itself: it now returns null unless the chosen parent's
+// weight is >= the modifier's own weight, so a modifier that carries more
+// evidence than every candidate is left alone instead of merged. See
+// well-formedness.ts and well-formedness.test.ts for the guard + coverage.
+//
 // SAFETY: writes to the shared live Neon database. Dry-run first (default) and
-// inspect every pair before passing --apply. Only one process should touch the
-// DB at a time.
+// inspect every pair before passing --apply — specifically confirm the
+// parent's weight (printed alongside each pair) is >= the modifier's weight.
+// Only one process should touch the DB at a time.
 //
 //   COMPANY_ID=1 pnpm exec tsx --env-file=../../.env src/scripts/merge-dangling-modifiers.ts
 //   COMPANY_ID=1 pnpm exec tsx --env-file=../../.env src/scripts/merge-dangling-modifiers.ts --apply
@@ -27,8 +37,12 @@ async function main() {
   const labels = entities.map((e) => e.canonical_label);
   // Evidence weight per label, so the parent pick favours the entity that
   // actually carries the conversation, not whichever string is shortest.
+  // Keyed by the EXACT canonical_label (not lowercased): two case-duplicate
+  // entities like "Artisanal" and "artisanal" must keep distinct weights, or
+  // one silently overwrites the other's mention count in this map and the
+  // volume guard below reads the wrong entity's evidence.
   const weights: Record<string, number> = Object.fromEntries(
-    entities.map((e) => [e.canonical_label.trim().toLowerCase(), e.total_mentions ?? 0])
+    entities.map((e) => [e.canonical_label.trim(), e.total_mentions ?? 0])
   );
 
   const plans: Array<{ from: typeof entities[number]; to: string }> = [];
@@ -44,9 +58,14 @@ async function main() {
   }
 
   for (const p of plans) {
-    console.log(`  "${p.from.canonical_label}"  ->  "${p.to}"`);
+    // p.from.total_mentions is authoritative for the modifier's own weight
+    // (no lookup needed); p.to came straight from the `labels` array built
+    // from the same entities, so it is an exact key into `weights`.
+    const modW = p.from.total_mentions ?? 0;
+    const parentW = weights[p.to] ?? 0;
+    console.log(`  "${p.from.canonical_label}" (${modW}m)  ->  "${p.to}" (${parentW}m)`);
   }
-  console.log(`${plans.length} modifier(s) with a compound parent`);
+  console.log(`${plans.length} modifier(s) with a compound parent that carries at least as much evidence`);
 
   if (dryRun) {
     console.log("dry run — pass --apply to write");
@@ -54,16 +73,20 @@ async function main() {
   }
 
   for (const p of plans) {
-    await db.execute(
-      sql`insert into tp_entity_synonyms
-            (company_id, alias, canonical_label, entity_type, source)
-          values (${companyId}, ${p.from.canonical_label}, ${p.to},
-                  ${p.from.entity_type}, 'dangling-modifier-merge')
-          on conflict do nothing`
-    );
-    await db.execute(
-      sql`update tp_entities set deleted_at = now() where id = ${p.from.id}`
-    );
+    // Wrapped so a mid-loop failure (e.g. connection drop) cannot leave the
+    // synonym row written without the archive, or vice versa.
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`insert into tp_entity_synonyms
+              (company_id, alias, canonical_label, entity_type, source)
+            values (${companyId}, ${p.from.canonical_label}, ${p.to},
+                    ${p.from.entity_type}, 'dangling-modifier-merge')
+            on conflict do nothing`
+      );
+      await tx.execute(
+        sql`update tp_entities set deleted_at = now() where id = ${p.from.id}`
+      );
+    });
   }
   console.log(`merged ${plans.length}`);
 }

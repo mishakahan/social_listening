@@ -77,3 +77,67 @@ test("identifies standalone modifiers but not occasions", () => {
     assert.equal(isDanglingModifier(label), false, `${label} should not be a dangling modifier`);
   }
 });
+
+// Round-1 fix: no-hyphen spelling variants are excluded from merge
+// eligibility. "nonalcoholic" (17 mentions) folded into "nonalcoholic beer"
+// (5) while "non-alcoholic beer" (64) — almost certainly the same real
+// trend, spelled differently — sat right next to it, unconsidered. Without
+// real cross-spelling normalisation there is no safe way to pick the right
+// parent, so these are simply excluded rather than guessed.
+test("excludes no-hyphen spelling variants from merge eligibility", () => {
+  for (const label of ["nonalcoholic", "sugarfree", "glutenfree"]) {
+    assert.equal(isDanglingModifier(label), false, `${label} is a spelling variant and must not be merge-eligible`);
+  }
+  // the canonical hyphenated spellings remain eligible
+  for (const label of ["non-alcoholic", "sugar-free", "gluten-free"]) {
+    assert.equal(isDanglingModifier(label), true, `${label} should still be a dangling modifier`);
+  }
+});
+
+// THE bug that shipped in round 1: "vegan" (479 mentions on Leone) was
+// archived into "vegan chocolate" (28) because 28 beat every OTHER
+// candidate, but nothing ever compared it to the modifier's own 479. A
+// modifier that carries more evidence than every candidate parent is not a
+// split fixable by archiving it — this must return null so the caller skips
+// the merge instead of forcing it.
+test("refuses to merge when the modifier itself has more evidence than every candidate parent", () => {
+  const labels = ["vegan chocolate"];
+  const weights = { vegan: 479, "vegan chocolate": 28 };
+  assert.equal(findCompoundParent("vegan", labels, weights), null);
+});
+
+test("still merges when the parent has at least as much evidence as the modifier", () => {
+  const labels = ["non-alcoholic beer"];
+  const weights = { "non-alcoholic": 64, "non-alcoholic beer": 64 };
+  assert.equal(findCompoundParent("non-alcoholic", labels, weights), "non-alcoholic beer");
+});
+
+test("skips a large volume disparity even though a compound technically extends the modifier", () => {
+  // dairy-free (13) -> dairy-free kids (1) shipped in round 1: a 13x loss.
+  const labels = ["dairy-free kids", "dairy-free butter"];
+  const weights = { "dairy-free": 13, "dairy-free kids": 1, "dairy-free butter": 1 };
+  assert.equal(findCompoundParent("dairy-free", labels, weights), null);
+});
+
+// Round-1 fix: the merge script writes the return value straight into
+// canonical_label, and resolveSynonym's alias lookup is case-sensitive, so
+// the original casing must survive — not the lowercased comparison form.
+test("preserves the parent's original casing rather than the lowercased comparison form", () => {
+  const labels = ["Non-Alcoholic Beer"];
+  const weights = { "non-alcoholic": 10, "non-alcoholic beer": 20 };
+  assert.equal(findCompoundParent("non-alcoholic", labels, weights), "Non-Alcoholic Beer");
+});
+
+// Round-1 latent bug: a lowercase-only weights map lets a case-duplicate
+// entity silently overwrite another's weight ("Artisanal" 1 mention and
+// "artisanal" 2 mentions both key to "artisanal"). Keying by the exact
+// original label must take priority so each entity's true volume is used
+// for the guard, not whichever case variant happened to be inserted last.
+test("uses the exact-case weight, not a case-collapsed one, when both are present", () => {
+  const labels = ["artisanal chocolate"];
+  // "Artisanal" (exact-case key) truly has 500 mentions; only the stale
+  // lowercase key says 2 — the exact key must win so the guard correctly
+  // refuses this merge (500 > 4).
+  const weights = { Artisanal: 500, artisanal: 2, "artisanal chocolate": 4 };
+  assert.equal(findCompoundParent("Artisanal", labels, weights), null);
+});
