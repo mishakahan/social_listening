@@ -1,6 +1,6 @@
 import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
-import { evidenceCutoff, EVIDENCE_WINDOW_DAYS } from "../services/evidence-window.js";
+import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
 import {
   companies,
   users,
@@ -1961,7 +1961,7 @@ export async function getTrendDetail(
       confirmationVerdict: null,
       specificityVerdict: null,
       evidence: [],
-      evidenceRecentCount: 0,
+      evidenceRecentCount: recentEvidenceCount(ki.evidenceCount),
       evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
     };
   }
@@ -2001,13 +2001,11 @@ export async function getTrendDetail(
     excerpt: r.sig.text?.slice(0, 300) ?? null,
   }));
 
-  // The Trends list "Evidence" column is volume30d; the drill-down otherwise
-  // shows every signal ever linked to the entity (capped at 20), which reads
-  // as contradictory. Report both counts instead of narrowing the query.
-  const recentCutoff = evidenceCutoff(new Date(), EVIDENCE_WINDOW_DAYS);
-  const evidenceRecentCount = evidenceRows.filter(
-    (r) => r.sig.capturedAt != null && r.sig.capturedAt >= recentCutoff
-  ).length;
+  // Sourced from ki.evidenceCount — the exact same column the Trends list
+  // "Evidence (30d)" cell renders for this knowledge item — not from counting
+  // `evidenceRows`, which the query above caps at 20. See
+  // services/evidence-window.ts:recentEvidenceCount for why.
+  const evidenceRecentCount = recentEvidenceCount(ki.evidenceCount);
 
   return {
     id: ki.id,
