@@ -365,7 +365,7 @@ function SingleEntityTab({
               <div>Platforms</div>
               <div className="text-right">
                 <SortHeader
-                  label="Evidence"
+                  label="Evidence (30d)"
                   field="evidence"
                   current={sortBy}
                   dir={sortDir}

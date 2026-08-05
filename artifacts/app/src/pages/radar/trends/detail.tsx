@@ -72,6 +72,8 @@ interface TrendDetail {
   summary?: string;
   description?: string;
   evidence?: EvidenceItem[];
+  evidenceRecentCount?: number;
+  evidenceWindowDays?: number;
   updatedAt?: string;
   confirmationVerdict?: {
     decision: "pass" | "hold";
@@ -474,7 +476,13 @@ export default function TrendDetailPage() {
       {trend.evidence && trend.evidence.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-foreground mb-3">
-            Evidence ({trend.evidence.length})
+            Evidence
+            <span className="ml-2 font-normal text-muted-foreground">
+              {trend.evidenceRecentCount ?? trend.evidence.length} in the last{" "}
+              {trend.evidenceWindowDays ?? 30} days
+              {trend.evidence.length > (trend.evidenceRecentCount ?? trend.evidence.length) &&
+                `, ${trend.evidence.length} all time`}
+            </span>
           </h2>
           <div className="space-y-3">
             {trend.evidence.map((ev) => {
