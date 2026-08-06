@@ -1024,11 +1024,16 @@ function EntityTypesEditor({ types, onSave, isSaving, ready }: EntityTypesEditor
 type PipelineStage = "scrape" | "ingest" | "extract" | "timeseries" | "state-machine";
 
 interface RunPipelineStatus {
-  status: "running" | "done" | "failed" | "idle";
+  // "awaiting-data": scrape launched successfully but nothing has been
+  // ingested yet (scrapes run for hours; data arrives later via webhook).
+  // Distinct from "done" on purpose — "done" only appears for a run that
+  // actually ingested something.
+  status: "running" | "done" | "failed" | "awaiting-data" | "idle";
   stage?: PipelineStage;
   stageIndex?: number;
   totalStages?: number;
   error?: string;
+  finishedAt?: string;
 }
 
 const STAGE_LABELS: Record<PipelineStage, string> = {
@@ -1059,6 +1064,22 @@ async function startRunPipeline(companyId: number): Promise<{ started: boolean }
   return res.json();
 }
 
+// Escape hatch for a wedged run (stage stuck past its server-side timeout,
+// or an operator who doesn't want to wait one out) — clears the stuck state
+// without needing a server restart.
+async function resetRunPipeline(companyId: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-pipeline/reset`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      (body && typeof body.error === "string" && body.error) || "Failed to reset run"
+    );
+  }
+  return res.json();
+}
+
 function RunPipelineCard() {
   const companyId = useCompanyId();
   const queryClient = useQueryClient();
@@ -1084,7 +1105,21 @@ function RunPipelineCard() {
     },
   });
 
+  const resetMutation = useMutation({
+    mutationFn: () => resetRunPipeline(companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["run-pipeline-status", companyId] });
+      toast.success("Run cleared.");
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "Failed to reset run");
+    },
+  });
+
   const stageLabel = status?.stage ? STAGE_LABELS[status.stage] ?? status.stage : null;
+  const finishedAtLabel = status?.finishedAt
+    ? new Date(status.finishedAt).toLocaleString()
+    : null;
 
   return (
     <Card className="mb-4 border-amber-500/40">
@@ -1094,17 +1129,24 @@ function RunPipelineCard() {
           <h2 className="text-sm font-semibold text-foreground">Run full pipeline</h2>
         </div>
         <p className="text-xs text-muted-foreground">
-          Runs every stage in order — launch scout queries, ingest, extract
-          entities, aggregate timeseries, then the state machine — so you
-          don't have to click through four admin pages in sequence.
+          Launches scout queries, then re-drives ingestion for any older runs
+          still waiting on it — so you don't have to click through four admin
+          pages in sequence. Extraction, timeseries, and the state machine
+          already run automatically as each scrape's data lands (see the
+          scout pull schedule note below); this button does not wait for
+          that to finish.
         </p>
       </CardHeader>
       <CardContent className="pt-2 pb-5 space-y-3">
         <Alert className="border-amber-500/50 bg-amber-500/10">
           <AlertTriangle className="h-4 w-4 text-amber-600" />
           <AlertDescription className="text-xs text-amber-900 dark:text-amber-200">
-            A full run takes a few hours and fires Apify scrapes. Set it up
-            ahead of a client meeting, not during one.
+            This fires real Apify scrapes — real money. Launching queries
+            only takes a moment, but the scraped data itself arrives over
+            the next few hours, delivered automatically in the background.
+            "Completed" here means queries were launched (and any backlog
+            re-ingested) — not that new trends are on the radar yet. Set it
+            up ahead of a client meeting, not during one.
           </AlertDescription>
         </Alert>
 
@@ -1124,20 +1166,45 @@ function RunPipelineCard() {
             )}
           </Button>
 
+          {isRunning && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => resetMutation.mutate()}
+              disabled={resetMutation.isPending}
+              title="Clear a stuck run without waiting for it to time out"
+            >
+              {resetMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                "Reset stuck run"
+              )}
+            </Button>
+          )}
+
           {status?.status === "running" && (
             <span className="text-xs text-muted-foreground">
               {stageLabel} ({(status.stageIndex ?? 0) + 1}/{status.totalStages ?? 5})
             </span>
           )}
+          {status?.status === "awaiting-data" && (
+            <span className="text-xs text-amber-600 flex items-center gap-1">
+              Queries launched — awaiting scraped data via webhook
+              {finishedAtLabel ? ` (${finishedAtLabel})` : ""}. Nothing new has
+              been ingested yet; check back later, or run the remaining
+              stages once data starts arriving.
+            </span>
+          )}
           {status?.status === "done" && (
             <span className="text-xs text-green-600 flex items-center gap-1">
               <CheckCircle2 className="h-3.5 w-3.5" />
-              Completed.
+              Completed{finishedAtLabel ? ` — ${finishedAtLabel}` : ""}.
             </span>
           )}
           {status?.status === "failed" && (
             <span className="text-xs text-destructive">
-              Failed at {stageLabel ?? status.stage}: {status.error}
+              Failed at {stageLabel ?? status.stage}
+              {finishedAtLabel ? ` (${finishedAtLabel})` : ""}: {status.error}
             </span>
           )}
         </div>

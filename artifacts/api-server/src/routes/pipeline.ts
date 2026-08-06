@@ -26,6 +26,7 @@ import { logger } from "../lib/logger.js";
 import {
   startPipelineRun,
   getPipelineRun,
+  resetPipelineRun,
   type StageDeps,
 } from "../services/pipeline-runner.js";
 
@@ -1636,29 +1637,84 @@ router.post("/companies/:id/run-state-machine", async (req, res) => {
 // Each stage below calls the exact same service function its own manual
 // route calls — this does NOT issue HTTP requests to itself.
 // ---------------------------------------------------------------------------
+// Bounds on the "ingest" safety-net pass (fix round 1 / Important #3). Left
+// unbounded, it would walk every succeeded-but-uningested run this company
+// has ever had, serially, each one paying for an Apify dataset fetch AND an
+// entity-extraction (LLM) pass inside triggerIngestion. The recency window
+// keeps it scoped to "why hasn't my recent scrape shown up," and the count
+// cap bounds worst-case spend for any single orchestrated run; a persistent
+// backlog beyond the cap drains oldest-first across repeated runs rather
+// than the same newest N winning forever.
+const INGEST_STAGE_MAX_RUNS = 25;
+const INGEST_STAGE_RECENCY_DAYS = 14;
+
 const pipelineStageDeps: StageDeps = {
   // Fires paid Apify scrapes. Mirrors POST /companies/:id/scout-queries/launch
   // with no queryIds, i.e. "launch every active scout query for this company."
   // Throws "No queries to launch" (no Apify call made) when nothing is active.
+  //
+  // IMPORTANT: launchBatch() resolves as soon as the Apify actor runs are
+  // *started* — not when they finish. Real data typically lands hours later,
+  // delivered via the Apify webhook, which already drives its own
+  // ingest -> extract -> timeseries -> state-machine chain per batch (see
+  // finalizeBatchIfDone in services/launch-batch.ts). The "ingest" stage
+  // below is a safety net for older runs, not a way to wait for this batch.
   scrape: async (companyId) => {
     await launchBatch(companyId, { kind: "manual" });
   },
   // Normally ingestion fires automatically off the Apify webhook per actor
   // run as each scrape finishes. This stage is the safety net: it re-drives
   // ingestion (via the same triggerIngestion() the webhook and the manual
-  // run-ingestion route both use) for any succeeded run this company has
-  // that hasn't finished ingesting yet.
+  // run-ingestion route both use) for a bounded, recent slice of succeeded
+  // runs this company has that haven't finished ingesting yet.
+  //
+  // Reports itemsProcessed so the orchestrator (pipeline-runner.ts) can tell
+  // "found nothing yet" apart from "found and processed N" — the former
+  // must stop the run at "awaiting-data" rather than sailing on through
+  // extract/timeseries/state-machine and calling a no-op run "done".
   ingest: async (companyId) => {
-    const runs = await storage.getActorRuns(companyId, { status: "succeeded" });
-    const pending = runs.filter(
-      (r) =>
-        r.apifyDatasetId &&
-        r.ingestionStatus !== "done" &&
-        r.ingestionStatus !== "processing"
+    const recencyCutoff = new Date(
+      Date.now() - INGEST_STAGE_RECENCY_DAYS * 24 * 60 * 60 * 1000
     );
-    for (const run of pending) {
+    const runs = await storage.getActorRuns(companyId, { status: "succeeded" });
+    const candidates = runs
+      .filter(
+        (r) =>
+          r.apifyDatasetId &&
+          r.ingestionStatus !== "done" &&
+          r.ingestionStatus !== "processing" &&
+          r.completedAt != null &&
+          r.completedAt >= recencyCutoff
+      )
+      .sort((a, b) => a.completedAt!.getTime() - b.completedAt!.getTime())
+      .slice(0, INGEST_STAGE_MAX_RUNS);
+
+    logger.info(
+      { companyId, candidateCount: candidates.length },
+      "pipeline run: ingest stage starting"
+    );
+
+    let processed = 0;
+    for (const run of candidates) {
+      // Mirrors the manual run-ingestion route (below): reset failed rows to
+      // 'pending' BEFORE calling triggerIngestion. Without this,
+      // claimIngestion()'s `WHERE ingestion_status='pending'` guard refuses
+      // the row — but only AFTER triggerIngestion has already paid for the
+      // Apify dataset fetch — so a previously-failed run would otherwise
+      // cost money on every orchestrated run while never actually being
+      // retried.
+      if (run.ingestionStatus === "failed") {
+        await storage.updateActorRun(run.id, { ingestionStatus: "pending" } as any);
+      }
+      processed++;
+      logger.info(
+        { companyId, runId: run.id, index: processed, total: candidates.length },
+        "pipeline run: ingest stage progress"
+      );
       await triggerIngestion(run.id, run.apifyDatasetId!);
     }
+
+    return { itemsProcessed: processed };
   },
   extract: async (companyId) => {
     await runEntityExtraction(companyId);
@@ -1704,6 +1760,23 @@ router.post("/companies/:id/run-pipeline", async (req, res) => {
 router.get("/companies/:id/run-pipeline-status", async (req, res) => {
   const companyId = parseInt(req.params.id!, 10);
   res.json(getPipelineRun(companyId) ?? { status: "idle", companyId });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-pipeline/reset
+// Manually clears a wedged "running" state (e.g. a stage stuck past its
+// timeout for longer than an operator wants to wait it out) so a developer
+// isn't required to restart the server to unstick a client. No-op (404) if
+// nothing is running for this company.
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-pipeline/reset", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  const cleared = resetPipelineRun(companyId);
+  if (!cleared) {
+    res.status(404).json({ error: "No running pipeline for this company" });
+    return;
+  }
+  res.json({ ok: true, state: cleared });
 });
 
 // ---------------------------------------------------------------------------
