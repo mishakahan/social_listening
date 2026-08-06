@@ -1090,6 +1090,7 @@ async function resetRunPipeline(companyId: number): Promise<{ ok: boolean }> {
 function RunPipelineCard() {
   const companyId = useCompanyId();
   const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const { data: status } = useQuery<RunPipelineStatus>({
     queryKey: ["run-pipeline-status", companyId],
@@ -1106,9 +1107,11 @@ function RunPipelineCard() {
     mutationFn: () => startRunPipeline(companyId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["run-pipeline-status", companyId] });
+      setConfirmOpen(false);
     },
     onError: (err: Error) => {
       toast.error(err.message || "Failed to start pipeline run");
+      setConfirmOpen(false);
     },
   });
 
@@ -1158,20 +1161,62 @@ function RunPipelineCard() {
         </Alert>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            size="sm"
-            onClick={() => startMutation.mutate()}
-            disabled={isRunning || startMutation.isPending}
-          >
-            {isRunning || startMutation.isPending ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                Running…
-              </>
-            ) : (
-              "Run full pipeline"
-            )}
-          </Button>
+          <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                disabled={isRunning || startMutation.isPending}
+              >
+                {isRunning || startMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    Running…
+                  </>
+                ) : (
+                  "Run full pipeline"
+                )}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Run the full pipeline?</AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2 text-sm">
+                    <p>
+                      This launches real Apify scrapes across every active
+                      scout query for this company. <strong>It spends real
+                      money</strong> and the scraped data arrives over the
+                      next several hours, not immediately.
+                    </p>
+                    <p className="text-xs">
+                      Set it up ahead of a client meeting, not during one.
+                    </p>
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={startMutation.isPending}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    e.preventDefault();
+                    startMutation.mutate();
+                  }}
+                  disabled={startMutation.isPending}
+                >
+                  {startMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                      Starting…
+                    </>
+                  ) : (
+                    "Run full pipeline"
+                  )}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           {isRunning && (
             <Button
