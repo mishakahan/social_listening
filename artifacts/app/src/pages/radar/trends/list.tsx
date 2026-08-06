@@ -7,6 +7,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -48,6 +55,27 @@ interface Trend {
   territoryTag?: string;
   summary?: string;
   discovered?: boolean;
+  // The watch topic this trend ladders up to (e.g. "Sauces and dipping in
+  // Latin America"), null when no seed term matched it (a genuine discovery)
+  // or the matching scout query predates the watch-topic column. Grouped
+  // under "Uncategorised" in the UI rather than being hidden — see
+  // storage/index.ts getSeedVocabulary / resolveWatchTopic.
+  watchTopic?: string | null;
+  topicLabel?: string | null;
+}
+
+const UNCATEGORISED = "Uncategorised";
+const ALL = "all";
+
+function watchTopicOf(t: Trend): string {
+  return t.watchTopic ?? UNCATEGORISED;
+}
+
+// The "search term" is the specific query label the trend matched — the
+// finest-grained facet under a watch topic. topicLabel carries this today;
+// falls back to the trend's own title when topicLabel is unset.
+function searchTermOf(t: Trend): string {
+  return t.topicLabel ?? t.title;
 }
 
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
@@ -283,6 +311,47 @@ function SingleEntityTab({
   navigate,
   tooltipped,
 }: SingleEntityTabProps) {
+  const [watchTopicFilter, setWatchTopicFilter] = useState(ALL);
+  const [searchTermFilter, setSearchTermFilter] = useState(ALL);
+
+  const watchTopicOptions = useMemo(() => {
+    const set = new Set(tooltipped.map(watchTopicOf));
+    // Uncategorised sorts last, real topics sort alphabetically ahead of it.
+    return Array.from(set).sort((a, b) => {
+      if (a === UNCATEGORISED) return 1;
+      if (b === UNCATEGORISED) return -1;
+      return a.localeCompare(b);
+    });
+  }, [tooltipped]);
+
+  const byWatchTopic = useMemo(
+    () =>
+      watchTopicFilter === ALL
+        ? tooltipped
+        : tooltipped.filter((t) => watchTopicOf(t) === watchTopicFilter),
+    [tooltipped, watchTopicFilter]
+  );
+
+  const searchTermOptions = useMemo(() => {
+    const set = new Set(byWatchTopic.map(searchTermOf));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [byWatchTopic]);
+
+  const handleWatchTopicChange = (v: string) => {
+    setWatchTopicFilter(v);
+    // Options for the search-term select depend on the chosen watch topic —
+    // a stale selection from the previous topic would silently over-filter.
+    setSearchTermFilter(ALL);
+  };
+
+  const rows = useMemo(
+    () =>
+      searchTermFilter === ALL
+        ? byWatchTopic
+        : byWatchTopic.filter((t) => searchTermOf(t) === searchTermFilter),
+    [byWatchTopic, searchTermFilter]
+  );
+
   if (isLoading) {
     return (
       <div className="space-y-2">
@@ -307,8 +376,43 @@ function SingleEntityTab({
   return (
     <>
       {trends.length > 0 && (
-        <div className="mb-3 flex justify-end">
-          <Badge variant="outline">{trends.length} trends</Badge>
+        <div className="mb-3 flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Select value={watchTopicFilter} onValueChange={handleWatchTopicChange}>
+              <SelectTrigger className="h-8 w-56 text-xs">
+                <SelectValue placeholder="Watch topic" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL} className="text-xs">
+                  All watch topics
+                </SelectItem>
+                {watchTopicOptions.map((topic) => (
+                  <SelectItem key={topic} value={topic} className="text-xs">
+                    {topic}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={searchTermFilter} onValueChange={setSearchTermFilter}>
+              <SelectTrigger className="h-8 w-56 text-xs">
+                <SelectValue placeholder="Search term" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL} className="text-xs">
+                  All search terms
+                </SelectItem>
+                {searchTermOptions.map((term) => (
+                  <SelectItem key={term} value={term} className="text-xs">
+                    {term}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Badge variant="outline">
+            {rows.length} of {trends.length} trends
+          </Badge>
         </div>
       )}
       {trends.length === 0 ? (
@@ -317,6 +421,16 @@ function SingleEntityTab({
             <p className="text-sm font-medium text-muted-foreground">No trends detected yet</p>
             <p className="text-xs text-muted-foreground mt-1">
               Run scrapers and let the pipeline process evidence to surface trends.
+            </p>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-16 text-center">
+            <TrendingUp className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
+            <p className="text-sm font-medium text-muted-foreground">
+              No trends match the selected filters
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Try a different watch topic or search term.
             </p>
           </div>
         ) : (
@@ -378,7 +492,7 @@ function SingleEntityTab({
 
             {/* Rows */}
             <div className="divide-y divide-border">
-              {tooltipped.map((trend) => {
+              {rows.map((trend) => {
                 const stateCfg =
                   STATE_CONFIG[trend.state] ?? {
                     label: trend.state,

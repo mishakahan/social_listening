@@ -139,6 +139,7 @@ export const tpSeedItems = pgTable("tp_seed_items", {
   geography: text("geography").notNull(),
   productCategoryLink: text("product_category_link"),
   territoryTag: text("territory_tag"),
+  watchTopic: text("watch_topic"),
   strategicCentrality: integer("strategic_centrality").notNull().default(50),
   actionableAt: text("actionable_at"),
   groundedIn: jsonb("grounded_in").$type<string[]>().default([]),
@@ -160,6 +161,7 @@ export const tpScoutQueries = pgTable("tp_scout_queries", {
     .notNull()
     .references(() => tpSeedItems.id, { onDelete: "cascade" }),
   topicLabel: text("topic_label").notNull(),
+  watchTopic: text("watch_topic"),
   geography: text("geography").notNull(),
   language: text("language").notNull(),
   keywords: jsonb("keywords").notNull().$type<string[]>(),

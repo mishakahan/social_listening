@@ -37,13 +37,20 @@ function wordsMatch(a: string, b: string): boolean {
 // flipping an anchor-required DISCOVERED term to seeded. Two unrelated
 // product categories sharing one content word is common in food vocab, so
 // this branch stays unimplemented; see the fix report for detail.
-export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
+//
+// Returns the seed term (already normalized, as it appears in `seedTerms`)
+// that matched `label`, or null if none did. Shared by wasSearchedFor (which
+// only cares whether a match exists) and resolveWatchTopic (which needs to
+// know *which* term matched, to look up its watch topic).
+function matchSeedTerm(label: string, seedTerms: Iterable<string>): string | null {
   const lab = normalizeTerm(label);
-  if (!lab) return true;
-  if (seedTerms.has(lab)) return true;
+  if (!lab) return null;
+
+  const seedSet: Set<string> = seedTerms instanceof Set ? seedTerms : new Set(seedTerms);
+  if (seedSet.has(lab)) return lab;
 
   const labWords = lab.split(/\s+/);
-  for (const seed of seedTerms) {
+  for (const seed of seedSet) {
     if (!seed) continue;
     const seedWords = seed.split(/\s+/);
 
@@ -51,7 +58,7 @@ export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
     // anywhere inside the seed: "empanada" matches seed "empanadas a
     // domicilio" via its first word, "jamon" matches "jamon serrano".
     if (labWords.length === 1 && seedWords.some((w) => wordsMatch(w, lab))) {
-      return true;
+      return seed;
     }
 
     // Multi-word label containing a whole single-word seed:
@@ -61,7 +68,7 @@ export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
       seedWords.length === 1 &&
       labWords.some((lw) => wordsMatch(lw, seedWords[0]!))
     ) {
-      return true;
+      return seed;
     }
 
     // Multi-word label vs multi-word seed (e.g. "frango desfiado" vs
@@ -69,5 +76,27 @@ export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
     // NOTE above the function for why a content-word intersection was tried
     // and rejected.
   }
-  return false;
+  return null;
+}
+
+export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
+  const lab = normalizeTerm(label);
+  if (!lab) return true;
+  return matchSeedTerm(label, seedTerms) !== null;
+}
+
+// Resolves a trend label to the watch topic of whichever seed term matched
+// it, using the same matching rules as wasSearchedFor (so a trend that is
+// "searched for" always resolves to a topic when one is available, and a
+// genuinely discovered trend resolves to null). `termToTopic` maps a
+// normalized seed term (keyword/hashtag/topicLabel) to its watch topic;
+// terms whose scout query predates the watch-topic column are simply absent
+// from the map, so they resolve to null and the trend groups under
+// "Uncategorised" in the UI rather than being hidden.
+export function resolveWatchTopic(
+  label: string,
+  termToTopic: Map<string, string>
+): string | null {
+  const matched = matchSeedTerm(label, termToTopic.keys());
+  return matched ? (termToTopic.get(matched) ?? null) : null;
 }

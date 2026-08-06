@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
 import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
-import { wasSearchedFor, normalizeTerm } from "../services/discovery-origin.js";
+import { wasSearchedFor, normalizeTerm, resolveWatchTopic } from "../services/discovery-origin.js";
 import {
   companies,
   users,
@@ -1756,6 +1756,11 @@ export interface EnrichedTrend {
   // this trend's title — it was surfaced by extraction reading real posts
   // rather than by a query we wrote. See services/discovery-origin.ts.
   discovered: boolean;
+  // The watch topic (e.g. "Sauces and dipping in Latin America") of whichever
+  // seed term matched this trend, or null when no seed term matched (a
+  // genuine discovery) or the matching scout query predates the watch-topic
+  // column. Null groups under "Uncategorised" in the UI — never hidden.
+  watchTopic: string | null;
 }
 
 export type TrendSortBy =
@@ -1794,29 +1799,40 @@ async function getCoreVocabularyMatcher(
  * of the discovered-vs-searched-for classification surfaced on the trends
  * radar (see services/discovery-origin.ts).
  *
- * NOTE: this selects one row per column today. A future pass may need to
- * select `watchTopic` too and build a term→topic map rather than a flat set
- * — if so, add the column to the `select` below and fold its values into
- * `seedTerms` alongside keywords/hashtags/topicLabel, rather than issuing a
- * second query.
+ * Also builds `termToTopic`, a normalized-term → watchTopic map, from the
+ * same rows (one query, no second round trip). Scout queries created before
+ * the watch-topic column existed simply have `watchTopic: null` and
+ * contribute no entries — their terms still land in `seedTerms`, they just
+ * resolve to no topic via `resolveWatchTopic`, which is the intended
+ * "Uncategorised" fallback rather than a bug.
  */
-async function getSeedVocabulary(companyId: number): Promise<Set<string>> {
+async function getSeedVocabulary(
+  companyId: number
+): Promise<{ seedTerms: Set<string>; termToTopic: Map<string, string> }> {
   const seedRows = await db
     .select({
       keywords: tpScoutQueries.keywords,
       hashtags: tpScoutQueries.hashtags,
       topicLabel: tpScoutQueries.topicLabel,
+      watchTopic: tpScoutQueries.watchTopic,
     })
     .from(tpScoutQueries)
     .where(eq(tpScoutQueries.companyId, companyId));
 
   const seedTerms = new Set<string>();
+  const termToTopic = new Map<string, string>();
   for (const r of seedRows) {
-    for (const k of r.keywords ?? []) seedTerms.add(normalizeTerm(String(k)));
-    for (const h of r.hashtags ?? []) seedTerms.add(normalizeTerm(String(h)));
-    if (r.topicLabel) seedTerms.add(normalizeTerm(r.topicLabel));
+    const terms: string[] = [];
+    for (const k of r.keywords ?? []) terms.push(normalizeTerm(String(k)));
+    for (const h of r.hashtags ?? []) terms.push(normalizeTerm(String(h)));
+    if (r.topicLabel) terms.push(normalizeTerm(r.topicLabel));
+
+    for (const t of terms) {
+      seedTerms.add(t);
+      if (r.watchTopic && !termToTopic.has(t)) termToTopic.set(t, r.watchTopic);
+    }
   }
-  return seedTerms;
+  return { seedTerms, termToTopic };
 }
 
 export async function getTrendsEnriched(
@@ -1845,7 +1861,7 @@ export async function getTrendsEnriched(
   // from the radar immediately — without needing to re-run the state machine
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
-  const seedTerms = await getSeedVocabulary(companyId);
+  const { seedTerms, termToTopic } = await getSeedVocabulary(companyId);
 
   const mapped = rows
     .filter((r) =>
@@ -1869,6 +1885,7 @@ export async function getTrendsEnriched(
       platforms: r.es.platformsSeen ?? [],
       evidenceCount: r.ki.evidenceCount ?? 0,
       discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
+      watchTopic: resolveWatchTopic(r.ki.title ?? "", termToTopic),
       geography: r.es.geography,
       territoryTag: r.es.territoryTag ?? null,
       summary: r.ki.summary ?? null,
@@ -1965,7 +1982,7 @@ export async function getTrendDetail(
   // surfaces stay consistent with the list endpoint — a bookmarked trend whose
   // label is in the company's stoplist becomes a 404.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
-  const seedTerms = await getSeedVocabulary(companyId);
+  const { seedTerms, termToTopic } = await getSeedVocabulary(companyId);
 
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
@@ -1991,6 +2008,7 @@ export async function getTrendDetail(
       platforms: [],
       evidenceCount: ki.evidenceCount ?? 0,
       discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
+      watchTopic: resolveWatchTopic(ki.title ?? "", termToTopic),
       geography: ki.geographicScope ?? "Global",
       territoryTag: null,
       summary: ki.summary ?? null,
@@ -2066,6 +2084,7 @@ export async function getTrendDetail(
     platforms: es.platformsSeen ?? [],
     evidenceCount: ki.evidenceCount ?? 0,
     discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
+    watchTopic: resolveWatchTopic(ki.title ?? "", termToTopic),
     geography: es.geography,
     territoryTag: es.territoryTag ?? null,
     summary: ki.summary ?? null,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { wasSearchedFor, normalizeTerm } from "./discovery-origin.js";
+import { wasSearchedFor, normalizeTerm, resolveWatchTopic } from "./discovery-origin.js";
 
 const seeds = new Set(
   ["Maionese", "maionese caseira", "#vitaminas", "empanadas a domicilio", "vitamin gummies"]
@@ -66,4 +66,26 @@ test("does not mangle citrus-class words through the matching path", () => {
 test("a multi-word label is NOT matched against a multi-word seed on a shared word alone", () => {
   const s = new Set(["protein gummies"].map(normalizeTerm));
   assert.equal(wasSearchedFor("whey protein", s), false);
+});
+
+test("resolveWatchTopic returns the topic of the matching seed term", () => {
+  const m = new Map([
+    [normalizeTerm("maionese"), "Condiments"],
+    [normalizeTerm("empanadas a domicilio"), "Snacks"],
+  ]);
+  assert.equal(resolveWatchTopic("maionese", m), "Condiments");
+  // word-inside-multi-word-seed matching still applies
+  assert.equal(resolveWatchTopic("empanadas", m), "Snacks");
+});
+
+test("resolveWatchTopic returns null for a genuinely discovered term", () => {
+  const m = new Map([[normalizeTerm("maionese"), "Condiments"]]);
+  assert.equal(resolveWatchTopic("yuzu", m), null);
+});
+
+test("resolveWatchTopic returns null when the matching term has no topic in the map", () => {
+  // seed term present in the vocabulary set but absent from termToTopic
+  // (a pre-watch-topic scout query) must resolve to null, not throw.
+  const m = new Map<string, string>();
+  assert.equal(resolveWatchTopic("anything", m), null);
 });
