@@ -86,6 +86,21 @@ async function main() {
       await tx.execute(
         sql`update tp_entities set deleted_at = now() where id = ${p.from.id}`
       );
+      // The entity soft-delete alone doesn't hide it from the detail route —
+      // getTrendDetail (unlike getTrendsEnriched) had no deletedAt guard until
+      // this fix wave, and even with that guard a knowledge item left
+      // "current" would just keep aging on its old data forever instead of
+      // ever being cleaned up. Archive the knowledge item(s) this entity's
+      // state rows point to in the same transaction so both sides land or
+      // neither does.
+      await tx.execute(
+        sql`update knowledge_items
+              set archived = true
+            where id in (
+              select knowledge_item_id from tp_entity_state
+              where entity_id = ${p.from.id} and knowledge_item_id is not null
+            )`
+      );
     });
   }
   console.log(`merged ${plans.length}`);

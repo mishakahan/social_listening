@@ -1989,6 +1989,7 @@ export async function getTrendDetail(
       specificityVerdict: TrendSpecificityVerdict | null;
       evidenceRecentCount: number;
       evidenceWindowDays: number;
+      evidenceTotalCount: number;
     })
   | null
 > {
@@ -1998,11 +1999,21 @@ export async function getTrendDetail(
   ];
 
   const rows = await db
-    .select({ ki: knowledgeItems, es: tpEntityState })
+    .select({ ki: knowledgeItems, es: tpEntityState, entityDeletedAt: tpEntities.deletedAt })
     .from(tpEntityState)
     .innerJoin(knowledgeItems, eq(tpEntityState.knowledgeItemId, knowledgeItems.id))
+    .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
     .where(and(...conditions))
     .limit(1);
+
+  // A soft-deleted entity (see scripts/merge-dangling-modifiers.ts) must not
+  // still be servable here — getTrendsEnriched already excludes it from the
+  // list, and without this guard the detail route kept serving it forever
+  // (nothing archives/ages it out once hidden from the list). Checked here,
+  // rather than filtered into the WHERE above, so a deleted entity returns
+  // null outright instead of silently falling through to the stateless
+  // knowledge-item fallback below.
+  if (rows.length > 0 && rows[0]!.entityDeletedAt != null) return null;
 
   // Apply the per-company core-vocabulary stoplist so that detail/timeseries
   // surfaces stay consistent with the list endpoint — a bookmarked trend whose
@@ -2050,6 +2061,7 @@ export async function getTrendDetail(
       evidence: [],
       evidenceRecentCount: recentEvidenceCount(ki.evidenceCount),
       evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+      evidenceTotalCount: 0,
     };
   }
 
@@ -2072,6 +2084,22 @@ export async function getTrendDetail(
     )
     .orderBy(desc(tpRawSignals.capturedAt))
     .limit(20);
+
+  // Real total, not the length of the capped list above (limit 20) — the UI
+  // was rendering that capped length as "all time", which is simply false for
+  // any entity with more than 20 pieces of evidence (see storage/index.ts
+  // getTrendDetail review note: vitamin d3 showed "20 all time" vs a true 48).
+  const evidenceTotalRows = await db
+    .select({ total: count() })
+    .from(tpSignalEntities)
+    .innerJoin(tpRawSignals, eq(tpSignalEntities.rawSignalId, tpRawSignals.id))
+    .where(
+      and(
+        eq(tpSignalEntities.entityId, es.entityId),
+        eq(tpRawSignals.companyId, companyId)
+      )
+    );
+  const evidenceTotalCount = evidenceTotalRows[0]?.total ?? 0;
 
   const evidence: TrendEvidence[] = evidenceRows.map((r) => ({
     id: r.sig.id,
@@ -2128,6 +2156,7 @@ export async function getTrendDetail(
     evidence,
     evidenceRecentCount,
     evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+    evidenceTotalCount,
   };
 }
 
