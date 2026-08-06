@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { wasSearchedFor, normalizeTerm, resolveWatchTopic } from "./discovery-origin.js";
+import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "./discovery-origin.js";
 
 const seeds = new Set(
   ["Maionese", "maionese caseira", "#vitaminas", "empanadas a domicilio", "vitamin gummies"]
@@ -68,24 +68,40 @@ test("a multi-word label is NOT matched against a multi-word seed on a shared wo
   assert.equal(wasSearchedFor("whey protein", s), false);
 });
 
-test("resolveWatchTopic returns the topic of the matching seed term", () => {
-  const m = new Map([
-    [normalizeTerm("maionese"), "Condiments"],
-    [normalizeTerm("empanadas a domicilio"), "Snacks"],
+test("resolveSeedMatch returns the watch topic and search term of the matching seed", () => {
+  const terms = new Set([normalizeTerm("maionese"), normalizeTerm("empanadas a domicilio")]);
+  const m = new Map<string, SeedMatch>([
+    [normalizeTerm("maionese"), { watchTopic: "Condiments", searchTerm: "Spicy mayo trends BR" }],
+    [normalizeTerm("empanadas a domicilio"), { watchTopic: "Snacks", searchTerm: "Food delivery app usage CO" }],
   ]);
-  assert.equal(resolveWatchTopic("maionese", m), "Condiments");
+  assert.deepEqual(resolveSeedMatch("maionese", terms, m), {
+    watchTopic: "Condiments",
+    searchTerm: "Spicy mayo trends BR",
+  });
   // word-inside-multi-word-seed matching still applies
-  assert.equal(resolveWatchTopic("empanadas", m), "Snacks");
+  assert.deepEqual(resolveSeedMatch("empanadas", terms, m), {
+    watchTopic: "Snacks",
+    searchTerm: "Food delivery app usage CO",
+  });
 });
 
-test("resolveWatchTopic returns null for a genuinely discovered term", () => {
-  const m = new Map([[normalizeTerm("maionese"), "Condiments"]]);
-  assert.equal(resolveWatchTopic("yuzu", m), null);
+test("resolveSeedMatch returns nulls for a genuinely discovered term", () => {
+  const terms = new Set([normalizeTerm("maionese")]);
+  const m = new Map<string, SeedMatch>([
+    [normalizeTerm("maionese"), { watchTopic: "Condiments", searchTerm: "Spicy mayo trends BR" }],
+  ]);
+  assert.deepEqual(resolveSeedMatch("yuzu", terms, m), { watchTopic: null, searchTerm: null });
 });
 
-test("resolveWatchTopic returns null when the matching term has no topic in the map", () => {
-  // seed term present in the vocabulary set but absent from termToTopic
-  // (a pre-watch-topic scout query) must resolve to null, not throw.
-  const m = new Map<string, string>();
-  assert.equal(resolveWatchTopic("anything", m), null);
+// Defensive path: a term the matcher considers part of the vocabulary (it's
+// in `seedTerms`) but with no corresponding entry in `termToSeed`. This
+// shouldn't happen when both are built together in one pass (see
+// getSeedVocabulary), but the fallback must actually be exercised here, not
+// just asserted unreachable — a prior version of this test passed an empty
+// Map paired with an empty Set, so matchSeedTerm returned null before ever
+// reaching the `termToSeed.get(...) ?? NO_MATCH` fallback line.
+test("resolveSeedMatch falls back to nulls when a matched term has no map entry", () => {
+  const terms = new Set([normalizeTerm("anything")]);
+  const m = new Map<string, SeedMatch>(); // deliberately missing the entry
+  assert.deepEqual(resolveSeedMatch("anything", terms, m), { watchTopic: null, searchTerm: null });
 });

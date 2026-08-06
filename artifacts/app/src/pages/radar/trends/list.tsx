@@ -59,23 +59,33 @@ interface Trend {
   // Latin America"), null when no seed term matched it (a genuine discovery)
   // or the matching scout query predates the watch-topic column. Grouped
   // under "Uncategorised" in the UI rather than being hidden — see
-  // storage/index.ts getSeedVocabulary / resolveWatchTopic.
+  // storage/index.ts getSeedVocabulary / resolveSeedMatch.
   watchTopic?: string | null;
-  topicLabel?: string | null;
+  // The matching scout query's own topicLabel (e.g. "Avocado sauces MX") —
+  // the real "search term" facet. NOT the trend's own topicLabel (that field
+  // is always identical to `title`, since knowledge_items.topicLabel is set
+  // to the entity's canonical label — using it here would render one
+  // single-row option per trend instead of grouping by the shared seed
+  // query, which is why this is a distinct field). Null under the same
+  // conditions as watchTopic.
+  searchTerm?: string | null;
 }
 
 const UNCATEGORISED = "Uncategorised";
+const NO_SEARCH_TERM = "No matching search term";
 const ALL = "all";
 
 function watchTopicOf(t: Trend): string {
   return t.watchTopic ?? UNCATEGORISED;
 }
 
-// The "search term" is the specific query label the trend matched — the
-// finest-grained facet under a watch topic. topicLabel carries this today;
-// falls back to the trend's own title when topicLabel is unset.
+// The "search term" facet is keyed on the matched seed's own topicLabel
+// (tp_scout_queries.topic_label, e.g. "Avocado sauces MX") — the label the
+// client already sees when they configure seeds. A trend with no seed match
+// gets the explicit NO_SEARCH_TERM bucket, never its own title: falling back
+// to title would put one trend per option and defeat grouping entirely.
 function searchTermOf(t: Trend): string {
-  return t.topicLabel ?? t.title;
+  return t.searchTerm ?? NO_SEARCH_TERM;
 }
 
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
@@ -334,7 +344,12 @@ function SingleEntityTab({
 
   const searchTermOptions = useMemo(() => {
     const set = new Set(byWatchTopic.map(searchTermOf));
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    // NO_SEARCH_TERM sorts last, same convention as UNCATEGORISED above.
+    return Array.from(set).sort((a, b) => {
+      if (a === NO_SEARCH_TERM) return 1;
+      if (b === NO_SEARCH_TERM) return -1;
+      return a.localeCompare(b);
+    });
   }, [byWatchTopic]);
 
   const handleWatchTopicChange = (v: string) => {

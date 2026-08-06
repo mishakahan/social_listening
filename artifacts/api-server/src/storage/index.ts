@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
 import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
-import { wasSearchedFor, normalizeTerm, resolveWatchTopic } from "../services/discovery-origin.js";
+import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "../services/discovery-origin.js";
 import {
   companies,
   users,
@@ -1761,6 +1761,12 @@ export interface EnrichedTrend {
   // genuine discovery) or the matching scout query predates the watch-topic
   // column. Null groups under "Uncategorised" in the UI — never hidden.
   watchTopic: string | null;
+  // The matching scout query's own topicLabel (e.g. "Avocado sauces MX") —
+  // the "search term" facet under a watch topic. Deliberately NOT the same
+  // as `topicLabel` above: that field is the trend's own entity label
+  // (always equal to `title`, set in state-machine.ts), not the seed that
+  // found it. Null under the same conditions as `watchTopic`.
+  searchTerm: string | null;
 }
 
 export type TrendSortBy =
@@ -1799,16 +1805,28 @@ async function getCoreVocabularyMatcher(
  * of the discovered-vs-searched-for classification surfaced on the trends
  * radar (see services/discovery-origin.ts).
  *
- * Also builds `termToTopic`, a normalized-term → watchTopic map, from the
- * same rows (one query, no second round trip). Scout queries created before
- * the watch-topic column existed simply have `watchTopic: null` and
- * contribute no entries — their terms still land in `seedTerms`, they just
- * resolve to no topic via `resolveWatchTopic`, which is the intended
- * "Uncategorised" fallback rather than a bug.
+ * Also builds `termToSeed`, a normalized-term → {watchTopic, searchTerm} map,
+ * from the same rows (one query, no second round trip). Scout queries
+ * created before the watch-topic column existed simply have
+ * `watchTopic: null`; their terms still land in `seedTerms` (and get a
+ * `searchTerm`, since topicLabel is NOT NULL), they just resolve to no watch
+ * topic via `resolveSeedMatch` — the intended "Uncategorised" fallback
+ * rather than a bug.
+ *
+ * DETERMINISM: a term (e.g. "salsa verde", "maionese", "tofu") can appear in
+ * keywords/hashtags across MULTIPLE scout queries that carry different
+ * topicLabel/watchTopic — company 2's live vocabulary has several of these.
+ * `termToSeed` is first-wins (`!termToSeed.has(t)`), so which query "owns"
+ * a shared term depends entirely on iteration order. The explicit
+ * `.orderBy(asc(tpScoutQueries.id))` below pins that order to ascending
+ * scout-query id — i.e. **the earliest-created scout query that contains a
+ * given term wins its watch topic and search term, every time**. Without
+ * this ORDER BY, Postgres row order (and therefore a trend's displayed
+ * group) is unspecified and can change between requests.
  */
 async function getSeedVocabulary(
   companyId: number
-): Promise<{ seedTerms: Set<string>; termToTopic: Map<string, string> }> {
+): Promise<{ seedTerms: Set<string>; termToSeed: Map<string, SeedMatch> }> {
   const seedRows = await db
     .select({
       keywords: tpScoutQueries.keywords,
@@ -1817,10 +1835,11 @@ async function getSeedVocabulary(
       watchTopic: tpScoutQueries.watchTopic,
     })
     .from(tpScoutQueries)
-    .where(eq(tpScoutQueries.companyId, companyId));
+    .where(eq(tpScoutQueries.companyId, companyId))
+    .orderBy(asc(tpScoutQueries.id));
 
   const seedTerms = new Set<string>();
-  const termToTopic = new Map<string, string>();
+  const termToSeed = new Map<string, SeedMatch>();
   for (const r of seedRows) {
     const terms: string[] = [];
     for (const k of r.keywords ?? []) terms.push(normalizeTerm(String(k)));
@@ -1829,10 +1848,13 @@ async function getSeedVocabulary(
 
     for (const t of terms) {
       seedTerms.add(t);
-      if (r.watchTopic && !termToTopic.has(t)) termToTopic.set(t, r.watchTopic);
+      // First-wins by ascending scout-query id (see DETERMINISM note above).
+      if (!termToSeed.has(t)) {
+        termToSeed.set(t, { watchTopic: r.watchTopic ?? null, searchTerm: r.topicLabel });
+      }
     }
   }
-  return { seedTerms, termToTopic };
+  return { seedTerms, termToSeed };
 }
 
 export async function getTrendsEnriched(
@@ -1861,38 +1883,42 @@ export async function getTrendsEnriched(
   // from the radar immediately — without needing to re-run the state machine
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
-  const { seedTerms, termToTopic } = await getSeedVocabulary(companyId);
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
 
   const mapped = rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
     )
     .filter((r) => !isCoreVocab(r.ki.title) && !isCoreVocab(r.ki.topicLabel))
-    .map((r) => ({
-      id: r.ki.id,
-      title: r.ki.title,
-      state: r.es.state,
-      signalStrength: r.ki.signalStrength ?? 0,
-      wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
-      momGrowthPct:
-        r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
-      yoyGrowthPct:
-        r.es.yoyGrowthPct == null ? null : Math.round(r.es.yoyGrowthPct * 1000) / 10,
-      momCurrent: r.es.momCurrent ?? null,
-      momPrior: r.es.momPrior ?? null,
-      yoyCurrent: r.es.yoyCurrent ?? null,
-      yoyPrior: r.es.yoyPrior ?? null,
-      platforms: r.es.platformsSeen ?? [],
-      evidenceCount: r.ki.evidenceCount ?? 0,
-      discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
-      watchTopic: resolveWatchTopic(r.ki.title ?? "", termToTopic),
-      geography: r.es.geography,
-      territoryTag: r.es.territoryTag ?? null,
-      summary: r.ki.summary ?? null,
-      description: r.ki.description ?? null,
-      topicLabel: r.ki.topicLabel ?? null,
-      updatedAt: r.ki.updatedAt.toISOString(),
-    }));
+    .map((r) => {
+      const seedMatch = resolveSeedMatch(r.ki.title ?? "", seedTerms, termToSeed);
+      return {
+        id: r.ki.id,
+        title: r.ki.title,
+        state: r.es.state,
+        signalStrength: r.ki.signalStrength ?? 0,
+        wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
+        momGrowthPct:
+          r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
+        yoyGrowthPct:
+          r.es.yoyGrowthPct == null ? null : Math.round(r.es.yoyGrowthPct * 1000) / 10,
+        momCurrent: r.es.momCurrent ?? null,
+        momPrior: r.es.momPrior ?? null,
+        yoyCurrent: r.es.yoyCurrent ?? null,
+        yoyPrior: r.es.yoyPrior ?? null,
+        platforms: r.es.platformsSeen ?? [],
+        evidenceCount: r.ki.evidenceCount ?? 0,
+        discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
+        watchTopic: seedMatch.watchTopic,
+        searchTerm: seedMatch.searchTerm,
+        geography: r.es.geography,
+        territoryTag: r.es.territoryTag ?? null,
+        summary: r.ki.summary ?? null,
+        description: r.ki.description ?? null,
+        topicLabel: r.ki.topicLabel ?? null,
+        updatedAt: r.ki.updatedAt.toISOString(),
+      };
+    });
 
   const sortBy = filters?.sortBy ?? "signal";
   const dir = filters?.sortDir ?? "desc";
@@ -1982,7 +2008,7 @@ export async function getTrendDetail(
   // surfaces stay consistent with the list endpoint — a bookmarked trend whose
   // label is in the company's stoplist becomes a 404.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
-  const { seedTerms, termToTopic } = await getSeedVocabulary(companyId);
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
 
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
@@ -1992,6 +2018,7 @@ export async function getTrendDetail(
     if (kiRows.length === 0) return null;
     const ki = kiRows[0]!;
     if (isCoreVocab(ki.title) || isCoreVocab(ki.topicLabel)) return null;
+    const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
     return {
       id: ki.id,
       title: ki.title,
@@ -2008,7 +2035,8 @@ export async function getTrendDetail(
       platforms: [],
       evidenceCount: ki.evidenceCount ?? 0,
       discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
-      watchTopic: resolveWatchTopic(ki.title ?? "", termToTopic),
+      watchTopic: seedMatch.watchTopic,
+      searchTerm: seedMatch.searchTerm,
       geography: ki.geographicScope ?? "Global",
       territoryTag: null,
       summary: ki.summary ?? null,
@@ -2065,6 +2093,7 @@ export async function getTrendDetail(
   // `evidenceRows`, which the query above caps at 20. See
   // services/evidence-window.ts:recentEvidenceCount for why.
   const evidenceRecentCount = recentEvidenceCount(ki.evidenceCount);
+  const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
 
   return {
     id: ki.id,
@@ -2084,7 +2113,8 @@ export async function getTrendDetail(
     platforms: es.platformsSeen ?? [],
     evidenceCount: ki.evidenceCount ?? 0,
     discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
-    watchTopic: resolveWatchTopic(ki.title ?? "", termToTopic),
+    watchTopic: seedMatch.watchTopic,
+    searchTerm: seedMatch.searchTerm,
     geography: es.geography,
     territoryTag: es.territoryTag ?? null,
     summary: ki.summary ?? null,

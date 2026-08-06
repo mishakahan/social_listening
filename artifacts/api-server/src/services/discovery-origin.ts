@@ -40,17 +40,21 @@ function wordsMatch(a: string, b: string): boolean {
 //
 // Returns the seed term (already normalized, as it appears in `seedTerms`)
 // that matched `label`, or null if none did. Shared by wasSearchedFor (which
-// only cares whether a match exists) and resolveWatchTopic (which needs to
-// know *which* term matched, to look up its watch topic).
-function matchSeedTerm(label: string, seedTerms: Iterable<string>): string | null {
+// only cares whether a match exists) and resolveSeedMatch (which needs to
+// know *which* term matched, to look up its watch topic / search term).
+//
+// Takes a `Set<string>` directly (not an arbitrary Iterable) so callers that
+// already hold a Set — every real caller does — don't pay for rebuilding one
+// on every invocation. Callers matching against a Map's keys should build
+// the Set once alongside the map, not derive it per call.
+function matchSeedTerm(label: string, seedTerms: Set<string>): string | null {
   const lab = normalizeTerm(label);
   if (!lab) return null;
 
-  const seedSet: Set<string> = seedTerms instanceof Set ? seedTerms : new Set(seedTerms);
-  if (seedSet.has(lab)) return lab;
+  if (seedTerms.has(lab)) return lab;
 
   const labWords = lab.split(/\s+/);
-  for (const seed of seedSet) {
+  for (const seed of seedTerms) {
     if (!seed) continue;
     const seedWords = seed.split(/\s+/);
 
@@ -85,18 +89,34 @@ export function wasSearchedFor(label: string, seedTerms: Set<string>): boolean {
   return matchSeedTerm(label, seedTerms) !== null;
 }
 
-// Resolves a trend label to the watch topic of whichever seed term matched
-// it, using the same matching rules as wasSearchedFor (so a trend that is
-// "searched for" always resolves to a topic when one is available, and a
-// genuinely discovered trend resolves to null). `termToTopic` maps a
-// normalized seed term (keyword/hashtag/topicLabel) to its watch topic;
-// terms whose scout query predates the watch-topic column are simply absent
-// from the map, so they resolve to null and the trend groups under
-// "Uncategorised" in the UI rather than being hidden.
-export function resolveWatchTopic(
+// What a matched seed term carries: the watch topic it ladders up to
+// (nullable — the query may predate the watch-topic column) and the seed's
+// own topicLabel (the scout query's search-term label, e.g. "Avocado sauces
+// MX" — NOT the trend's own title/topicLabel, which is a different, always-
+// equal-to-title field on knowledge_items; see storage/index.ts).
+export interface SeedMatch {
+  watchTopic: string | null;
+  searchTerm: string | null;
+}
+
+const NO_MATCH: SeedMatch = { watchTopic: null, searchTerm: null };
+
+// Resolves a trend label to the watch topic + search term of whichever seed
+// term matched it, using the same matching rules as wasSearchedFor (so a
+// trend that is "searched for" always resolves to a topic/term when one is
+// available, and a genuinely discovered trend resolves to nulls). `seedTerms`
+// must be the same Set backing `termToSeed`'s keys (callers build both
+// together in one pass — see getSeedVocabulary) so matching doesn't rebuild
+// a Set per trend. Terms with no map entry (shouldn't happen if seedTerms and
+// termToSeed are built together, but handled defensively) resolve to nulls
+// rather than throwing — the trend groups under "Uncategorised" in the UI
+// rather than being hidden.
+export function resolveSeedMatch(
   label: string,
-  termToTopic: Map<string, string>
-): string | null {
-  const matched = matchSeedTerm(label, termToTopic.keys());
-  return matched ? (termToTopic.get(matched) ?? null) : null;
+  seedTerms: Set<string>,
+  termToSeed: Map<string, SeedMatch>
+): SeedMatch {
+  const matched = matchSeedTerm(label, seedTerms);
+  if (!matched) return NO_MATCH;
+  return termToSeed.get(matched) ?? NO_MATCH;
 }
