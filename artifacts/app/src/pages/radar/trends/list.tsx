@@ -263,8 +263,6 @@ export default function TrendsListPage() {
     }
   };
 
-  const tooltipped = useMemo(() => trends, [trends]);
-
   return (
     <TooltipProvider delayDuration={150}>
       <div className="p-8 max-w-6xl mx-auto">
@@ -288,7 +286,6 @@ export default function TrendsListPage() {
               sortDir={sortDir}
               onSort={handleSort}
               navigate={navigate}
-              tooltipped={tooltipped}
             />
           </TabsContent>
           <TabsContent value="composite" className="mt-4">
@@ -308,7 +305,6 @@ interface SingleEntityTabProps {
   sortDir: "asc" | "desc";
   onSort: (k: SortKey) => void;
   navigate: (to: string) => void;
-  tooltipped: Trend[];
 }
 
 function SingleEntityTab({
@@ -319,27 +315,26 @@ function SingleEntityTab({
   sortDir,
   onSort: handleSort,
   navigate,
-  tooltipped,
 }: SingleEntityTabProps) {
   const [watchTopicFilter, setWatchTopicFilter] = useState(ALL);
   const [searchTermFilter, setSearchTermFilter] = useState(ALL);
 
   const watchTopicOptions = useMemo(() => {
-    const set = new Set(tooltipped.map(watchTopicOf));
+    const set = new Set(trends.map(watchTopicOf));
     // Uncategorised sorts last, real topics sort alphabetically ahead of it.
     return Array.from(set).sort((a, b) => {
       if (a === UNCATEGORISED) return 1;
       if (b === UNCATEGORISED) return -1;
       return a.localeCompare(b);
     });
-  }, [tooltipped]);
+  }, [trends]);
 
   const byWatchTopic = useMemo(
     () =>
       watchTopicFilter === ALL
-        ? tooltipped
-        : tooltipped.filter((t) => watchTopicOf(t) === watchTopicFilter),
-    [tooltipped, watchTopicFilter]
+        ? trends
+        : trends.filter((t) => watchTopicOf(t) === watchTopicFilter),
+    [trends, watchTopicFilter]
   );
 
   const searchTermOptions = useMemo(() => {
@@ -526,7 +521,7 @@ function SingleEntityTab({
                         {trend.discovered && (
                           <span
                             title="No keyword we searched for matches this — extraction surfaced it from real posts"
-                            className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700"
+                            className="ml-2 rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300"
                           >
                             Discovered
                           </span>
