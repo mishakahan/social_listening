@@ -1011,10 +1011,17 @@ router.post("/webhooks/apify", async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Ingestion trigger helper (async, not awaited from webhook)
+//
+// Returns the number of USABLE signals actually written to the DB for this
+// run (0 if the run was missing, already claimed by another worker, or the
+// dataset yielded nothing usable after normalisation / noise-floor /
+// language filtering / dedup). This is deliberately NOT "did we attempt it"
+// — the orchestrator's ingest stage (below) sums this return value, and a
+// run dispatched-but-zero-usable must read as zero, not as "processed."
 // ---------------------------------------------------------------------------
-async function triggerIngestion(runId: number, datasetId: string): Promise<void> {
+async function triggerIngestion(runId: number, datasetId: string): Promise<number> {
   const run = await storage.getActorRun(runId);
-  if (!run) return;
+  if (!run) return 0;
 
   logger.info({ runId, datasetId }, "Fetching dataset for ingestion");
   const items = await getApifyClient().dataset(datasetId).listItems({ limit: 1000 });
@@ -1023,8 +1030,8 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
   // Google Trends has its own narrow target table; everything else flows
   // through the standard social-mention ingestion + entity extraction path.
   if (run.platform === "google_trends") {
-    await ingestGoogleTrendsRun(run, data);
-    return;
+    const gtStats = await ingestGoogleTrendsRun(run, data);
+    return gtStats.usable;
   }
 
   // Defer markIngestionDone until AFTER entity extraction completes. Otherwise
@@ -1036,7 +1043,7 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
   // If we lost the race to claim ingestion, another worker owns this run's
   // post-processing — do not run extraction or mark done here, or we'd
   // release the finalize guard early while the real owner is still working.
-  if (!stats.claimed) return;
+  if (!stats.claimed) return 0;
 
   // Run entity extraction. If it throws, mark ingestion FAILED so the
   // finalize SQL guard ('done'|'failed') can still release. Without this,
@@ -1059,6 +1066,12 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
     oldestPostedAt: stats.oldestPostedAt,
     newestPostedAt: stats.newestPostedAt,
   });
+
+  // stats.usable can legitimately be 0 here (empty dataset, everything
+  // dropped by the noise floor / language filter, or fully deduped) without
+  // ever throwing — that is exactly the case the orchestrator's ingest
+  // stage needs to see, not silently absorb into "we tried."
+  return stats.usable;
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,16 +1681,22 @@ const pipelineStageDeps: StageDeps = {
   // run-ingestion route both use) for a bounded, recent slice of succeeded
   // runs this company has that haven't finished ingesting yet.
   //
-  // Reports itemsProcessed so the orchestrator (pipeline-runner.ts) can tell
-  // "found nothing yet" apart from "found and processed N" — the former
-  // must stop the run at "awaiting-data" rather than sailing on through
-  // extract/timeseries/state-machine and calling a no-op run "done".
+  // Reports itemsProcessed = USABLE SIGNALS ACTUALLY INGESTED (summed from
+  // triggerIngestion's return), not "runs we dispatched." A run can
+  // legitimately dispatch several candidates and ingest zero usable
+  // signals — empty Apify dataset, everything dropped by the noise floor /
+  // language filter, or fully deduped — without triggerIngestion ever
+  // throwing. The orchestrator (pipeline-runner.ts) gates on this exact
+  // number: zero usable signals must stop the run at "awaiting-data", never
+  // sail on through extract/timeseries/state-machine to report "done" on
+  // nothing. runsAttempted/deferred are informational only (surfaced for
+  // the UI/logs) — they are never the gate.
   ingest: async (companyId) => {
     const recencyCutoff = new Date(
       Date.now() - INGEST_STAGE_RECENCY_DAYS * 24 * 60 * 60 * 1000
     );
     const runs = await storage.getActorRuns(companyId, { status: "succeeded" });
-    const candidates = runs
+    const eligible = runs
       .filter(
         (r) =>
           r.apifyDatasetId &&
@@ -1686,15 +1705,19 @@ const pipelineStageDeps: StageDeps = {
           r.completedAt != null &&
           r.completedAt >= recencyCutoff
       )
-      .sort((a, b) => a.completedAt!.getTime() - b.completedAt!.getTime())
-      .slice(0, INGEST_STAGE_MAX_RUNS);
+      .sort((a, b) => a.completedAt!.getTime() - b.completedAt!.getTime());
+    const candidates = eligible.slice(0, INGEST_STAGE_MAX_RUNS);
+    const deferred = eligible.length - candidates.length;
 
     logger.info(
-      { companyId, candidateCount: candidates.length },
-      "pipeline run: ingest stage starting"
+      { companyId, eligible: eligible.length, processing: candidates.length, deferred },
+      deferred > 0
+        ? "pipeline run: ingest stage starting — cap truncated the eligible backlog"
+        : "pipeline run: ingest stage starting"
     );
 
-    let processed = 0;
+    let runsAttempted = 0;
+    let usableTotal = 0;
     for (const run of candidates) {
       // Mirrors the manual run-ingestion route (below): reset failed rows to
       // 'pending' BEFORE calling triggerIngestion. Without this,
@@ -1706,15 +1729,20 @@ const pipelineStageDeps: StageDeps = {
       if (run.ingestionStatus === "failed") {
         await storage.updateActorRun(run.id, { ingestionStatus: "pending" } as any);
       }
-      processed++;
+      runsAttempted++;
       logger.info(
-        { companyId, runId: run.id, index: processed, total: candidates.length },
+        { companyId, runId: run.id, index: runsAttempted, total: candidates.length },
         "pipeline run: ingest stage progress"
       );
-      await triggerIngestion(run.id, run.apifyDatasetId!);
+      usableTotal += await triggerIngestion(run.id, run.apifyDatasetId!);
     }
 
-    return { itemsProcessed: processed };
+    logger.info(
+      { companyId, runsAttempted, usableTotal, deferred },
+      "pipeline run: ingest stage finished"
+    );
+
+    return { itemsProcessed: usableTotal, runsAttempted, deferred };
   },
   extract: async (companyId) => {
     await runEntityExtraction(companyId);

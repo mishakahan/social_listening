@@ -1034,6 +1034,13 @@ interface RunPipelineStatus {
   totalStages?: number;
   error?: string;
   finishedAt?: string;
+  // From the ingest stage: usable signals actually ingested, runs the stage
+  // attempted, and how many eligible runs the per-run cap deferred to a
+  // future run. deferred > 0 means there's more backlog than this run
+  // touched — surfaced so the UI doesn't imply the stage consumed everything.
+  itemsProcessed?: number;
+  runsAttempted?: number;
+  deferred?: number;
 }
 
 const STAGE_LABELS: Record<PipelineStage, string> = {
@@ -1208,6 +1215,16 @@ function RunPipelineCard() {
             </span>
           )}
         </div>
+
+        {!!status?.deferred && status.deferred > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Ingested {status.itemsProcessed ?? 0} usable signal
+            {status.itemsProcessed === 1 ? "" : "s"} from {status.runsAttempted ?? 0} run
+            {status.runsAttempted === 1 ? "" : "s"} this pass — {status.deferred} more
+            eligible run{status.deferred === 1 ? "" : "s"} are still queued and were not
+            touched. Run again to keep draining the backlog.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

@@ -29,8 +29,17 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 // a lie about a run that ingested nothing. A stage that returns void (every
 // stage in the pre-existing test suite, and any stage with nothing to say)
 // is treated as "no opinion" and the pipeline proceeds exactly as before.
+// itemsProcessed must mean "units of real work confirmed done" (e.g. usable
+// signals actually ingested), never "attempts dispatched" — a stage can
+// legitimately dispatch several sub-tasks and complete all of them without
+// producing anything usable (empty dataset, everything filtered/deduped),
+// and that must still read as zero. runsAttempted/deferred are informational
+// only (surfaced for the UI/logs, e.g. "the ingest cap deferred N older
+// runs") — the runner never gates on them.
 export interface StageResult {
   itemsProcessed?: number;
+  runsAttempted?: number;
+  deferred?: number;
 }
 
 export type StageFn = (companyId: number) => Promise<StageResult | void>;
@@ -41,14 +50,21 @@ export interface RunState {
   companyId: number;
   stage: PipelineStage;
   // "awaiting-data": scrape launched successfully but the ingest safety-net
-  // pass found nothing to do — i.e. this run has not ingested anything.
-  // Distinct from "done" on purpose; see the itemsProcessed comment above.
+  // pass ingested zero usable signals — i.e. this run has not ingested
+  // anything real yet, whether because it found no candidate runs or because
+  // every candidate yielded nothing usable. Distinct from "done" on purpose;
+  // see the itemsProcessed comment above.
   status: "running" | "done" | "failed" | "awaiting-data";
   startedAt: string;
   finishedAt?: string;
   error?: string;
   stageIndex: number;
   totalStages: number;
+  // Most recent stage-reported figures, carried forward for the UI/logs.
+  // Currently only the "ingest" stage populates these.
+  itemsProcessed?: number;
+  runsAttempted?: number;
+  deferred?: number;
 }
 
 const runs = new Map<number, RunState>();
@@ -161,6 +177,15 @@ export async function startPipelineRun(
     if (runs.get(companyId) !== state) {
       // Superseded mid-stage — stop mutating a run nothing points at anymore.
       return state;
+    }
+
+    // Carry forward whatever the stage reported (informational fields
+    // included) so the UI/logs can see it via getPipelineRun, independent of
+    // whether it triggers the awaiting-data gate below.
+    if (result) {
+      if (typeof result.itemsProcessed === "number") state.itemsProcessed = result.itemsProcessed;
+      if (typeof result.runsAttempted === "number") state.runsAttempted = result.runsAttempted;
+      if (typeof result.deferred === "number") state.deferred = result.deferred;
     }
 
     if (

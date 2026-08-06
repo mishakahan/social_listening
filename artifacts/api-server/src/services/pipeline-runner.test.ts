@@ -151,3 +151,39 @@ test("resetPipelineRun is a no-op when nothing is running", () => {
   __resetRunsForTest();
   assert.equal(resetPipelineRun(7), null);
 });
+
+// --- Fix round 2: itemsProcessed must mean usable, not attempted ----------
+
+test("an ingest stage that dispatches candidates but ingests zero usable signals still stops at 'awaiting-data'", async () => {
+  __resetRunsForTest();
+  const calls: string[] = [];
+  const deps = okDeps(calls);
+  // The exact case that slipped through: work was dispatched (runsAttempted
+  // > 0 — e.g. 3 candidate runs found and fetched) but none of it yielded a
+  // usable signal (empty dataset / everything filtered or deduped), so
+  // itemsProcessed — the gate — must be 0 even though real calls were made.
+  deps.ingest = async () => {
+    calls.push("ingest");
+    return { itemsProcessed: 0, runsAttempted: 3, deferred: 0 };
+  };
+  const s = await startPipelineRun(8, deps);
+  assert.equal(s.status, "awaiting-data");
+  assert.equal(s.stage, "ingest");
+  assert.equal(s.runsAttempted, 3);
+  assert.deepEqual(calls, ["scrape", "ingest"]);
+});
+
+test("runsAttempted and deferred are carried onto RunState for the UI, independent of the gate", async () => {
+  __resetRunsForTest();
+  const calls: string[] = [];
+  const deps = okDeps(calls);
+  deps.ingest = async () => {
+    calls.push("ingest");
+    return { itemsProcessed: 5, runsAttempted: 25, deferred: 35 };
+  };
+  const s = await startPipelineRun(9, deps);
+  assert.equal(s.status, "done"); // itemsProcessed > 0, so the run proceeds
+  assert.equal(s.itemsProcessed, 5);
+  assert.equal(s.runsAttempted, 25);
+  assert.equal(s.deferred, 35);
+});
