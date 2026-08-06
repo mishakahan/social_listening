@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock, Layers, Trash2, AlertTriangle } from "lucide-react";
+import { AlertCircle, CheckCircle2, X, Plus, Loader2, CalendarClock, Layers, Trash2, AlertTriangle, PlayCircle } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1017,6 +1017,135 @@ function EntityTypesEditor({ types, onSave, isSaving, ready }: EntityTypesEditor
   );
 }
 
+// ---------------------------------------------------------------------------
+// One-click full pipeline run (Task #7)
+// ---------------------------------------------------------------------------
+
+type PipelineStage = "scrape" | "ingest" | "extract" | "timeseries" | "state-machine";
+
+interface RunPipelineStatus {
+  status: "running" | "done" | "failed" | "idle";
+  stage?: PipelineStage;
+  stageIndex?: number;
+  totalStages?: number;
+  error?: string;
+}
+
+const STAGE_LABELS: Record<PipelineStage, string> = {
+  scrape: "Launching scout queries (Apify scrape)",
+  ingest: "Ingesting scraped signals",
+  extract: "Extracting entities",
+  timeseries: "Aggregating timeseries",
+  "state-machine": "Running the growth-state machine",
+};
+
+async function fetchRunPipelineStatus(companyId: number): Promise<RunPipelineStatus> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-pipeline-status`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function startRunPipeline(companyId: number): Promise<{ started: boolean }> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/run-pipeline`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      (body && typeof body.error === "string" && body.error) ||
+        "Failed to start pipeline run"
+    );
+  }
+  return res.json();
+}
+
+function RunPipelineCard() {
+  const companyId = useCompanyId();
+  const queryClient = useQueryClient();
+
+  const { data: status } = useQuery<RunPipelineStatus>({
+    queryKey: ["run-pipeline-status", companyId],
+    queryFn: () => fetchRunPipelineStatus(companyId),
+    refetchOnWindowFocus: false,
+    // Poll every 5s while a run is in flight; stop once it lands on a
+    // terminal (or idle) status.
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 5000 : false),
+  });
+
+  const isRunning = status?.status === "running";
+
+  const startMutation = useMutation({
+    mutationFn: () => startRunPipeline(companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["run-pipeline-status", companyId] });
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "Failed to start pipeline run");
+    },
+  });
+
+  const stageLabel = status?.stage ? STAGE_LABELS[status.stage] ?? status.stage : null;
+
+  return (
+    <Card className="mb-4 border-amber-500/40">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <PlayCircle className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold text-foreground">Run full pipeline</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Runs every stage in order — launch scout queries, ingest, extract
+          entities, aggregate timeseries, then the state machine — so you
+          don't have to click through four admin pages in sequence.
+        </p>
+      </CardHeader>
+      <CardContent className="pt-2 pb-5 space-y-3">
+        <Alert className="border-amber-500/50 bg-amber-500/10">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-xs text-amber-900 dark:text-amber-200">
+            A full run takes a few hours and fires Apify scrapes. Set it up
+            ahead of a client meeting, not during one.
+          </AlertDescription>
+        </Alert>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            size="sm"
+            onClick={() => startMutation.mutate()}
+            disabled={isRunning || startMutation.isPending}
+          >
+            {isRunning || startMutation.isPending ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                Running…
+              </>
+            ) : (
+              "Run full pipeline"
+            )}
+          </Button>
+
+          {status?.status === "running" && (
+            <span className="text-xs text-muted-foreground">
+              {stageLabel} ({(status.stageIndex ?? 0) + 1}/{status.totalStages ?? 5})
+            </span>
+          )}
+          {status?.status === "done" && (
+            <span className="text-xs text-green-600 flex items-center gap-1">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Completed.
+            </span>
+          )}
+          {status?.status === "failed" && (
+            <span className="text-xs text-destructive">
+              Failed at {stageLabel ?? status.stage}: {status.error}
+            </span>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function FlushDataCard() {
   const queryClient = useQueryClient();
   const companyId = useCompanyId();
@@ -1247,6 +1376,9 @@ function ControlPanelInner() {
           )}
         </div>
       </div>
+
+      {/* Run full pipeline */}
+      <RunPipelineCard />
 
       {/* Scout pull schedule */}
       <Card className="mb-4">

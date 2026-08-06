@@ -23,6 +23,11 @@ import { runLongTailEvaluation } from "../services/long-tail.js";
 import { runCoOccurrenceAggregation } from "../services/co-occurrence.js";
 import { extractAttributesForBatch } from "../services/attribute-extraction.js";
 import { logger } from "../lib/logger.js";
+import {
+  startPipelineRun,
+  getPipelineRun,
+  type StageDeps,
+} from "../services/pipeline-runner.js";
 
 const router = Router();
 
@@ -1618,6 +1623,87 @@ router.post("/companies/:id/run-state-machine", async (req, res) => {
     logger.error({ err }, "Failed to start state machine");
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// One-click full pipeline run (Task #7)
+//
+// Chains the same five stage handlers above behind a single call, so a
+// non-engineer can drive the whole pipeline from one button instead of
+// clicking scout-queries/launch -> run-ingestion -> run-entity-extraction ->
+// run-timeseries -> run-state-machine in order across four admin pages.
+//
+// Each stage below calls the exact same service function its own manual
+// route calls — this does NOT issue HTTP requests to itself.
+// ---------------------------------------------------------------------------
+const pipelineStageDeps: StageDeps = {
+  // Fires paid Apify scrapes. Mirrors POST /companies/:id/scout-queries/launch
+  // with no queryIds, i.e. "launch every active scout query for this company."
+  // Throws "No queries to launch" (no Apify call made) when nothing is active.
+  scrape: async (companyId) => {
+    await launchBatch(companyId, { kind: "manual" });
+  },
+  // Normally ingestion fires automatically off the Apify webhook per actor
+  // run as each scrape finishes. This stage is the safety net: it re-drives
+  // ingestion (via the same triggerIngestion() the webhook and the manual
+  // run-ingestion route both use) for any succeeded run this company has
+  // that hasn't finished ingesting yet.
+  ingest: async (companyId) => {
+    const runs = await storage.getActorRuns(companyId, { status: "succeeded" });
+    const pending = runs.filter(
+      (r) =>
+        r.apifyDatasetId &&
+        r.ingestionStatus !== "done" &&
+        r.ingestionStatus !== "processing"
+    );
+    for (const run of pending) {
+      await triggerIngestion(run.id, run.apifyDatasetId!);
+    }
+  },
+  extract: async (companyId) => {
+    await runEntityExtraction(companyId);
+  },
+  timeseries: async (companyId) => {
+    await runTimeseriesAggregation(companyId);
+    await storage.setLastTimeseriesRunAt(companyId);
+  },
+  "state-machine": async (companyId) => {
+    await runStateMachine(companyId);
+    await storage.setLastStateMachineRunAt(companyId);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-pipeline
+// Starts the full chained run. Fire-and-forget: the client polls
+// run-pipeline-status for progress. Refuses (409) if one is already running
+// for this company.
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-pipeline", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  try {
+    const state = getPipelineRun(companyId);
+    if (state && state.status === "running") {
+      res.status(409).json({ error: "pipeline already running", state });
+      return;
+    }
+    // Fire and forget: the client polls run-pipeline-status for progress.
+    void startPipelineRun(companyId, pipelineStageDeps).catch((e) =>
+      logger.error({ err: e, companyId }, "pipeline run failed")
+    );
+    res.status(202).json({ started: true, companyId });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start pipeline run");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/run-pipeline-status
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/run-pipeline-status", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  res.json(getPipelineRun(companyId) ?? { status: "idle", companyId });
 });
 
 // ---------------------------------------------------------------------------
