@@ -88,6 +88,7 @@ async function main() {
         companyId: COMPANY_ID,
         seedItemId: seed.id,
         topicLabel: seed.label,
+        watchTopic: seed.watchTopic ?? null,
         geography: seed.geography,
         language: g.language,
         keywords: g.keywords,
