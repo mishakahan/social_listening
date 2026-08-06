@@ -74,6 +74,10 @@ interface TrendDetail {
   evidence?: EvidenceItem[];
   evidenceRecentCount?: number;
   evidenceWindowDays?: number;
+  evidenceTotalCount?: number;
+  discovered?: boolean;
+  watchTopic?: string | null;
+  searchTerm?: string | null;
   updatedAt?: string;
   confirmationVerdict?: {
     decision: "pass" | "hold";
@@ -365,7 +369,17 @@ export default function TrendDetailPage() {
       {/* Title + meta */}
       <div className="mb-6">
         <div className="flex items-start justify-between gap-4">
-          <h1 className="text-2xl font-bold text-foreground leading-tight">{trend.title}</h1>
+          <h1 className="text-2xl font-bold text-foreground leading-tight">
+            {trend.title}
+            {trend.discovered && (
+              <span
+                title="No keyword we searched for matches this — extraction surfaced it from real posts"
+                className="ml-2 align-middle rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300"
+              >
+                Discovered
+              </span>
+            )}
+          </h1>
           <Badge className={`flex-shrink-0 text-sm px-3 py-1 ${stateCfg.className}`}>
             {stateCfg.label}
           </Badge>
@@ -382,6 +396,16 @@ export default function TrendDetailPage() {
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
               <Tag className="h-3 w-3" />
               {trend.territoryTag}
+            </span>
+          )}
+          {trend.watchTopic && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
+              Watch topic: {trend.watchTopic}
+            </span>
+          )}
+          {trend.searchTerm && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
+              Search term: {trend.searchTerm}
             </span>
           )}
           {(trend.platforms ?? []).map((p) => {
@@ -480,8 +504,9 @@ export default function TrendDetailPage() {
             <span className="ml-2 font-normal text-muted-foreground">
               {trend.evidenceRecentCount ?? trend.evidence.length} in the last{" "}
               {trend.evidenceWindowDays ?? 30} days
-              {trend.evidence.length > (trend.evidenceRecentCount ?? trend.evidence.length) &&
-                `, ${trend.evidence.length} all time`}
+              {trend.evidenceTotalCount != null &&
+                trend.evidenceTotalCount > trend.evidence.length &&
+                `, showing ${trend.evidence.length} of ${trend.evidenceTotalCount} all time`}
             </span>
           </h2>
           <div className="space-y-3">
