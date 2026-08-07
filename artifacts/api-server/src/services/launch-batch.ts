@@ -16,9 +16,17 @@ type PlatformPlan = {
   runMode: string;
   actorSlug: string;
   // Restrict this run to a single keyword. Used for actors that accept only one
-  // search term, so the query's full keyword list is covered by N runs instead
-  // of being silently truncated to the first.
+  // search term (TikTok), so the query's full keyword list is covered by N runs
+  // instead of being silently truncated to the first.
   keywordOverride?: string;
+  // Restrict this run to a keyword subset (chunk). Used for actors that accept
+  // a keyword ARRAY but were previously handed the entire query's keyword list
+  // in one capped run (YouTube, X) — that starved every individual keyword of
+  // the shared RESULT_CAP. Kept distinct from `keywordOverride` (a single
+  // string) rather than overloading it, since "one keyword" and "a chunk of
+  // keywords" are different shapes and conflating them invites bugs where a
+  // single-element array silently means something else than a bare string.
+  keywordsOverride?: string[];
 };
 
 // The TikTok actor takes ONE keyword per run, so buildActorInput used keywords[0]
@@ -29,13 +37,92 @@ type PlatformPlan = {
 // magnitude — measured $0.0096/run, vs $0.39 YouTube and $0.27 Instagram — so
 // covering all 466 keywords costs ~$4.4 rather than the ~1 cent per extra term
 // it looks like it should. Capped so a runaway fan-out cannot surprise us.
+//
+// This is the lever for TikTok's share of the platform mix: lowering it caps
+// how many keywords TikTok covers (and therefore how many entities/signals it
+// can contribute) without touching any other platform's behaviour.
 const TIKTOK_MAX_KEYWORD_RUNS =
   Number(process.env.TIKTOK_MAX_KEYWORD_RUNS ?? "80") || 80;
 
-function planPlatformsForQuery(query: {
+// YouTube and X used to receive the ENTIRE query keyword list in a single run
+// (searchQueries: kws / searchTerms: kws), sharing one RESULT_CAP (200) across
+// however many keywords the query had — on company 2 that was 828 keywords
+// crammed into one YouTube run. TikTok's one-run-per-keyword fan-out doesn't
+// apply as-is: YouTube/X actors DO accept a keyword array, and one run per
+// keyword would multiply their run count (and therefore cost — YouTube is the
+// most expensive actor we run, ~$1.50/run) far more than TikTok's fan-out does
+// (~$0.10/run). So instead of one keyword per run, we chunk the keyword list
+// into N-keyword groups and give each chunk its own run + RESULT_CAP — the
+// same fix (more runs, so the cap isn't shared across the whole list) at a
+// coarser, cost-appropriate granularity.
+//
+// Chunk sizes are chosen so each run's RESULT_CAP (200) divided by the chunk
+// size gives a reasonable results-per-keyword floor, biased by affordability:
+// YouTube (expensive) gets bigger chunks -> fewer, cheaper runs; X (~$0.02/run,
+// negligible) gets smaller chunks -> more runs, finer per-keyword coverage.
+// *_MAX_KEYWORD_RUNS is a hard per-query cap (mirroring TIKTOK_MAX_KEYWORD_RUNS)
+// so a large keyword list can't silently explode the run count/bill; when it
+// binds, the caller logs a warning naming the dropped keyword count rather
+// than dropping them silently.
+const YOUTUBE_KEYWORDS_PER_RUN =
+  Number(process.env.YOUTUBE_KEYWORDS_PER_RUN ?? "40") || 40;
+const YOUTUBE_MAX_KEYWORD_RUNS =
+  Number(process.env.YOUTUBE_MAX_KEYWORD_RUNS ?? "10") || 10;
+const X_KEYWORDS_PER_RUN =
+  Number(process.env.X_KEYWORDS_PER_RUN ?? "20") || 20;
+const X_MAX_KEYWORD_RUNS =
+  Number(process.env.X_MAX_KEYWORD_RUNS ?? "20") || 20;
+
+export type KeywordChunkResult = {
+  // One entry per run; each entry is the keyword subset for that run.
+  chunks: string[][];
+  // True when `maxRuns` capped the chunk count and some trailing keywords
+  // were dropped (never silently — see droppedKeywords).
+  truncated: boolean;
+  // The keywords left out of `chunks` because of the maxRuns cap. Empty
+  // whenever `truncated` is false.
+  droppedKeywords: string[];
+};
+
+// Pure, side-effect-free keyword chunker shared by YouTube and X fan-out.
+// Splits `keywords` into groups of at most `chunkSize`, then caps the number
+// of groups (runs) at `maxRuns`, reporting anything that cap dropped instead
+// of silently discarding it.
+export function chunkKeywords(
+  keywords: string[],
+  chunkSize: number,
+  maxRuns: number
+): KeywordChunkResult {
+  const cleaned = keywords.map((k) => k.trim()).filter((k) => k.length > 0);
+  if (cleaned.length === 0) {
+    return { chunks: [], truncated: false, droppedKeywords: [] };
+  }
+
+  const size = Math.max(1, Math.floor(chunkSize));
+  const allChunks: string[][] = [];
+  for (let i = 0; i < cleaned.length; i += size) {
+    allChunks.push(cleaned.slice(i, i + size));
+  }
+
+  const cap = Math.max(1, Math.floor(maxRuns));
+  if (allChunks.length <= cap) {
+    return { chunks: allChunks, truncated: false, droppedKeywords: [] };
+  }
+
+  return {
+    chunks: allChunks.slice(0, cap),
+    truncated: true,
+    droppedKeywords: allChunks.slice(cap).flat(),
+  };
+}
+
+// Exported (read-only) so a projection script can compute planned run counts
+// per platform for real committed queries without launching anything.
+export function planPlatformsForQuery(query: {
   keywords: string[] | null;
   language: string | null;
   geography: string | null;
+  topicLabel: string | null;
 }): PlatformPlan[] {
   const platforms: PlatformPlan[] = [];
   // IG is the cost driver (~85% of spend). Posts alone carry the hashtag
@@ -64,13 +151,42 @@ function planPlatformsForQuery(query: {
     // archive actor (benthepythondev) promised date backfill but returned 0
     // even on direct calls, so we use the lite scraper until a working
     // date-capable Reddit actor is found. (Mapping for the archive actor is
-    // kept in buildActorInput for when that happens.)
+    // kept in buildActorInput for when that phase comes.) Reddit already
+    // fans a single run out across its full keyword list internally (one
+    // search per keyword inside buildActorInput), so it doesn't need the
+    // multi-run chunking below.
     platforms.push({ platform: "reddit", runMode: "backfill:reddit_search", actorSlug: "trudax/reddit-scraper-lite" });
+
     // X: free-text keyword search with a real since/until date window.
-    platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper" });
+    // Chunked across multiple runs (see X_KEYWORDS_PER_RUN above) so the
+    // shared RESULT_CAP isn't split across the whole keyword list.
+    const xChunks = chunkKeywords(query.keywords, X_KEYWORDS_PER_RUN, X_MAX_KEYWORD_RUNS);
+    if (xChunks.truncated) {
+      logger.warn(
+        { topicLabel: query.topicLabel, droppedKeywordCount: xChunks.droppedKeywords.length },
+        "X_MAX_KEYWORD_RUNS capped this query's X fan-out; some keywords were dropped from X coverage"
+      );
+    }
+    for (const chunk of xChunks.chunks) {
+      platforms.push({ platform: "x", runMode: "backfill:x_search", actorSlug: "xquik/x-tweet-scraper", keywordsOverride: chunk });
+    }
+
     // YouTube: deep date-queryable history — the main lever for the depth the
-    // significance test needs (unlike recent-only IG/Reddit).
-    platforms.push({ platform: "youtube", runMode: "backfill:youtube_search", actorSlug: "streamers/youtube-scraper" });
+    // significance test needs (unlike recent-only IG/Reddit). Chunked across
+    // multiple runs (see YOUTUBE_KEYWORDS_PER_RUN above) for the same reason
+    // as X: a single run sharing RESULT_CAP across the whole keyword list
+    // starved every individual keyword (828 keywords -> 1 capped run on
+    // company 2, yielding 320 entities off a cap of 200 total items).
+    const ytChunks = chunkKeywords(query.keywords, YOUTUBE_KEYWORDS_PER_RUN, YOUTUBE_MAX_KEYWORD_RUNS);
+    if (ytChunks.truncated) {
+      logger.warn(
+        { topicLabel: query.topicLabel, droppedKeywordCount: ytChunks.droppedKeywords.length },
+        "YOUTUBE_MAX_KEYWORD_RUNS capped this query's YouTube fan-out; some keywords were dropped from YouTube coverage"
+      );
+    }
+    for (const chunk of ytChunks.chunks) {
+      platforms.push({ platform: "youtube", runMode: "backfill:youtube_search", actorSlug: "streamers/youtube-scraper", keywordsOverride: chunk });
+    }
   }
   if (query.language === "zh-CN") {
     platforms.push({ platform: "xiaohongshu", runMode: "backfill:xhs_search", actorSlug: "easyapi/all-in-one-rednote-xiaohongshu-scraper" });
@@ -169,9 +285,15 @@ export async function launchBatch(
 
     for (const p of platforms) {
       // Single-keyword actors (TikTok) get one run per keyword, so narrow the
-      // input to just that term. Everything else sees the full keyword list.
+      // input to just that term. Chunked actors (YouTube, X) get one run per
+      // keyword subset. Everything else sees the full keyword list.
+      // buildActorInput itself is unaware of any of this — it just reads
+      // input.keywords, so narrowing it here is enough to make it use the
+      // subset when present and fall back to the full list otherwise.
       const runInput = p.keywordOverride
         ? { ...queryInput, keywords: [p.keywordOverride] }
+        : p.keywordsOverride
+        ? { ...queryInput, keywords: p.keywordsOverride }
         : queryInput;
       const actorInput = buildActorInput(p.actorSlug, p.runMode, runInput);
 
