@@ -1317,7 +1317,7 @@ router.get("/companies/:id/trends", async (req, res) => {
     const companyId = parseInt(req.params.id!, 10);
     const archived = req.query.archived !== undefined ? req.query.archived === "true" : undefined;
     const sortByRaw = req.query.sortBy as string | undefined;
-    const allowedSorts = ["signal", "wow", "momGrowthPct", "yoyGrowthPct", "evidence"] as const;
+    const allowedSorts = ["signal", "wow", "momGrowthPct", "yoyGrowthPct", "evidence", "sov"] as const;
     const sortBy = allowedSorts.includes(sortByRaw as any)
       ? (sortByRaw as (typeof allowedSorts)[number])
       : undefined;

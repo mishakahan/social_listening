@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
@@ -45,6 +45,16 @@ interface Trend {
   wowGrowthPct?: number;
   momGrowthPct?: number | null;
   yoyGrowthPct?: number | null;
+  /**
+   * Growth in this item's SHARE of conversation, measured within each
+   * platform and corroborated across 2+ of them. Null when there is not
+   * enough cross-platform history to make the claim honestly. Prefer this
+   * over momGrowthPct: raw mention growth is inflated by how much we happened
+   * to scrape (see services/share-of-voice.ts on the server).
+   */
+  sovGrowthPct?: number | null;
+  /** ingredient / brand / format / dietary_claim / occasion / flavour / ... */
+  entityType?: string;
   momCurrent?: number | null;
   momPrior?: number | null;
   yoyCurrent?: number | null;
@@ -113,7 +123,8 @@ type SortKey =
   | "wow"
   | "momGrowthPct"
   | "yoyGrowthPct"
-  | "evidence";
+  | "evidence"
+  | "sov";
 
 async function fetchTrends(companyId: number, sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
   const res = await fetch(
@@ -245,7 +256,12 @@ function GrowthCell({
 export default function TrendsListPage() {
   const [, navigate] = useLocation();
   const companyId = useCompanyId();
-  const [sortBy, setSortBy] = useState<SortKey>("signal");
+  // Default to movement, not volume. Sorting by signal strength led with the
+  // largest items regardless of direction — guacamole and mango sat 4th and
+  // 5th while their share of conversation was actually falling. Movement puts
+  // what is genuinely gaining ground first, which is what a trend radar is
+  // for, and it demotes ubiquitous staples on their own merit.
+  const [sortBy, setSortBy] = useState<SortKey>("sov");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data: trends = [], isLoading, error } = useQuery({
@@ -317,6 +333,11 @@ function SingleEntityTab({
   navigate,
 }: SingleEntityTabProps) {
   const [watchTopicFilter, setWatchTopicFilter] = useState(ALL);
+  // Kind-of-thing filter. Jonathan's standing note is that the radar surfaces
+  // items too generic to be interesting; entities already carry a type, so
+  // this lets him choose what counts as interesting rather than us guessing a
+  // threshold on his behalf. Client-side because the list is already loaded.
+  const [entityTypeFilter, setEntityTypeFilter] = useState(ALL);
   const [searchTermFilter, setSearchTermFilter] = useState(ALL);
 
   const watchTopicOptions = useMemo(() => {
@@ -354,13 +375,33 @@ function SingleEntityTab({
     setSearchTermFilter(ALL);
   };
 
-  const rows = useMemo(
-    () =>
+  const entityTypeOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of trends) {
+      const ty = t.entityType ?? "other";
+      counts.set(ty, (counts.get(ty) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [trends]);
+
+  const rows = useMemo(() => {
+    const bySearchTerm =
       searchTermFilter === ALL
         ? byWatchTopic
-        : byWatchTopic.filter((t) => searchTermOf(t) === searchTermFilter),
-    [byWatchTopic, searchTermFilter]
-  );
+        : byWatchTopic.filter((t) => searchTermOf(t) === searchTermFilter);
+    return entityTypeFilter === ALL
+      ? bySearchTerm
+      : bySearchTerm.filter((t) => (t.entityType ?? "other") === entityTypeFilter);
+  }, [byWatchTopic, searchTermFilter, entityTypeFilter]);
+
+  // Split scored from unscored. Roughly two thirds of the radar has no
+  // corroborated cross-platform movement yet, and mixing those into the main
+  // list left most rows with a blank where a number should be — which reads
+  // as broken even though it is the honest answer. They are real detections
+  // with real evidence, they just cannot carry a growth CLAIM, so they get
+  // their own section rather than a gap.
+  const scored = useMemo(() => rows.filter((t) => t.sovGrowthPct != null), [rows]);
+  const unscored = useMemo(() => rows.filter((t) => t.sovGrowthPct == null), [rows]);
 
   if (isLoading) {
     return (
@@ -399,6 +440,22 @@ function SingleEntityTab({
                 {watchTopicOptions.map((topic) => (
                   <SelectItem key={topic} value={topic} className="text-xs">
                     {topic}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={entityTypeFilter} onValueChange={setEntityTypeFilter}>
+              <SelectTrigger className="h-8 w-48 text-xs">
+                <SelectValue placeholder="Kind of thing" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL} className="text-xs">
+                  All kinds
+                </SelectItem>
+                {entityTypeOptions.map(([ty, n]) => (
+                  <SelectItem key={ty} value={ty} className="text-xs">
+                    {ty.replace(/_/g, " ")} ({n})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -446,7 +503,7 @@ function SingleEntityTab({
         ) : (
           <div className="rounded-xl border border-border overflow-hidden">
             {/* Column headers */}
-            <div className="grid grid-cols-[2fr_72px_80px_80px_80px_112px_128px_80px_24px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="grid grid-cols-[2fr_72px_88px_112px_128px_88px_24px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
               <div>Title</div>
               <div className="text-center">
                 <SortHeader
@@ -459,33 +516,17 @@ function SingleEntityTab({
                   extra={<SignalScoreInfo align="start" />}
                 />
               </div>
+
               <div className="text-right">
                 <SortHeader
-                  label="WoW"
-                  field="wow"
+                  label="Movement"
+                  field="sov"
                   current={sortBy}
                   dir={sortDir}
                   onSort={handleSort}
                 />
               </div>
-              <div className="text-right">
-                <SortHeader
-                  label="MoM"
-                  field="momGrowthPct"
-                  current={sortBy}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-              </div>
-              <div className="text-right">
-                <SortHeader
-                  label="YoY"
-                  field="yoyGrowthPct"
-                  current={sortBy}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-              </div>
+
               <div>State</div>
               <div>Platforms</div>
               <div className="text-right">
@@ -500,18 +541,33 @@ function SingleEntityTab({
               <div></div>
             </div>
 
-            {/* Rows */}
+            {/* Rows. Scored first, then a divider, then the ones we cannot
+                score yet — see the `scored`/`unscored` split above. */}
             <div className="divide-y divide-border">
-              {rows.map((trend) => {
+              {[...scored, ...unscored].map((trend, rowIndex) => {
                 const stateCfg =
                   STATE_CONFIG[trend.state] ?? {
                     label: trend.state,
                     className: "bg-gray-500 text-white border-0",
                   };
+                const startsWatchlist =
+                  rowIndex === scored.length && unscored.length > 0;
                 return (
+                  <Fragment key={`row-${trend.id}`}>
+                  {startsWatchlist && (
+                    <div className="px-5 py-2.5 bg-muted/20 border-t border-border">
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Watching · {unscored.length}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Detected and evidenced, but not yet showing movement on
+                        two or more platforms — so we are not putting a growth
+                        number against them.
+                      </div>
+                    </div>
+                  )}
                   <div
-                    key={trend.id}
-                    className="grid grid-cols-[2fr_72px_80px_80px_80px_112px_128px_80px_24px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30 cursor-pointer transition-colors"
+                    className="grid grid-cols-[2fr_72px_88px_112px_128px_88px_24px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30 cursor-pointer transition-colors"
                     onClick={() => navigate(`/radar/trends/${trend.id}`)}
                   >
                     {/* Title */}
@@ -541,30 +597,14 @@ function SingleEntityTab({
                       <SignalStrengthArc value={trend.signalStrength} />
                     </div>
 
-                    {/* WoW */}
-                    <div className="flex justify-end">
-                      <GrowthPill pct={trend.wowGrowthPct} />
-                    </div>
-
-                    {/* MoM */}
+                    {/* Movement — share of conversation, not raw mentions */}
                     <div onClick={(e) => e.stopPropagation()}>
                       <GrowthCell
-                        pct={trend.momGrowthPct}
-                        current={trend.momCurrent}
-                        prior={trend.momPrior}
-                        windowLabel="Last 30 days vs prior 30 days"
-                        insufficientNote="Not enough history for MoM — need at least 30 days of activity in the 60-day comparison window."
-                      />
-                    </div>
-
-                    {/* YoY */}
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <GrowthCell
-                        pct={trend.yoyGrowthPct}
-                        current={trend.yoyCurrent}
-                        prior={trend.yoyPrior}
-                        windowLabel="Last 90 days vs same 90 days last year"
-                        insufficientNote="No mentions in the same 90-day window one year ago — no YoY baseline."
+                        pct={trend.sovGrowthPct}
+                        current={null}
+                        prior={null}
+                        windowLabel="Share of conversation, last 60 days vs the 60 before"
+                        insufficientNote="Not enough cross-platform evidence to score movement. Needs at least 3 mentions on each of 2+ platforms in the earlier window, so a single-platform spike cannot be reported as a trend."
                       />
                     </div>
 
@@ -601,6 +641,7 @@ function SingleEntityTab({
                       <ChevronRight className="h-4 w-4 text-muted-foreground" />
                     </div>
                   </div>
+                  </Fragment>
                 );
               })}
             </div>

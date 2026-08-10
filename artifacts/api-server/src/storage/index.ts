@@ -1783,6 +1783,7 @@ export type TrendSortBy =
   | "signal"
   | "wow"
   | "momGrowthPct"
+  | "sov"
   | "yoyGrowthPct"
   | "evidence";
 
@@ -1918,6 +1919,34 @@ export async function getTrendsEnriched(
   // and it is a presentation concern, not a state transition.
   const sov = await fetchShareOfVoice(companyId);
 
+  // SIGNAL STRENGTH IS RECOMPUTED HERE, not read from the stored column.
+  //
+  // The stored value (state-machine.ts) is
+  //   (volume7d / 10) * 30 + max(0, growthWow) * 40 + max(0, growthMom) * 30
+  // capped at 100. Those are ABSOLUTE thresholds calibrated when this engine
+  // had single-digit volumes and growth ratios under 1.0. After the
+  // 2026-08-09 sweep, 34 mentions in 7 days saturates the cap on volume alone
+  // before growth is added, and a growth ratio of 3.4 contributes 102 by
+  // itself. Measured result: 111 of 135 radar items pinned at exactly 100.
+  // A score that is constant is not a score.
+  //
+  // Replaced with a PERCENTILE within the company's own radar, which cannot
+  // saturate and re-calibrates itself whenever scrape volume changes — the
+  // root cause of the original failure. It ranks EVIDENCE STRENGTH (how
+  // well-supported a detection is: mentions, and how many platforms carry
+  // them) and deliberately excludes growth, which now has its own column.
+  // Conflating "how sure are we" with "which way is it going" is what made
+  // the old score unreadable.
+  const evidenceScore = (r: (typeof rows)[number]) =>
+    (r.ki.evidenceCount ?? 0) * Math.max(1, (r.es.platformsSeen ?? []).length);
+  const allScores = rows.map(evidenceScore).sort((a, b) => a - b);
+  const percentileOf = (v: number): number => {
+    if (allScores.length === 0) return 0;
+    let below = 0;
+    while (below < allScores.length && allScores[below]! < v) below++;
+    return Math.round((below / allScores.length) * 100);
+  };
+
   const mapped = rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
@@ -1941,7 +1970,7 @@ export async function getTrendsEnriched(
         })(),
         title: r.ki.title,
         state: r.es.state,
-        signalStrength: r.ki.signalStrength ?? 0,
+        signalStrength: percentileOf(evidenceScore(r)),
         wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
         momGrowthPct:
           r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
@@ -1982,6 +2011,10 @@ export async function getTrendsEnriched(
     switch (sortBy) {
       case "wow":          av = a.wowGrowthPct;        bv = b.wowGrowthPct;        break;
       case "momGrowthPct": av = key(a.momGrowthPct);   bv = key(b.momGrowthPct);   break;
+      // Share-of-voice is the honest growth measure (see
+      // services/share-of-voice.ts). Nulls sort last via key(), so items
+      // without enough cross-platform evidence never lead the radar.
+      case "sov":          av = key(a.sovGrowthPct);    bv = key(b.sovGrowthPct);    break;
       case "yoyGrowthPct": av = key(a.yoyGrowthPct);   bv = key(b.yoyGrowthPct);   break;
       case "evidence":     av = a.evidenceCount;       bv = b.evidenceCount;       break;
       case "signal":
