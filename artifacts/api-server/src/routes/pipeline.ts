@@ -15,6 +15,7 @@ import {
   mapApifyStatus,
 } from "../services/apify.js";
 import { ingestActorRun, ingestGoogleTrendsRun } from "../services/ingestion.js";
+import { fetchShareOfVoice } from "../services/share-of-voice.js";
 import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
@@ -1510,7 +1511,16 @@ router.get("/companies/:id/entity-states", async (req, res) => {
     if (req.query.state) filters.state = req.query.state as string;
     if (req.query.geography) filters.geography = req.query.geography as string;
     const states = await storage.getEntityStateWithEntity(companyId, filters);
-    res.json(states);
+    // Attach share-of-voice so this page can show the same honest growth
+    // measure the Trends page does, instead of raw WoW/MoM — which are
+    // inflated by how much we happened to scrape (services/share-of-voice.ts).
+    const sov = await fetchShareOfVoice(companyId);
+    res.json(
+      states.map((s: any) => {
+        const v = sov.get(s.entityId)?.growthPct;
+        return { ...s, sovGrowthPct: v == null ? null : Math.round(v * 10) / 10 };
+      })
+    );
   } catch (err: any) {
     logger.error({ err }, "Failed to get entity states");
     res.status(500).json({ error: err.message });

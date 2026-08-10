@@ -37,6 +37,8 @@ interface EntityState {
   velocity: number;
   growthWow: number;
   growthMom: number;
+  /** Share-of-voice growth — the same honest measure the Trends page shows. */
+  sovGrowthPct?: number | null;
   volatility: number;
   platformsSeen: string[];
   computedAt: string;
@@ -423,6 +425,19 @@ export default function EntitiesAuditPage() {
     ? allStates
     : allStates.filter((s) => s.entity.entityType === typeFilter);
 
+  // PAGINATION. This page was rendering every row it received — 13,042 of them
+  // on Fast Food — into the DOM at once, each with an expandable detail row.
+  // Paging keeps it usable; the payload itself is still fetched whole, which
+  // is the next thing to fix if it becomes a problem.
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Filters change the result set, so a page index from the previous set can
+  // point past the end. Clamp rather than showing an empty table.
+  const safePage = Math.min(page, pageCount - 1);
+  const paged = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  useEffect(() => { setPage(0); }, [typeFilter, stateFilter, geoFilter]);
+
   const geographies = [...new Set(allStates.map((s) => s.geography).filter(Boolean))].sort();
 
   if (isLoading) {
@@ -459,8 +474,11 @@ export default function EntitiesAuditPage() {
             that the LLM extracted from raw signals. Each entity progresses through a lifecycle: it
             starts as a candidate, may advance to emerging or sustained as mention volume and
             week-over-week growth cross configured thresholds across multiple platforms, and eventually
-            peaks, declines, or goes dormant. v7d is the mention count over the last 7 days; WoW and
-            MoM are week-over-week and month-over-month growth rates. Entities reaching "sustained" or
+            peaks, declines, or goes dormant. v7d is the mention count over the last 7 days. Movement is
+            growth in share of conversation, measured within each platform and
+            corroborated across two or more — raw week-over-week and
+            month-over-month rates are inflated by how much we happened to
+            scrape, so they are no longer shown here. Entities reaching "sustained" or
             above are surfaced to the Radar. The 30-day sparkline shows daily mention volume. Use "Run
             Timeseries" to recompute mention buckets from signals, then "Run State Machine" to advance
             entities through lifecycle transitions based on the latest data.
@@ -554,14 +572,13 @@ export default function EntitiesAuditPage() {
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-28">State</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-16">Geo</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">v7d</th>
-                <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">WoW</th>
-                <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">MoM</th>
+                <th className="px-3 py-2.5 font-medium text-muted-foreground w-24 text-right">Movement</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground">Platforms</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-32">Trend (30d)</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s, i) => {
+              {paged.map((s, i) => {
                 const isExpanded = expanded === s.id;
                 return (
                   <>
@@ -597,11 +614,23 @@ export default function EntitiesAuditPage() {
                       </td>
                       <td className="px-3 py-2.5 font-mono text-muted-foreground">{s.geography}</td>
                       <td className="px-3 py-2.5 text-right font-mono">{s.volume7d}</td>
-                      <td className={`px-3 py-2.5 text-right font-mono ${s.growthWow > 0.1 ? "text-green-600" : s.growthWow < -0.1 ? "text-red-500" : "text-muted-foreground"}`}>
-                        {pct(s.growthWow)}
-                      </td>
-                      <td className={`px-3 py-2.5 text-right font-mono ${s.growthMom > 0.1 ? "text-green-600" : s.growthMom < -0.1 ? "text-red-500" : "text-muted-foreground"}`}>
-                        {pct(s.growthMom)}
+                      <td
+                        className={`px-3 py-2.5 text-right font-mono ${
+                          s.sovGrowthPct == null
+                            ? "text-muted-foreground/50"
+                            : s.sovGrowthPct > 10
+                              ? "text-green-600"
+                              : s.sovGrowthPct < -10
+                                ? "text-red-500"
+                                : "text-muted-foreground"
+                        }`}
+                        title={
+                          s.sovGrowthPct == null
+                            ? "Not enough cross-platform evidence to score movement"
+                            : "Share of conversation, last 60 days vs the 60 before"
+                        }
+                      >
+                        {s.sovGrowthPct == null ? "—" : `${s.sovGrowthPct > 0 ? "+" : ""}${s.sovGrowthPct}%`}
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex gap-1 flex-wrap">
@@ -648,6 +677,38 @@ export default function EntitiesAuditPage() {
               })}
             </tbody>
           </table>
+
+          {/* Pager. Always rendered so the row range is visible even on a
+              single page — otherwise "showing 50" of 13,042 looks like data
+              is missing. */}
+          <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/20 text-xs">
+            <span className="text-muted-foreground tabular-nums">
+              {filtered.length === 0
+                ? "No entities match these filters"
+                : `${safePage * PAGE_SIZE + 1}–${Math.min((safePage + 1) * PAGE_SIZE, filtered.length)} of ${filtered.length.toLocaleString()}`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Previous
+              </button>
+              <span className="text-muted-foreground tabular-nums">
+                Page {safePage + 1} of {pageCount.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={safePage >= pageCount - 1}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
