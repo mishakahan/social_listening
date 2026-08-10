@@ -17,6 +17,9 @@ const cfg: GateConfig = {
   minSourceEntropyBits: 1.0,
   minUniqueAuthors: 3,
   enabled: true,
+  // Current shipped behaviour: significance is required. Set explicitly so
+  // this baseline never drifts if the default changes.
+  requireSignificance: true,
 };
 
 // Deterministic RNG so the committed results doc is reproducible.
