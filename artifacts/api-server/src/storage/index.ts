@@ -2168,7 +2168,12 @@ export async function getTrendDetail(
         eq(tpRawSignals.companyId, companyId)
       )
     )
-    .orderBy(desc(tpRawSignals.capturedAt))
+    // Order by when the post was PUBLISHED, not when we captured it. Every row
+    // from a single sweep shares roughly the same capturedAt, so ordering on it
+    // is effectively arbitrary — which is why a 2021 YouTube video was showing
+    // in the top 20 directly beneath a headline reading "201 in the last 30
+    // days". Nulls last so undated rows sink rather than lead.
+    .orderBy(sql`${tpRawSignals.postedAt} desc nulls last`, desc(tpRawSignals.capturedAt))
     .limit(20);
 
   // Real total, not the length of the capped list above (limit 20) — the UI
