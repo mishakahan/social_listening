@@ -58,6 +58,8 @@ interface TrendDetail {
   wowGrowthPct?: number;
   growthMomPct?: number;
   momGrowthPct?: number | null;
+  /** Share-of-voice growth — see services/share-of-voice.ts on the server. */
+  sovGrowthPct?: number | null;
   yoyGrowthPct?: number | null;
   momCurrent?: number | null;
   momPrior?: number | null;
@@ -156,28 +158,6 @@ function GrowthStatCard({
   );
 }
 
-function WoWGrowth({ pct }: { pct?: number }) {
-  if (pct == null) return null;
-  const isPos = pct > 0;
-  const isNeg = pct < 0;
-  return (
-    <div
-      className={`flex items-center gap-1 text-sm font-semibold ${
-        isPos ? "text-green-600" : isNeg ? "text-red-500" : "text-muted-foreground"
-      }`}
-    >
-      {isPos ? (
-        <TrendingUp className="h-4 w-4" />
-      ) : isNeg ? (
-        <TrendingDown className="h-4 w-4" />
-      ) : (
-        <Minus className="h-4 w-4" />
-      )}
-      {isPos ? "+" : ""}
-      {pct.toFixed(1)}% WoW
-    </div>
-  );
-}
 
 function formatDate(iso?: string) {
   if (!iso) return null;
@@ -433,7 +413,7 @@ export default function TrendDetailPage() {
 
       {/* Stats grid */}
       <TooltipProvider delayDuration={150}>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+        <div className="grid grid-cols-3 gap-4 mb-6">
           {/* Signal strength */}
           <Card>
             <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
@@ -448,32 +428,20 @@ export default function TrendDetailPage() {
             </CardContent>
           </Card>
 
-          {/* WoW growth */}
+          {/* Movement — share of conversation.
+              WoW, MoM and YoY tiles used to sit here. They are raw mention
+              counts, inflated by how much we happened to scrape: this page was
+              showing maionese at +340.7% MoM and +16700% YoY while its share
+              of conversation grew 34.5%. Removed rather than kept alongside,
+              because two growth numbers that disagree on the same screen
+              invite exactly the question we cannot answer well. */}
           <GrowthStatCard
-            pct={trend.wowGrowthPct ?? null}
-            label="WoW"
-            tooltip="Week over week — this week vs prior week."
-          />
-
-          {/* MoM growth (fixed window) */}
-          <GrowthStatCard
-            pct={trend.momGrowthPct ?? null}
-            label="MoM"
+            pct={trend.sovGrowthPct ?? null}
+            label="Movement"
             tooltip={
-              trend.momGrowthPct == null
-                ? "Not enough history for MoM — need at least 30 days of activity in the 60-day comparison window."
-                : `Last 30 days vs prior 30 days: ${trend.momCurrent ?? 0} mentions vs ${trend.momPrior ?? 0}.`
-            }
-          />
-
-          {/* YoY growth (fixed window) */}
-          <GrowthStatCard
-            pct={trend.yoyGrowthPct ?? null}
-            label="YoY"
-            tooltip={
-              trend.yoyGrowthPct == null
-                ? "No mentions in the same 90-day window one year ago — no YoY baseline."
-                : `Last 90 days vs same 90 days last year: ${trend.yoyCurrent ?? 0} mentions vs ${trend.yoyPrior ?? 0}.`
+              trend.sovGrowthPct == null
+                ? "Not enough cross-platform evidence to score movement. Needs at least 3 mentions on each of 2+ platforms in the earlier window, so a single-platform spike is not reported as a trend."
+                : "Growth in this trend's share of all conversation, last 60 days vs the 60 before, measured within each platform and corroborated across 2+ of them."
             }
           />
 

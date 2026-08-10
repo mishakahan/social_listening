@@ -658,8 +658,17 @@ export default function EntitiesAuditPage() {
                               <p className="text-muted-foreground font-medium mb-1">Metrics</p>
                               <p>Velocity: <span className="font-mono">{s.velocity.toFixed(2)}/day</span></p>
                               <p>Volatility: <span className="font-mono">{s.volatility.toFixed(2)}</span></p>
-                              <p>WoW: <span className="font-mono">{pct(s.growthWow)}</span></p>
-                              <p>MoM: <span className="font-mono">{pct(s.growthMom)}</span></p>
+                              <p className="text-muted-foreground/70">
+                                Raw WoW: <span className="font-mono">{pct(s.growthWow)}</span>
+                              </p>
+                              <p className="text-muted-foreground/70">
+                                Raw MoM: <span className="font-mono">{pct(s.growthMom)}</span>
+                              </p>
+                              <p className="text-[10px] text-muted-foreground/60 mt-1 leading-snug">
+                                Raw rates are what the state machine transitions on. They are
+                                inflated by how much we scraped — use Movement for the real
+                                figure.
+                              </p>
                             </div>
                             <div>
                               <p className="text-muted-foreground font-medium mb-1">Transition</p>

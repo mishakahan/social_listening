@@ -3,6 +3,7 @@ import { canonicalizeLabel } from "../services/entity-canonical.js";
 import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
 import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "../services/discovery-origin.js";
 import { fetchShareOfVoice } from "../services/share-of-voice.js";
+import { fetchSignalPercentiles } from "../services/signal-strength.js";
 import {
   companies,
   users,
@@ -1919,33 +1920,11 @@ export async function getTrendsEnriched(
   // and it is a presentation concern, not a state transition.
   const sov = await fetchShareOfVoice(companyId);
 
-  // SIGNAL STRENGTH IS RECOMPUTED HERE, not read from the stored column.
-  //
-  // The stored value (state-machine.ts) is
-  //   (volume7d / 10) * 30 + max(0, growthWow) * 40 + max(0, growthMom) * 30
-  // capped at 100. Those are ABSOLUTE thresholds calibrated when this engine
-  // had single-digit volumes and growth ratios under 1.0. After the
-  // 2026-08-09 sweep, 34 mentions in 7 days saturates the cap on volume alone
-  // before growth is added, and a growth ratio of 3.4 contributes 102 by
-  // itself. Measured result: 111 of 135 radar items pinned at exactly 100.
-  // A score that is constant is not a score.
-  //
-  // Replaced with a PERCENTILE within the company's own radar, which cannot
-  // saturate and re-calibrates itself whenever scrape volume changes — the
-  // root cause of the original failure. It ranks EVIDENCE STRENGTH (how
-  // well-supported a detection is: mentions, and how many platforms carry
-  // them) and deliberately excludes growth, which now has its own column.
-  // Conflating "how sure are we" with "which way is it going" is what made
-  // the old score unreadable.
-  const evidenceScore = (r: (typeof rows)[number]) =>
-    (r.ki.evidenceCount ?? 0) * Math.max(1, (r.es.platformsSeen ?? []).length);
-  const allScores = rows.map(evidenceScore).sort((a, b) => a - b);
-  const percentileOf = (v: number): number => {
-    if (allScores.length === 0) return 0;
-    let below = 0;
-    while (below < allScores.length && allScores[below]! < v) below++;
-    return Math.round((below / allScores.length) * 100);
-  };
+  // Signal strength is recomputed, not read from the stored column, and the
+  // computation lives in services/signal-strength.ts so the list and the
+  // detail page cannot disagree. See that module for why the stored value is
+  // unusable.
+  const signalPct = await fetchSignalPercentiles(companyId);
 
   const mapped = rows
     .filter((r) =>
@@ -1970,7 +1949,7 @@ export async function getTrendsEnriched(
         })(),
         title: r.ki.title,
         state: r.es.state,
-        signalStrength: percentileOf(evidenceScore(r)),
+        signalStrength: signalPct.get(r.es.entityId) ?? 0,
         wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
         momGrowthPct:
           r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
@@ -2215,6 +2194,9 @@ export async function getTrendDetail(
   const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
 
   const detailSov = await fetchShareOfVoice(companyId);
+  // Same source as the list — otherwise the detail page showed the stored
+  // (saturated) score and contradicted the list one click apart.
+  const detailSignalPct = await fetchSignalPercentiles(companyId);
   return {
     id: ki.id,
     entityType: rows[0]!.entityType ?? "other",
@@ -2224,7 +2206,7 @@ export async function getTrendDetail(
     })(),
     title: ki.title,
     state: es.state,
-    signalStrength: ki.signalStrength ?? 0,
+    signalStrength: detailSignalPct.get(es.entityId) ?? 0,
     wowGrowthPct: Math.round(es.growthWow * 1000) / 10,
     growthMomPct: Math.round(es.growthMom * 1000) / 10,
     momGrowthPct:
