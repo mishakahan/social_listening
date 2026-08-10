@@ -1322,7 +1322,21 @@ router.get("/companies/:id/trends", async (req, res) => {
       ? (sortByRaw as (typeof allowedSorts)[number])
       : undefined;
     const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
-    const trends = await storage.getTrendsEnriched(companyId, { archived, sortBy, sortDir });
+    // ?entityTypes=brand,format,ingredient — allow-list of entity types to
+    // show. Omitted means no filtering, i.e. exactly the previous behaviour.
+    // Kept as a query parameter rather than stored config so the UI can offer
+    // it as a live toggle without a schema migration, and so different users
+    // of the same company can view it differently.
+    const entityTypesRaw = req.query.entityTypes as string | undefined;
+    const entityTypes = entityTypesRaw
+      ? entityTypesRaw.split(",").map((t) => t.trim()).filter(Boolean)
+      : undefined;
+    const trends = await storage.getTrendsEnriched(companyId, {
+      archived,
+      sortBy,
+      sortDir,
+      entityTypes,
+    });
     res.json(trends);
   } catch (err: any) {
     logger.error({ err }, "Failed to get trends");

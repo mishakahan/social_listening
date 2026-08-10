@@ -2,6 +2,7 @@ import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
 import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
 import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "../services/discovery-origin.js";
+import { fetchShareOfVoice } from "../services/share-of-voice.js";
 import {
   companies,
   users,
@@ -1732,6 +1733,15 @@ export async function getEntityStateWithEntity(
 
 export interface EnrichedTrend {
   id: number;           // knowledge item id
+  /** tp_entities.entity_type — ingredient / brand / format / dietary_claim / occasion / ... */
+  entityType: string;
+  /**
+   * Growth in the entity's SHARE of all conversation, last 30d vs prior 30d.
+   * Prefer this over momGrowthPct when showing anything to a client: raw
+   * growth is inflated by how much we happened to scrape (see
+   * services/share-of-voice.ts). Null when there is no prior-window history.
+   */
+  sovGrowthPct: number | null;
   title: string;
   state: string;
   signalStrength: number;
@@ -1857,9 +1867,27 @@ async function getSeedVocabulary(
   return { seedTerms, termToSeed };
 }
 
+// Entity types a client may not want on a trend radar by default. These are
+// not products: `dietary_claim` is a claim ("gluten free", "healthy"),
+// `occasion` is a date ("graduation", "gifting"). Jonathan's standing
+// complaint has been that surfaced items are "too generic to be interesting" —
+// twice now, on gummy bears and again on category-level ingredients — and both
+// times the response was to guess at a specificity threshold. This exposes the
+// axis instead of guessing: the caller chooses which kinds of thing to see.
+//
+// NOTHING IS EXCLUDED BY DEFAULT. Omitting the filter returns exactly what the
+// radar returned before, so this cannot silently change what a client sees.
+export const NON_PRODUCT_ENTITY_TYPES = ["dietary_claim", "occasion"] as const;
+
 export async function getTrendsEnriched(
   companyId: number,
-  filters?: { archived?: boolean; sortBy?: TrendSortBy; sortDir?: SortDir }
+  filters?: {
+    archived?: boolean;
+    sortBy?: TrendSortBy;
+    sortDir?: SortDir;
+    // Allow-list of tp_entities.entity_type values. Undefined = no filtering.
+    entityTypes?: string[];
+  }
 ): Promise<EnrichedTrend[]> {
   const conditions = [
     eq(tpEntityState.companyId, companyId),
@@ -1871,6 +1899,7 @@ export async function getTrendsEnriched(
     .select({
       ki: knowledgeItems,
       es: tpEntityState,
+      entityType: tpEntities.entityType,
     })
     .from(tpEntityState)
     .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
@@ -1884,16 +1913,32 @@ export async function getTrendsEnriched(
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
   const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+  // Computed at read time rather than stored on tp_entity_state: it needs no
+  // schema change and no 100-minute state-machine recompute to take effect,
+  // and it is a presentation concern, not a state transition.
+  const sov = await fetchShareOfVoice(companyId);
 
   const mapped = rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
     )
     .filter((r) => !isCoreVocab(r.ki.title) && !isCoreVocab(r.ki.topicLabel))
+    // Entity-type allow-list. Applied at the radar layer, like the core-vocab
+    // stoplist above, so toggling it takes effect immediately without
+    // re-running the state machine or re-scraping anything.
+    .filter((r) =>
+      !filters?.entityTypes || filters.entityTypes.length === 0
+        ? true
+        : filters.entityTypes.includes(r.entityType ?? "other")
+    )
     .map((r) => {
       const seedMatch = resolveSeedMatch(r.ki.title ?? "", seedTerms, termToSeed);
       return {
         id: r.ki.id,
+        sovGrowthPct: (() => {
+          const v = sov.get(r.es.entityId)?.growthPct;
+          return v == null ? null : Math.round(v * 10) / 10;
+        })(),
         title: r.ki.title,
         state: r.es.state,
         signalStrength: r.ki.signalStrength ?? 0,
@@ -1916,6 +1961,9 @@ export async function getTrendsEnriched(
         summary: r.ki.summary ?? null,
         description: r.ki.description ?? null,
         topicLabel: r.ki.topicLabel ?? null,
+        // Surfaced so the UI can show WHY something is on the radar and offer
+        // the filter — an ingredient, a brand, a format, a claim.
+        entityType: r.entityType ?? "other",
         updatedAt: r.ki.updatedAt.toISOString(),
       };
     });
@@ -1999,7 +2047,7 @@ export async function getTrendDetail(
   ];
 
   const rows = await db
-    .select({ ki: knowledgeItems, es: tpEntityState, entityDeletedAt: tpEntities.deletedAt })
+    .select({ ki: knowledgeItems, es: tpEntityState, entityDeletedAt: tpEntities.deletedAt, entityType: tpEntities.entityType })
     .from(tpEntityState)
     .innerJoin(knowledgeItems, eq(tpEntityState.knowledgeItemId, knowledgeItems.id))
     .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
@@ -2032,6 +2080,11 @@ export async function getTrendDetail(
     const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
     return {
       id: ki.id,
+      // No entity row in this fallback path, so the type is genuinely unknown
+      // rather than "other" — but the field is required, and "other" is the
+      // schema's own bucket for unclassified.
+      entityType: "other",
+      sovGrowthPct: null,
       title: ki.title,
       state: "candidate",
       signalStrength: ki.signalStrength ?? 0,
@@ -2123,8 +2176,14 @@ export async function getTrendDetail(
   const evidenceRecentCount = recentEvidenceCount(ki.evidenceCount);
   const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
 
+  const detailSov = await fetchShareOfVoice(companyId);
   return {
     id: ki.id,
+    entityType: rows[0]!.entityType ?? "other",
+    sovGrowthPct: (() => {
+      const v = detailSov.get(es.entityId)?.growthPct;
+      return v == null ? null : Math.round(v * 10) / 10;
+    })(),
     title: ki.title,
     state: es.state,
     signalStrength: ki.signalStrength ?? 0,
