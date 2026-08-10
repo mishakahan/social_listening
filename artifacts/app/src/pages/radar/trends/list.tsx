@@ -239,10 +239,18 @@ function GrowthCell({
       <GrowthPill pct={pct} />
     </div>
   );
+  // Only append the "X vs Y prior" counts when we actually have them.
+  // Share-of-voice has no single pair of counts behind it (it is a median of
+  // per-platform shares), and defaulting them to 0 rendered a confident
+  // "0 vs 0 prior" under every Movement value — a number that was not just
+  // missing but wrong.
+  const hasCounts = current != null && prior != null;
   const tip =
     pct == null
       ? insufficientNote
-      : `${windowLabel}: ${current ?? 0} vs ${prior ?? 0} prior`;
+      : hasCounts
+        ? `${windowLabel}: ${current} vs ${prior} prior`
+        : windowLabel;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{body}</TooltipTrigger>

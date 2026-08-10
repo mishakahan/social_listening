@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
@@ -148,17 +148,42 @@ export default function EmergingLongTailPage() {
   const [sortBy, setSortBy] = useState<SortKey>("posterior");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
+  // POST /run-long-tail is FIRE-AND-FORGET: it returns {ok:true} the moment
+  // the run is queued, not when it finishes (see routes/pipeline.ts). So the
+  // old handler declared "re-evaluation complete" and invalidated the query
+  // immediately — the refetch raced ahead of the evaluation and pulled back
+  // the OLD rows. The page then sat there showing stale results, or "no
+  // candidates yet", while the run was still going. Measured: server wrote
+  // results at 4:51:13 while the page still displayed 4:48:21.
+  //
+  // Fixed by polling until the server's own lastRunAt actually advances,
+  // which is the only signal that the work is done.
+  const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ["long-tail", companyId],
     queryFn: () => fetchLongTail(companyId),
     refetchOnWindowFocus: false,
+    // Poll only while a run is in flight; stop as soon as it lands.
+    refetchInterval: runStartedAt ? 4000 : false,
   });
+
+  // Detect completion: lastRunAt has moved past what it was when we started.
+  useEffect(() => {
+    if (!runStartedAt || !data) return;
+    const current = data.lastRunAt ?? "";
+    if (current && current !== runStartedAt) {
+      setRunStartedAt(null);
+      toast.success("Long-tail re-evaluation complete");
+    }
+  }, [data, runStartedAt]);
 
   const runMutation = useMutation({
     mutationFn: () => runLongTail(companyId),
     onSuccess: () => {
-      toast.success("Long-tail re-evaluation complete");
-      queryClient.invalidateQueries({ queryKey: ["long-tail", companyId] });
+      // "started", not "complete" — the server has only queued it.
+      toast.info("Re-evaluation started, this takes a minute");
+      setRunStartedAt(data?.lastRunAt ?? "none");
     },
     onError: (err: Error) => toast.error(err.message),
   });
