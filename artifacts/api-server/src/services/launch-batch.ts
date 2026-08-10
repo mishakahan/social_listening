@@ -6,6 +6,10 @@ import {
   getActorMemoryMb,
   getWebhookBaseUrl,
   buildActorInput,
+  RESULT_CAP,
+  IG_RESULT_CAP,
+  IG_MAX_VARIANT_TAGS,
+  YOUTUBE_RESULT_CAP,
 } from "./apify.js";
 import { runEntityExtraction } from "./entity-extraction.js";
 import { runTimeseriesAggregation } from "./timeseries.js";
@@ -98,6 +102,30 @@ const YOUTUBE_KEYWORDS_PER_RUN =
   Number(process.env.YOUTUBE_KEYWORDS_PER_RUN ?? "60") || 60;
 const YOUTUBE_MAX_KEYWORD_RUNS =
   Number(process.env.YOUTUBE_MAX_KEYWORD_RUNS ?? "10") || 10;
+
+// CORRECTION TO THE CHUNKING RATIONALE ABOVE (measured 2026-08-07).
+//
+// The comment above says a single YouTube run "starved" its keywords by
+// sharing one RESULT_CAP across the whole list, and that chunking multiplies
+// coverage ~19x. That premise is FALSE. streamers/youtube-scraper applies
+// maxResults PER SEARCH QUERY: the company-2 run cited as starved fetched
+// 38 keywords x 40 = 1,520 records, not 200. Every keyword already had its
+// own cap. Splitting N keywords across 2 runs instead of 1 therefore fetches
+// the SAME records and buys no extra coverage — it only adds run overhead.
+//
+// What actually bounds YouTube spend is the KEYWORD COUNT, because records
+// (and cost) are (keywords x cap). YOUTUBE_MAX_KEYWORD_RUNS cannot do that
+// job: at 10 runs x 60 keywords it only binds above 600 keywords per query,
+// which no query here approaches. So YouTube had no effective cost cap at
+// all, while TikTok — two orders of magnitude cheaper per record — had one.
+//
+// This is that missing cap, and it is the direct analogue of
+// TIKTOK_MAX_KEYWORD_RUNS. Default 8 mirrors TikTok's, and at the measured
+// YOUTUBE_RESULT_CAP of 40 it puts a query's YouTube spend at
+// 8 x 40 x $0.012 = ~$3.84 instead of an unbounded figure that reached
+// ~$190 for a single 79-keyword query under the previous defaults.
+const YOUTUBE_MAX_KEYWORDS =
+  Number(process.env.YOUTUBE_MAX_KEYWORDS ?? "8") || 8;
 const X_KEYWORDS_PER_RUN =
   Number(process.env.X_KEYWORDS_PER_RUN ?? "10") || 10;
 const X_MAX_KEYWORD_RUNS =
@@ -171,14 +199,131 @@ export function chunkKeywords(
 // deliberately conservative (upper-bound-leaning) proxy, acceptable because
 // Google Trends is off by default (ENABLE_GOOGLE_TRENDS) and essentially
 // never appears in a real plan.
-const REAL_COST_PER_RUN_USD: Record<string, number> = {
-  tiktok: 0.1,
-  instagram: 1.0,
-  reddit: 0.5,
-  youtube: 1.5,
-  x: 0.02,
-  google_trends: 0.5, // 5 terms/run cap x $0.10/record
+// THESE ACTORS BILL PER RECORD, NOT PER RUN.
+//
+// The previous version of this table priced every actor at a flat $/run. That
+// is wrong for every actor here, and catastrophically wrong for YouTube:
+// measured 2026-08-07 across all 41 successful YouTube runs, a YouTube run
+// fetches (keywords x cap) records, so its cost scales with the keyword list.
+// The flat model priced YouTube at $1.50/run while the single real company-2
+// YouTube run (38 keywords) cost $4.56 in tp_actor_runs.cost_usd — and that
+// column undercounts real Apify billing ~4x, so ~$18 real for one run.
+//
+// Under the flat model, company 2's full 828-keyword sweep projected to
+// $62.42. Priced per record it is roughly $2,100 of real spend against a
+// $200/month budget. This project has already overspent twice ($12 -> $74,
+// $18 -> ~$60) by trusting a cost figure that was too low; this is the same
+// failure mode, one order of magnitude larger, and the pre-flight gate is the
+// only thing standing in front of it.
+//
+// Rates below are REAL spend per record: measured tp_actor_runs.cost_usd per
+// record, multiplied by 4 to correct that column's undercount. The 4x factor
+// is not a guess — company 2's runs total $15.03 in cost_usd against the
+// ~$60 the Apify console actually charged for that sweep, exactly 4.0x.
+//
+// The Apify console (https://console.apify.com/billing) remains the only
+// ground truth for real spend. This table is a pre-flight approximation of
+// it, to be re-derived whenever a fresh console figure is available.
+// WHICH BILLING SHAPE EACH ACTOR HAS IS ITSELF A MEASUREMENT, not an
+// assumption. Comparing the two companies' sweeps (they ran at different caps
+// and different keyword volumes) shows which unit each actor's cost is stable
+// in — the stable one is the real billing unit:
+//
+//   platform    $/run across companies   $/record across companies   -> unit
+//   youtube     $0.386 vs $4.560 (12x)   $0.002999 vs $0.003000      -> RECORD
+//   tiktok      $0.0263 vs $0.0111       $0.00643 vs $0.00029 (22x)  -> RUN
+//   x           $0.0075 vs $0.0060       $0.00030 vs $0.00015 (2x)   -> RUN
+//   instagram   $0.2759 vs $0.3557       $0.00271 vs $0.00230        -> RECORD
+//   reddit      $0.1184 vs $0.0580 (2x)  $0.00441 vs $0.00580        -> RECORD
+//
+// YouTube is the striking one: its per-record cost is identical to four
+// decimal places across two sweeps whose per-run cost differs 12x. That is
+// what makes (keywords x cap) the right cost model for it, and it is why the
+// old flat $1.50/run priced a 38-keyword run at a twelfth of its real cost.
+//
+// TikTok and X are the opposite: their cost tracks RUNS, so raising
+// BACKFILL_RESULT_CAP buys more records on those platforms at no extra spend.
+// Company 2 pulled 16,013 TikTok records for $4.66 while company 1 pulled
+// only 2,116 for $13.61 — records plainly do not drive the bill there.
+//
+// Rates are REAL spend (measured tp_actor_runs.cost_usd x 4, the undercount
+// factor confirmed on company 2: $15.03 in-DB vs ~$60 billed). Where the two
+// companies disagree, the HIGHER figure is used — a pre-flight gate should
+// err towards refusing, never towards approving.
+// THERE IS NO 4x UNDERCOUNT. tp_actor_runs.cost_usd was checked directly
+// against Apify's own `usageTotalUsd` on 20 runs spanning all five actors:
+// it matched EXACTLY, 1.00x, every time. The long-held belief that this
+// column undercounts real billing ~4x was wrong, and every estimate built on
+// that multiplier (including the first two versions of this table) was 4x too
+// high.
+//
+// Where the belief came from: whole-ACCOUNT movement was attributed to single
+// scrapes. The July cycle billed $201.42 while the runs recorded in our DB
+// total $90.05 — but the gap is not per-run undercounting. It is runs missing
+// from the DB entirely: ~484 runs whose rows were deleted during the
+// stale-token incident yet still billed, plus $15.30 of google_trends, $11.00
+// of residential proxy transfer, and aborted runs. Per-run figures were
+// always accurate; the DB's TOTAL was incomplete.
+//
+// Each actor bills as a per-record charge with a floor: an empty run still
+// costs compute time, and on TikTok an EMPTY run ($0.0276) actually costs
+// more than a typical 39-record one ($0.0113), because a search that finds
+// nothing spends longer looking. So cost is max(floor, records x marginal),
+// not a sum — an additive floor would systematically overprice normal runs.
+//
+// Every figure below is measured from tp_actor_runs (2026-08-07): the floor
+// is the mean cost of that actor's runs that returned ZERO records, and the
+// marginal rate is total cost over total records for runs of 40+ records,
+// where the floor's influence is smallest.
+type ActorRate = { floorUsd: number; perRecordUsd: number };
+
+const REAL_ACTOR_RATES: Record<string, ActorRate> = {
+  tiktok: { floorUsd: 0.0276, perRecordUsd: 0.000296 },
+  x: { floorUsd: 0.0235, perRecordUsd: 0.000141 },
+  instagram: { floorUsd: 0.3501, perRecordUsd: 0.002296 },
+  reddit: { floorUsd: 0.0001, perRecordUsd: 0.0042 },
+  // YouTube has no empty runs on record and its per-record rate is exact to
+  // four decimals across both sweeps — the cleanest fit of any actor here.
+  youtube: { floorUsd: 0, perRecordUsd: 0.003 },
+  google_trends: { floorUsd: 0.3034, perRecordUsd: 0.1275 },
 };
+
+// How many records a single planned run will fetch. Each branch mirrors the
+// corresponding case in buildActorInput (services/apify.ts) — if an actor's
+// input mapping changes, this must change with it or the estimate silently
+// drifts from reality.
+//
+// Every figure is checked against real runs in tp_actor_runs:
+//   youtube   keywords x cap   41/41 runs: records/keywords == cap exactly
+//   tiktok    cap              1 keyword/run; 311/419 company-2 runs hit cap 40
+//   x         cap              14/14 company-2 runs returned exactly cap 40
+//   instagram variants x cap   company-2 max 160 == 4 variants x IG cap 40
+//   reddit    per-search cap   13/13 company-2 runs returned exactly 10, i.e.
+//                              maxItems behaves as a RUN total here, not
+//                              per-search, so the run total is the cap itself
+export function estimateRunRecords(run: PlannedRun): number {
+  const keywordCount = (run.keywords ?? []).filter((k) => k.trim().length > 0).length;
+  switch (run.platform) {
+    case "youtube":
+      return keywordCount * YOUTUBE_RESULT_CAP;
+    case "instagram": {
+      const variants = Math.min(
+        Math.max((run.hashtags ?? []).filter((h) => h.trim().length > 0).length, 1),
+        IG_MAX_VARIANT_TAGS
+      );
+      return variants * IG_RESULT_CAP;
+    }
+    case "reddit":
+      // buildActorInput sets maxItems = max(10, floor(100 / searches)); the
+      // actor treats it as a run total.
+      return Math.max(10, Math.floor(100 / Math.max(1, keywordCount)));
+    case "google_trends":
+      return Math.min(keywordCount, 5);
+    // tiktok and x both cap at RESULT_CAP for the whole run.
+    default:
+      return RESULT_CAP;
+  }
+}
 
 // Hard ceiling on a single batch's estimated real spend. Default ($25) sits
 // comfortably above a normal sweep (company 2's full 14-query sweep projects
@@ -200,31 +345,41 @@ const APIFY_MAX_BATCH_USD =
 
 export type BatchCostEstimate = {
   totalUsd: number;
-  byPlatform: Record<string, { runs: number; usd: number }>;
+  byPlatform: Record<string, { runs: number; records: number; usd: number }>;
+};
+
+// A single planned Apify run, carrying the keywords/hashtags that run will
+// actually be launched with. The keyword list is required for costing because
+// several actors bill per record and their record count is a function of the
+// keyword list, not of the run count.
+export type PlannedRun = {
+  platform: string;
+  keywords?: string[];
+  hashtags?: string[];
 };
 
 // Pure: estimate a batch's real Apify spend from the platform plan about to
 // be fired (one entry per planned run, already fanned out/chunked). Throws
-// if any planned platform has no entry in REAL_COST_PER_RUN_USD — an unknown
-// platform must never be silently treated as free; add a measured rate
-// before it can be launched.
-export function estimateBatchCostUsd(
-  platforms: { platform: string }[]
-): BatchCostEstimate {
-  const byPlatform: Record<string, { runs: number; usd: number }> = {};
-  for (const p of platforms) {
-    const rate = REAL_COST_PER_RUN_USD[p.platform];
+// if any planned platform has no entry in REAL_COST_PER_RECORD_USD — an
+// unknown platform must never be silently treated as free; add a measured
+// rate before it can be launched.
+export function estimateBatchCostUsd(runs: PlannedRun[]): BatchCostEstimate {
+  const byPlatform: Record<string, { runs: number; records: number; usd: number }> = {};
+  for (const p of runs) {
+    const rate = REAL_ACTOR_RATES[p.platform];
     if (rate === undefined) {
       throw new Error(
-        `No real-cost rate for platform "${p.platform}" in REAL_COST_PER_RUN_USD — ` +
+        `No measured cost rate for platform "${p.platform}" in REAL_ACTOR_RATES — ` +
           `refusing to estimate batch cost rather than silently assuming it's free. ` +
-          `Add a measured per-run (or per-record, as done for google_trends) rate ` +
-          `before launching a batch that includes this platform.`
+          `Derive a floor (mean cost of that actor's zero-record runs) and a marginal ` +
+          `per-record rate from tp_actor_runs before launching it.`
       );
     }
-    const entry = byPlatform[p.platform] ?? { runs: 0, usd: 0 };
+    const records = estimateRunRecords(p);
+    const entry = byPlatform[p.platform] ?? { runs: 0, records: 0, usd: 0 };
     entry.runs += 1;
-    entry.usd += rate;
+    entry.records += records;
+    entry.usd += Math.max(rate.floorUsd, records * rate.perRecordUsd);
     byPlatform[p.platform] = entry;
   }
   const totalUsd = Object.values(byPlatform).reduce((s, e) => s + e.usd, 0);
@@ -242,7 +397,10 @@ export function enforceBatchCostCeiling(
 ): void {
   if (estimate.totalUsd <= ceilingUsd) return;
   const breakdown = Object.entries(estimate.byPlatform)
-    .map(([platform, e]) => `${platform}: ${e.runs} runs = $${e.usd.toFixed(2)}`)
+    .map(
+      ([platform, e]) =>
+        `${platform}: ${e.runs} runs / ${e.records.toLocaleString()} records = $${e.usd.toFixed(2)}`
+    )
     .join(", ");
   throw new Error(
     `Apify batch cost estimate $${estimate.totalUsd.toFixed(2)} exceeds ` +
@@ -255,12 +413,30 @@ export function enforceBatchCostCeiling(
 
 // Exported (read-only) so a projection script can compute planned run counts
 // per platform for real committed queries without launching anything.
-export function planPlatformsForQuery(query: {
+export type PlannableQuery = {
   keywords: string[] | null;
+  hashtags?: string[] | null;
   language: string | null;
   geography: string | null;
   topicLabel: string | null;
-}): PlatformPlan[] {
+};
+
+// Resolve a planned run to the keywords/hashtags it will ACTUALLY be launched
+// with, which is what buildActorInput sees and therefore what determines how
+// many records the run fetches and what it costs. Single source of truth for
+// costing, shared by launchBatch and the projection script, so an estimate can
+// never be computed against a different keyword list than the one that fires.
+export function effectiveRunFor(
+  plan: PlatformPlan,
+  query: PlannableQuery
+): PlannedRun {
+  const keywords = plan.keywordOverride
+    ? [plan.keywordOverride]
+    : plan.keywordsOverride ?? query.keywords ?? [];
+  return { platform: plan.platform, keywords, hashtags: query.hashtags ?? [] };
+}
+
+export function planPlatformsForQuery(query: PlannableQuery): PlatformPlan[] {
   const platforms: PlatformPlan[] = [];
   // IG is the cost driver (~85% of spend). Posts alone carry the hashtag
   // signal; reels are dropped to halve IG cost. Re-add if reels prove needed.
@@ -314,7 +490,21 @@ export function planPlatformsForQuery(query: {
     // as X: a single run sharing RESULT_CAP across the whole keyword list
     // starved every individual keyword (828 keywords -> 1 capped run on
     // company 2, yielding 320 entities off a cap of 200 total items).
-    const ytChunks = chunkKeywords(query.keywords, YOUTUBE_KEYWORDS_PER_RUN, YOUTUBE_MAX_KEYWORD_RUNS);
+    // Apply the keyword cap BEFORE chunking: YouTube bills per (keyword x
+    // cap), so the keyword list is the cost lever, and dropped keywords are
+    // reported rather than silently discarded.
+    const ytKeywords = query.keywords.slice(0, YOUTUBE_MAX_KEYWORDS);
+    if (query.keywords.length > ytKeywords.length) {
+      logger.warn(
+        {
+          topicLabel: query.topicLabel,
+          droppedKeywordCount: query.keywords.length - ytKeywords.length,
+          cap: YOUTUBE_MAX_KEYWORDS,
+        },
+        "YOUTUBE_MAX_KEYWORDS capped this query's YouTube keyword list; some keywords were dropped from YouTube coverage"
+      );
+    }
+    const ytChunks = chunkKeywords(ytKeywords, YOUTUBE_KEYWORDS_PER_RUN, YOUTUBE_MAX_KEYWORD_RUNS);
     if (ytChunks.truncated) {
       logger.warn(
         { topicLabel: query.topicLabel, droppedKeywordCount: ytChunks.droppedKeywords.length },
@@ -383,7 +573,9 @@ export async function launchBatch(
   for (const q of queries) {
     platformPlansByQueryId.set(q.id, planPlatformsForQuery(q));
   }
-  const allPlannedRuns = queries.flatMap((q) => platformPlansByQueryId.get(q.id)!);
+  const allPlannedRuns = queries.flatMap((q) =>
+    platformPlansByQueryId.get(q.id)!.map((p) => effectiveRunFor(p, q))
+  );
   const runsTotal = allPlannedRuns.length;
 
   // Pre-flight cost gate: estimate real Apify spend for this batch and abort

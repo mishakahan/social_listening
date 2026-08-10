@@ -6,19 +6,23 @@
 // function the real launch path uses, so the counts are what launchBatch()
 // would actually produce, without starting anything.
 import * as storage from "../storage/index.js";
-import { planPlatformsForQuery } from "../services/launch-batch.js";
+import {
+  planPlatformsForQuery,
+  effectiveRunFor,
+  estimateBatchCostUsd,
+  type PlannedRun,
+} from "../services/launch-batch.js";
 
 const COMPANY_ID = Number(process.env.PROJECT_COMPANY_ID ?? "2");
 
-// Real measured per-run cost (the DB cost_usd column undercounts by ~4x, so
-// these are hardcoded from measured figures, not read from the DB).
-const COST_PER_RUN: Record<string, number> = {
-  tiktok: 0.1,
-  instagram: 1.0,
-  reddit: 0.5,
-  youtube: 1.5,
-  x: 0.02,
-};
+// Cost now comes from the SAME estimator launchBatch gates on
+// (estimateBatchCostUsd), rather than a second copy of a per-run rate table
+// maintained here. The old local table priced actors flat per RUN; measured
+// 2026-08-07, they bill per RECORD, and a YouTube run's records are
+// (keywords x cap) — which is why this script previously reported company 2's
+// sweep as $62.42 when the real figure is an order of magnitude higher. Two
+// cost tables meant the projection and the gate could disagree; now they
+// cannot.
 
 // The historical actual run counts observed for company 2 before this fix.
 // Override via env if projecting for a different company/baseline.
@@ -34,6 +38,7 @@ const queries = await storage.getScoutQueries(COMPANY_ID);
 console.log(`company ${COMPANY_ID}: ${queries.length} committed scout queries`);
 
 const plannedByPlatform: Record<string, number> = {};
+const plannedRuns: PlannedRun[] = [];
 let totalKeywords = 0;
 
 for (const q of queries) {
@@ -41,8 +46,11 @@ for (const q of queries) {
   const platforms = planPlatformsForQuery(q);
   for (const p of platforms) {
     plannedByPlatform[p.platform] = (plannedByPlatform[p.platform] ?? 0) + 1;
+    plannedRuns.push(effectiveRunFor(p, q));
   }
 }
+
+const plannedEstimate = estimateBatchCostUsd(plannedRuns);
 
 console.log(`total keywords across all committed queries: ${totalKeywords}\n`);
 
@@ -56,44 +64,42 @@ console.log(
   "current(actual)".padEnd(18),
   "planned(new)".padEnd(14),
   "delta".padEnd(8),
-  "current $".padEnd(12),
+  "planned records".padEnd(17),
   "planned $"
 );
 
 let currentTotalRuns = 0;
 let plannedTotalRuns = 0;
-let currentTotalCost = 0;
-let plannedTotalCost = 0;
 
 for (const platform of allPlatforms) {
   const current = CURRENT_ACTUAL[platform] ?? 0;
   const planned = plannedByPlatform[platform] ?? 0;
-  const costPerRun = COST_PER_RUN[platform] ?? 0;
-  const currentCost = current * costPerRun;
-  const plannedCost = planned * costPerRun;
+  const entry = plannedEstimate.byPlatform[platform];
   currentTotalRuns += current;
   plannedTotalRuns += planned;
-  currentTotalCost += currentCost;
-  plannedTotalCost += plannedCost;
   console.log(
     platform.padEnd(12),
     String(current).padEnd(18),
     String(planned).padEnd(14),
     String(planned - current).padEnd(8),
-    ("$" + currentCost.toFixed(2)).padEnd(12),
-    "$" + plannedCost.toFixed(2)
+    (entry?.records ?? 0).toLocaleString().padEnd(17),
+    "$" + (entry?.usd ?? 0).toFixed(2)
   );
 }
 
 console.log("\n--- totals ---");
 console.log(`current runs: ${currentTotalRuns}, planned runs: ${plannedTotalRuns}`);
-console.log(
-  `current cost: $${currentTotalCost.toFixed(2)}, planned cost: $${plannedTotalCost.toFixed(2)}`
+const plannedRecords = Object.values(plannedEstimate.byPlatform).reduce(
+  (s, e) => s + e.records,
+  0
 );
-const delta = plannedTotalCost - currentTotalCost;
-const pct = currentTotalCost > 0 ? (delta / currentTotalCost) * 100 : 0;
 console.log(
-  `delta: ${delta >= 0 ? "+" : ""}$${delta.toFixed(2)} (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)`
+  `planned: ${plannedRecords.toLocaleString()} records = $${plannedEstimate.totalUsd.toFixed(2)} projected REAL spend`
+);
+console.log(
+  `\nNo "current cost" column: the historical figure it used to print came from the\n` +
+    `same flat per-run table that was wrong. For real past spend read the Apify console,\n` +
+    `or multiply tp_actor_runs.cost_usd by ~4 (company 2: $15.03 in-DB vs ~$60 billed).`
 );
 
 const tiktokShareCurrent =
