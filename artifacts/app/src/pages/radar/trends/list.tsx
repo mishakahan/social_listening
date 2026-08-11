@@ -100,14 +100,52 @@ function searchTermOf(t: Trend): string {
   return t.searchTerm ?? NO_SEARCH_TERM;
 }
 
-const STATE_CONFIG: Record<string, { label: string; className: string }> = {
-  candidate: { label: "Candidate", className: "bg-gray-500 text-white border-0" },
-  emerging: { label: "Emerging", className: "bg-amber-500 text-white border-0" },
-  sustained: { label: "Sustained", className: "bg-green-500 text-white border-0" },
-  peaking: { label: "Peaking", className: "bg-orange-500 text-white border-0" },
-  declining: { label: "Declining", className: "bg-blue-500 text-white border-0" },
-  dormant: { label: "Dormant", className: "bg-gray-400 text-white border-0" },
-  resurgent: { label: "Resurgent", className: "bg-purple-500 text-white border-0" },
+const STATE_CONFIG: Record<
+  string,
+  { label: string; className: string; description: string }
+> = {
+  candidate: {
+    label: "Candidate",
+    className: "bg-gray-500 text-white border-0",
+    description:
+      "Seen, but not yet talked about enough to say anything about it. Waiting for more mentions before it counts as moving in any direction.",
+  },
+  emerging: {
+    label: "Emerging",
+    className: "bg-amber-500 text-white border-0",
+    description:
+      "Growing week on week and past the volume floor. Newly on the way up rather than established.",
+  },
+  sustained: {
+    label: "Sustained",
+    className: "bg-green-500 text-white border-0",
+    description:
+      "Has been rising for several weeks rather than spiking once. The most established thing on the radar.",
+  },
+  peaking: {
+    label: "Peaking",
+    className: "bg-orange-500 text-white border-0",
+    description:
+      "Still big, but no longer speeding up. Growth has flattened off at the top.",
+  },
+  declining: {
+    label: "Declining",
+    className: "bg-blue-500 text-white border-0",
+    description:
+      "Falling on both the week and the month. It needs both, so one quiet week inside a rising month does not count.",
+  },
+  dormant: {
+    label: "Dormant",
+    className: "bg-gray-400 text-white border-0",
+    description:
+      "Almost no recent mentions. Still tracked, so it can come back, but nothing is happening right now.",
+  },
+  resurgent: {
+    label: "Resurgent",
+    className: "bg-purple-500 text-white border-0",
+    description:
+      "Went quiet for a while and is being talked about again. Worth a look because it has history behind it.",
+  },
 };
 
 const PLATFORM_CONFIG: Record<string, { label: string; className: string }> = {
@@ -628,6 +666,7 @@ function SingleEntityTab({
                   STATE_CONFIG[trend.state] ?? {
                     label: trend.state,
                     className: "bg-gray-500 text-white border-0",
+                    description: "",
                   };
                 const startsWatchlist =
                   rowIndex === scored.length && unscored.length > 0;
@@ -695,7 +734,20 @@ function SingleEntityTab({
 
                     {/* State */}
                     <div>
-                      <Badge className={`text-xs ${stateCfg.className}`}>{stateCfg.label}</Badge>
+                      {stateCfg.description ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge className={`text-xs cursor-help ${stateCfg.className}`}>
+                              {stateCfg.label}
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-[280px] text-xs">
+                            {stateCfg.description}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <Badge className={`text-xs ${stateCfg.className}`}>{stateCfg.label}</Badge>
+                      )}
                     </div>
 
                     {/* Platforms */}

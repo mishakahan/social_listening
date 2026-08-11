@@ -208,10 +208,9 @@ function VerdictChip({
   detail: string;
   title?: string;
 }) {
-  return (
+  const chip = (
     <span
-      title={title}
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border ${
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border cursor-help ${
         pass
           ? "bg-green-500/10 text-green-700 dark:text-green-300 border-green-500/30"
           : "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/30"
@@ -222,11 +221,20 @@ function VerdictChip({
       <span className="opacity-70">{detail}</span>
     </span>
   );
+  if (!title) return chip;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[300px] text-xs">
+        {title}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 // Renders the "why confirmed / why held" chip row from the stored gate verdict.
-// Significance passes below alpha=0.05; breadth passes at >=1.0 bits (the gate's
-// own thresholds). Specificity comes from the cached LLM judgment.
+// Thresholds come from the verdict itself, since they are per-company config.
+// Specificity comes from the cached LLM judgment.
 function VerdictChips({
   verdict,
   specificity,
