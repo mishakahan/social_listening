@@ -13,6 +13,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
@@ -37,6 +44,11 @@ interface LongTailRow {
   posteriorProb: number;
   computedAt: string;
   sparkline: number[];
+  /** All-time mentions, every platform and geography. */
+  totalMentions: number;
+  watchTopic: string | null;
+  /** The search that found it; null means no seed keyword went looking for it. */
+  searchTerm: string | null;
 }
 
 interface LongTailResponse {
@@ -46,7 +58,10 @@ interface LongTailResponse {
   minPosterior: number;
 }
 
-type SortKey = "posterior" | "uplift" | "current";
+type SortKey = "posterior" | "uplift" | "current" | "total";
+
+const ALL = "all";
+const NO_SEARCH_TERM = "No matching search term";
 
 async function fetchLongTail(companyId: number): Promise<LongTailResponse> {
   const res = await fetch(`/api/pipeline/companies/${companyId}/long-tail`);
@@ -146,6 +161,9 @@ export default function EmergingLongTailPage() {
   const queryClient = useQueryClient();
   const companyId = useCompanyId();
   const [sortBy, setSortBy] = useState<SortKey>("posterior");
+  // Client-side: the candidate list is small (tens of rows) and already loaded.
+  const [typeFilter, setTypeFilter] = useState(ALL);
+  const [searchFilter, setSearchFilter] = useState(ALL);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // POST /run-long-tail is FIRE-AND-FORGET: it returns {ok:true} the moment
@@ -222,6 +240,10 @@ export default function EmergingLongTailPage() {
           av = a.currentMentions;
           bv = b.currentMentions;
           break;
+        case "total":
+          av = a.totalMentions;
+          bv = b.totalMentions;
+          break;
         case "posterior":
         default:
           av = a.posteriorProb;
@@ -231,6 +253,27 @@ export default function EmergingLongTailPage() {
       return (av - bv) * mul;
     });
   }, [data, sortBy, sortDir]);
+
+  // Facet options derived from the data itself, so a filter can never offer a
+  // value that returns nothing.
+  const entityTypes = useMemo(
+    () => [...new Set((data?.candidates ?? []).map((c) => c.entityType ?? "uncategorised"))].sort(),
+    [data]
+  );
+  const searchTerms = useMemo(
+    () => [...new Set((data?.candidates ?? []).map((c) => c.searchTerm ?? NO_SEARCH_TERM))].sort(),
+    [data]
+  );
+
+  const candidates = useMemo(
+    () =>
+      sorted.filter(
+        (c) =>
+          (typeFilter === ALL || (c.entityType ?? "uncategorised") === typeFilter) &&
+          (searchFilter === ALL || (c.searchTerm ?? NO_SEARCH_TERM) === searchFilter)
+      ),
+    [sorted, typeFilter, searchFilter]
+  );
 
   if (isLoading) {
     return (
@@ -261,7 +304,6 @@ export default function EmergingLongTailPage() {
     );
   }
 
-  const candidates = sorted;
   const lastRunAt = data?.lastRunAt
     ? new Date(data.lastRunAt).toLocaleString()
     : "never";
@@ -298,6 +340,38 @@ export default function EmergingLongTailPage() {
           </Button>
         </div>
 
+        {/* Facets. Country is NOT here on purpose: the long-tail lane groups by
+            entity only and sums across geographies, so the data carries no
+            country to filter on. Adding a dropdown over data that cannot
+            support it would be a filter that silently lies. */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="h-8 w-[190px] text-xs">
+              <SelectValue placeholder="All kinds" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL} className="text-xs">All kinds</SelectItem>
+              {entityTypes.map((t) => (
+                <SelectItem key={t} value={t} className="text-xs">{t}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={searchFilter} onValueChange={setSearchFilter}>
+            <SelectTrigger className="h-8 w-[260px] text-xs">
+              <SelectValue placeholder="All search terms" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL} className="text-xs">All search terms</SelectItem>
+              {searchTerms.map((t) => (
+                <SelectItem key={t} value={t} className="text-xs">{t}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+            {candidates.length} of {(data?.candidates ?? []).length}
+          </span>
+        </div>
+
         {candidates.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-16 text-center">
             <TrendingUp className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
@@ -311,10 +385,13 @@ export default function EmergingLongTailPage() {
           </div>
         ) : (
           <div className="rounded-xl border border-border overflow-hidden">
-            <div className="grid grid-cols-[2fr_96px_96px_96px_140px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="grid grid-cols-[2fr_84px_84px_84px_84px_130px_130px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
               <div>Entity</div>
               <div className="text-right">
-                <SortHeader label="Current" field="current" current={sortBy} dir={sortDir} onSort={handleSort} />
+                <SortHeader label="Window" field="current" current={sortBy} dir={sortDir} onSort={handleSort} />
+              </div>
+              <div className="text-right">
+                <SortHeader label="Total" field="total" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div className="text-right">
                 <SortHeader label="Uplift" field="uplift" current={sortBy} dir={sortDir} onSort={handleSort} />
@@ -329,7 +406,7 @@ export default function EmergingLongTailPage() {
               {candidates.map((c) => (
                 <div
                   key={c.id}
-                  className="grid grid-cols-[2fr_96px_96px_96px_140px_140px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30"
+                  className="grid grid-cols-[2fr_84px_84px_84px_84px_130px_130px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30"
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-foreground leading-tight truncate">
@@ -340,15 +417,39 @@ export default function EmergingLongTailPage() {
                       {c.aliases.length > 0 && (
                         <span className="ml-1.5">· aka {c.aliases.slice(0, 2).join(", ")}</span>
                       )}
+                      {c.searchTerm ? (
+                        <span className="ml-1.5">· {c.searchTerm}</span>
+                      ) : (
+                        <span className="ml-1.5 text-purple-600 dark:text-purple-400">
+                          · discovered
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="text-right text-sm tabular-nums">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span>{c.currentMentions}</span>
+                        <span className="cursor-help">{c.currentMentions}</span>
                       </TooltipTrigger>
                       <TooltipContent side="top" className="text-xs">
-                        {c.currentMentions} mentions in last 30d ({c.windowStart} → {c.windowEnd})
+                        {c.currentMentions} mentions in the scoring window
+                        ({c.windowStart} → {c.windowEnd}). This lane only admits
+                        entities inside a narrow band, so this number barely varies.
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  {/* All-time volume. Without it every row looks the same size,
+                      because the lane selects on the window count: pesto at 39
+                      all-time and mandioca at 12 both show 9 here. */}
+                  <div className="text-right text-sm tabular-nums font-medium">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="cursor-help">{c.totalMentions}</span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[260px]">
+                        {c.totalMentions} mentions all time, across every platform and
+                        geography. Tells you whether this is genuinely small or a
+                        bigger thing having a quiet month.
                       </TooltipContent>
                     </Tooltip>
                   </div>

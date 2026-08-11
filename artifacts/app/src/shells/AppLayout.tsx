@@ -95,6 +95,8 @@ function Breadcrumbs({ location }: { location: string }) {
     signals: "Signals",
     entities: "Entities",
     trends: "Trends",
+    emerging: "Emerging",
+    attributes: "Attributes",
     "control-panel": "Control Panel",
   };
 

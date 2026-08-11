@@ -649,6 +649,17 @@ export interface LongTailRow {
   computedAt: string;
   // Compact 30-day sparkline (one entry per day in window, oldest first).
   sparkline: number[];
+  /**
+   * All-time mentions for this entity, every platform and geography. The lane
+   * selects on a NARROW window (5-9 mentions inside it), so currentMentions
+   * alone gives no sense of whether this is a genuinely small thing or a big
+   * thing having a quiet month.
+   */
+  totalMentions: number;
+  /** Watch topic of whichever seed matched, or null for a genuine discovery. */
+  watchTopic: string | null;
+  /** The matching scout query's own topicLabel, i.e. what we went looking for. */
+  searchTerm: string | null;
 }
 
 /**
@@ -699,6 +710,28 @@ export async function getLongTailCandidates(
     )
     .groupBy(tpEntityTimeseries.entityId, tpEntityTimeseries.bucketDate);
 
+  // All-time volume per candidate, deliberately UNBOUNDED by date. The lane
+  // admits entities on a narrow current-window count, so without this there is
+  // no way to tell a genuinely niche term from a big one in a quiet patch.
+  const totalRows = await db
+    .select({
+      entityId: tpEntityTimeseries.entityId,
+      total: sql<number>`coalesce(sum(${tpEntityTimeseries.mentions}), 0)::int`,
+    })
+    .from(tpEntityTimeseries)
+    .where(
+      and(
+        eq(tpEntityTimeseries.companyId, companyId),
+        inArray(tpEntityTimeseries.entityId, entityIds)
+      )
+    )
+    .groupBy(tpEntityTimeseries.entityId);
+  const totalByEntity = new Map(totalRows.map((r) => [r.entityId, Number(r.total) || 0]));
+
+  // Same seed vocabulary the Trends list uses, so "which search found this"
+  // means the same thing on both pages rather than being computed two ways.
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+
   // Build a dense 30-day array per entity by walking the window day-by-day.
   const startMs = new Date(windowStart + "T00:00:00Z").getTime();
   const endMs = new Date(windowEnd + "T00:00:00Z").getTime();
@@ -732,6 +765,11 @@ export async function getLongTailCandidates(
       posteriorProb: r.c.posteriorProb,
       computedAt: r.c.computedAt.toISOString(),
       sparkline,
+      totalMentions: totalByEntity.get(r.c.entityId) ?? 0,
+      ...(() => {
+        const m = resolveSeedMatch(r.ent.canonicalLabel ?? "", seedTerms, termToSeed);
+        return { watchTopic: m.watchTopic, searchTerm: m.searchTerm };
+      })(),
     };
   });
 }
