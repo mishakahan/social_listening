@@ -506,7 +506,10 @@ export default function EntitiesAuditPage() {
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Entities Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The things pulled out of those posts, and where each one sits in its life cycle. This is the layer between raw posts and the Trends tab: everything here is tracked, only some of it is established enough to surface.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 5 of 5 — Entities are the named concepts — trends, ingredients, products, places —
             that the LLM extracted from raw signals. Each entity progresses through a lifecycle: it
             starts as a candidate, may advance to emerging or sustained as mention volume and

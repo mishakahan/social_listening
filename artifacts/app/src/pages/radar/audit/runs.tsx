@@ -460,7 +460,10 @@ export default function RunsAuditPage() {
       <div className="mb-4 flex items-start justify-between gap-2 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Runs Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            Every scrape we have fired, what each one cost, and whether its data made it in. The receipts page. Worth checking when a number on the radar looks wrong, because the cause is usually here.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 3 of 5 — Each row is one Apify actor invocation: one (Platform, Mode)
             combination firing against one scout query. A single query fans out to
             multiple rows per launch: Instagram (posts + reels) and TikTok always run;

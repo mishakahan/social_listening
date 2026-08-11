@@ -316,7 +316,10 @@ export default function SignalsAuditPage() {
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Signals Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The raw posts themselves, one row per post. Everything else in the product is derived from these, so this is where you come to check whether something is actually real rather than taking our word for it.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 4 of 5 — Raw signals are the individual records ingested from scraper runs: one row per
             social post, video, or search trend datapoint. Each is normalized from its platform's raw
             schema into a common format covering source ID, post date, author, language, engagement

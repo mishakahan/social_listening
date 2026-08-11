@@ -380,7 +380,10 @@ export default function QueriesAuditPage() {
       <div className="mb-4 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Queries Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The actual searches built from each approved topic, one set per country and language. This is literally what gets sent to the scrapers, so if something is missing from the radar it is usually because nothing here went looking for it.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 2 of 5 — Each committed seed has been expanded into scout queries: specific keyword +
             hashtag combinations per language and geography that will be sent to Apify scrapers. The
             matrix shows topic (rows) × geography (columns), with one entry per query per cell. A green

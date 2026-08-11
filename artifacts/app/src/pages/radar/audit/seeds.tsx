@@ -373,7 +373,10 @@ export default function SeedsAuditPage() {
       <div className="p-8 max-w-3xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-foreground mb-1">Seeds Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The topics we decided to watch, decided before any scraping happens. You approve or kill each one, and only approved topics are ever searched for. This is the earliest point you can steer what the radar will find.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 1 of 5 — The LLM analyzed your company brief and proposed a set of seed topics: focused
             areas of consumer interest that are strategically relevant to monitor (e.g., "Premium Gift
             Chocolate — Germany"). Each seed defines a thematic territory, a geography, a product
@@ -408,7 +411,10 @@ export default function SeedsAuditPage() {
       <div className="mb-4 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Seeds Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The topics we decided to watch, decided before any scraping happens. You approve or kill each one, and only approved topics are ever searched for. This is the earliest point you can steer what the radar will find.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 1 of 5 — The LLM analyzed your company brief and proposed a set of seed topics: focused
             areas of consumer interest that are strategically relevant to monitor (e.g., "Premium Gift
             Chocolate — Germany"). Each seed defines a thematic territory, a geography, a product
