@@ -1551,8 +1551,15 @@ function ControlPanelInner() {
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Control Panel</h1>
-          <p className="text-muted-foreground text-sm">
-            Tune pipeline parameters. Changes are auto-saved with a 500ms debounce.
+          <p className="text-muted-foreground text-sm max-w-3xl">
+            The dials that decide what reaches the Trends tab. Each one shows what
+            it is currently doing to this company's data, so you can see whether a
+            setting is actually filtering anything before you change it.
+          </p>
+          <p className="text-muted-foreground text-sm max-w-3xl mt-2">
+            Changes save automatically and apply on the next pipeline run, not
+            retroactively. Nothing here re-scrapes or costs money except{" "}
+            <span className="font-medium text-foreground">Run full pipeline</span> below.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1887,7 +1894,7 @@ function ControlPanelInner() {
             <SliderField
               fieldKey="longTailMinPosterior"
               label="Min posterior probability"
-              help="Bayesian P(true rate ≥ 2× baseline). Higher = stricter. 0.50–0.99."
+              help="How sure we need to be that something is genuinely being mentioned twice as often as before, rather than a few mentions landing close together by luck. Higher = stricter, fewer candidates."
               value={(cfg.longTailMinPosterior as number) ?? 0.9}
               min={0.5}
               max={0.99}

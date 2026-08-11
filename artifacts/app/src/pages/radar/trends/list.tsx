@@ -920,15 +920,27 @@ function CompositeTrendsTab() {
   return (
     <div>
       <div className="mb-3 flex items-start justify-between text-xs text-muted-foreground">
-        <p className="max-w-2xl">
-          Entity pairs mentioned together in the same post far more often than
-          chance would predict, over the last {data?.windowDays ?? 14} days.
-          Showing pairs with at least {data?.minJointMentions ?? 5} joint
-          mentions and lift ≥ {(data?.minLift ?? 2).toFixed(1)}×. Hover any
-          column heading for what it means. Greyed-out lift means the pair is
-          too rare for the ratio to be trustworthy — judge those on Joint and
-          Per-entity. Last run: {lastRun}.
-        </p>
+        {/* Says what the tab is FOR before how it works. The other surfaces
+            answer "what is being talked about"; this one answers "what goes
+            with what", which is a different question and the reason the tab
+            exists at all. */}
+        <div className="max-w-2xl space-y-2">
+          <p>
+            What goes <span className="font-medium text-foreground">with</span> what.
+            The Single-entity tab tells you which things are being talked about;
+            this tells you which things are being talked about{" "}
+            <span className="font-medium text-foreground">together</span>, far more
+            often than chance would explain. Useful for pairings, combinations, and
+            the context a thing keeps showing up in.
+          </p>
+          <p>
+            Over the last {data?.windowDays ?? 14} days, showing pairs mentioned
+            together in at least {data?.minJointMentions ?? 5} separate posts.
+            Hover any column heading for what it means. A greyed-out lift means the
+            pair is too rare for that ratio to be worth trusting, so judge those on
+            Joint and Per-entity instead. Last run: {lastRun}.
+          </p>
+        </div>
         {candidates.length > 0 && (
           <Badge variant="outline">{candidates.length} pairs</Badge>
         )}
