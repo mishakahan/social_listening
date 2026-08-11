@@ -372,18 +372,31 @@ export default function TrendDetailPage() {
           <h1 className="text-2xl font-bold text-foreground leading-tight">
             {trend.title}
             {trend.discovered && (
-              <span
-                title="No keyword we searched for matches this — extraction surfaced it from real posts"
-                className="ml-2 align-middle rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300"
-              >
-                Discovered
-              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="ml-2 align-middle rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300 cursor-help">
+                    Discovered
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[300px] text-xs">
+                  Nothing we searched for matches this. It came out of reading
+                  real posts rather than from a keyword we wrote, which is the
+                  system finding something rather than confirming something.
+                </TooltipContent>
+              </Tooltip>
             )}
           </h1>
           <Badge className={`flex-shrink-0 text-sm px-3 py-1 ${stateCfg.className}`}>
             {stateCfg.label}
           </Badge>
         </div>
+
+        <p className="text-muted-foreground text-sm max-w-3xl mt-2">
+          Everything behind one trend: why it cleared the gate, how much
+          conversation there actually is, and the individual posts it was built
+          from. Every number on this page traces back to posts you can open and
+          read yourself.
+        </p>
 
         <div className="flex flex-wrap items-center gap-2 mt-3">
           {trend.geography && trend.geography !== "Global" && (
