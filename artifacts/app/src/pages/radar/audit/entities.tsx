@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -431,12 +432,48 @@ export default function EntitiesAuditPage() {
   // is the next thing to fix if it becomes a problem.
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(0);
+
+  // Deep link from the Emerging tab's Inspect button, which navigates to
+  // ?entityId=N. Nothing read that param before, so Inspect dumped you on page
+  // 1 of 13,042 rows with no indication of which entity you asked for.
+  //
+  // Verified against live data before wiring: all 7 current long-tail
+  // candidates do have an entity_state row, so they are genuinely present in
+  // this list and can always be located.
+  const [location] = useLocation();
+  const targetEntityId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get("entityId");
+    const n = Number(raw);
+    return raw && Number.isFinite(n) ? n : null;
+  }, [location]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   // Filters change the result set, so a page index from the previous set can
   // point past the end. Clamp rather than showing an empty table.
   const safePage = Math.min(page, pageCount - 1);
   const paged = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   useEffect(() => { setPage(0); }, [typeFilter, stateFilter, geoFilter]);
+
+  // Jump to the deep-linked entity once the list has loaded: page to it and
+  // expand its row. Guarded on `filtered` so it re-runs when data arrives, and
+  // on targetEntityId so a second Inspect click re-targets.
+  const jumpedToRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (targetEntityId == null || filtered.length === 0) return;
+    if (jumpedToRef.current === targetEntityId) return;
+    const idx = filtered.findIndex((s) => s.entityId === targetEntityId);
+    if (idx === -1) {
+      // Present in the data but filtered out, or genuinely absent. Say so
+      // rather than silently landing the user on page 1 — the old behaviour.
+      toast.error("That entity is not in the current list. Try clearing the filters.");
+      jumpedToRef.current = targetEntityId;
+      return;
+    }
+    setPage(Math.floor(idx / PAGE_SIZE));
+    // `expanded` is keyed on the entity_state row id, NOT the entity id — the
+    // two are different numbers and using the wrong one expands nothing.
+    setExpanded(filtered[idx]!.id);
+    jumpedToRef.current = targetEntityId;
+  }, [targetEntityId, filtered]);
 
   const geographies = [...new Set(allStates.map((s) => s.geography).filter(Boolean))].sort();
 
@@ -541,8 +578,16 @@ export default function EntitiesAuditPage() {
           </SelectContent>
         </Select>
 
-        <span className="text-xs text-muted-foreground ml-auto">
-          {filtered.length.toLocaleString()} entit{filtered.length !== 1 ? "ies" : "y"}
+        {/* Says "tracked" deliberately. This table lists entities that HAVE a
+            lifecycle state, which is not the same set as the "active in the
+            last 90d" count on the State Machine card above — an entity keeps
+            its state row after its activity ages out of the window. Two honest
+            numbers that differ read as a bug unless both say what they count. */}
+        <span
+          className="text-xs text-muted-foreground ml-auto"
+          title="Entities that have been given a lifecycle state by the state machine. Entities extracted but never active inside the state machine's window have no state and are not listed here."
+        >
+          {filtered.length.toLocaleString()} tracked entit{filtered.length !== 1 ? "ies" : "y"}
         </span>
       </div>
 

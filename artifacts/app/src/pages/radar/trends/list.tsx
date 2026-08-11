@@ -61,6 +61,8 @@ interface Trend {
   yoyPrior?: number | null;
   platforms: string[];
   evidenceCount: number;
+  /** Precomputed mention counts per window (7/30/90). See storage EVIDENCE_WINDOWS. */
+  evidenceByWindow?: Record<string, number>;
   geography?: string;
   territoryTag?: string;
   summary?: string;
@@ -126,9 +128,20 @@ type SortKey =
   | "evidence"
   | "sov";
 
-async function fetchTrends(companyId: number, sortBy: SortKey, sortDir: "asc" | "desc"): Promise<Trend[]> {
+// Windows the Evidence column can show. These mirror storage's EVIDENCE_WINDOWS
+// exactly — every one is a value the state machine precomputes, so switching
+// window shows a genuinely different number rather than a relabelled one.
+const EVIDENCE_WINDOWS = [7, 30, 90] as const;
+type EvidenceWindow = (typeof EVIDENCE_WINDOWS)[number];
+
+async function fetchTrends(
+  companyId: number,
+  sortBy: SortKey,
+  sortDir: "asc" | "desc",
+  evidenceWindow: EvidenceWindow
+): Promise<Trend[]> {
   const res = await fetch(
-    `/api/pipeline/companies/${companyId}/trends?sortBy=${sortBy}&sortDir=${sortDir}`
+    `/api/pipeline/companies/${companyId}/trends?sortBy=${sortBy}&sortDir=${sortDir}&evidenceWindow=${evidenceWindow}`
   );
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(await res.text());
@@ -271,10 +284,15 @@ export default function TrendsListPage() {
   // for, and it demotes ubiquitous staples on their own merit.
   const [sortBy, setSortBy] = useState<SortKey>("sov");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // 30 stays the default so the list opens on exactly the number it showed
+  // before, and keeps agreeing with the trend-detail page.
+  const [evidenceWindow, setEvidenceWindow] = useState<EvidenceWindow>(30);
 
   const { data: trends = [], isLoading, error } = useQuery({
-    queryKey: ["trends", companyId, sortBy, sortDir],
-    queryFn: () => fetchTrends(companyId, sortBy, sortDir),
+    // The window is in the key: the server sorts by it, so a stale cache entry
+    // would show one window's numbers in another window's order.
+    queryKey: ["trends", companyId, sortBy, sortDir, evidenceWindow],
+    queryFn: () => fetchTrends(companyId, sortBy, sortDir, evidenceWindow),
     refetchOnWindowFocus: false,
   });
 
@@ -309,6 +327,8 @@ export default function TrendsListPage() {
               sortBy={sortBy}
               sortDir={sortDir}
               onSort={handleSort}
+              evidenceWindow={evidenceWindow}
+              onEvidenceWindowChange={setEvidenceWindow}
               navigate={navigate}
             />
           </TabsContent>
@@ -328,6 +348,8 @@ interface SingleEntityTabProps {
   sortBy: SortKey;
   sortDir: "asc" | "desc";
   onSort: (k: SortKey) => void;
+  evidenceWindow: EvidenceWindow;
+  onEvidenceWindowChange: (w: EvidenceWindow) => void;
   navigate: (to: string) => void;
 }
 
@@ -338,6 +360,8 @@ function SingleEntityTab({
   sortBy,
   sortDir,
   onSort: handleSort,
+  evidenceWindow,
+  onEvidenceWindowChange,
   navigate,
 }: SingleEntityTabProps) {
   const [watchTopicFilter, setWatchTopicFilter] = useState(ALL);
@@ -537,14 +561,37 @@ function SingleEntityTab({
 
               <div>State</div>
               <div>Platforms</div>
-              <div className="text-right">
+              {/* Evidence header + window picker. The label no longer hardcodes
+                  30d because the window is now a real choice: 7/30/90 are all
+                  precomputed by the state machine, and the server sorts by
+                  whichever is selected. */}
+              <div className="flex items-center justify-end gap-1">
                 <SortHeader
-                  label="Evidence (30d)"
+                  label="Evidence"
                   field="evidence"
                   current={sortBy}
                   dir={sortDir}
                   onSort={handleSort}
                 />
+                <Select
+                  value={String(evidenceWindow)}
+                  onValueChange={(v) => onEvidenceWindowChange(Number(v) as EvidenceWindow)}
+                >
+                  <SelectTrigger
+                    className="h-6 w-[68px] text-xs px-2 py-0"
+                    aria-label="Evidence window"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EVIDENCE_WINDOWS.map((w) => (
+                      <SelectItem key={w} value={String(w)} className="text-xs">
+                        {w}d
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div></div>
             </div>
@@ -567,10 +614,16 @@ function SingleEntityTab({
                       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                         Watching · {unscored.length}
                       </div>
+                      {/* Name the actual column. This section and the dash in
+                          Movement are the same fact (sovGrowthPct == null);
+                          calling it "a growth number" here was vocabulary left
+                          over from before WoW/MoM/YoY became Movement, and made
+                          the dash look like a separate missing value. */}
                       <div className="text-xs text-muted-foreground mt-0.5">
-                        Detected and evidenced, but not yet showing movement on
-                        two or more platforms — so we are not putting a growth
-                        number against them.
+                        Detected and evidenced, but their conversation has not
+                        moved measurably on two or more platforms yet. That is
+                        why Movement is blank: one platform on its own is not
+                        enough to stand behind a number.
                       </div>
                     </div>
                   )}
@@ -612,7 +665,7 @@ function SingleEntityTab({
                         current={null}
                         prior={null}
                         windowLabel="Share of conversation, last 60 days vs the 60 before"
-                        insufficientNote="Not enough cross-platform evidence to score movement. Needs at least 3 mentions on each of 2+ platforms in the earlier window, so a single-platform spike cannot be reported as a trend."
+                        insufficientNote="No movement score: this needs at least 3 mentions on each of 2 or more platforms during the EARLIER comparison window, and it does not have that. Stricter than the Platforms column, which shows every platform the trend appeared on at all in the last 90 days — a single post earns a badge but is not enough to measure change against."
                       />
                     </div>
 
@@ -641,7 +694,9 @@ function SingleEntityTab({
 
                     {/* Evidence */}
                     <div className="text-right text-sm tabular-nums text-muted-foreground">
-                      {trend.evidenceCount ?? 0}
+                      {trend.evidenceByWindow?.[String(evidenceWindow)] ??
+                        trend.evidenceCount ??
+                        0}
                     </div>
 
                     {/* Arrow */}
@@ -687,6 +742,9 @@ interface CompositeCandidate {
 // Tiny inline sparkline — SVG polyline scaled to its container. Empty or
 // all-zero series renders a flat axis line so users see a baseline rather
 // than nothing at all.
+// Rendered with an explicit accent colour and a soft fill. It previously
+// inherited whatever colour it landed in, so the "Trend" column read as grey
+// noise next to the numbers.
 function Sparkline({ data }: { data: number[] }) {
   const w = 96;
   const h = 28;
@@ -716,7 +774,7 @@ function Sparkline({ data }: { data: number[] }) {
     })
     .join(" ");
   return (
-    <svg width={w} height={h} className="text-foreground">
+    <svg width={w} height={h} className="text-primary">
       <polyline
         points={points}
         fill="none"
@@ -775,11 +833,30 @@ async function fetchComposite(companyId: number): Promise<CompositeResponse> {
 
 function CompositeTrendsTab() {
   const companyId = useCompanyId();
+  const [page, setPage] = useState(0);
   const { data, isLoading, error } = useQuery({
     queryKey: ["composite-trends", companyId],
     queryFn: () => fetchComposite(companyId),
     refetchOnWindowFocus: false,
   });
+
+  // Sorted so TRUSTWORTHY pairs lead. The server sorts by raw lift, which puts
+  // the tiny-denominator artifacts on top: every pair on the first page scored
+  // >100x purely because chance predicted ~0.01 joint mentions. Measured on
+  // this data, only 13 of 105 pairs have expected >= 1, and the strongest real
+  // finding (aguacate x michoacan: 35 joint, lift 30x, 251/42 per-entity) sat
+  // below dozens of 5-mention artifacts. Reliable first, then lift within each
+  // group — same principle as leading the radar with Movement rather than a
+  // fabricated growth number.
+  const candidates = useMemo(() => {
+    const list = data?.candidates ?? [];
+    return [...list].sort((a, b) => {
+      const aOk = a.expectedCount >= LIFT_RELIABLE_MIN_EXPECTED ? 1 : 0;
+      const bOk = b.expectedCount >= LIFT_RELIABLE_MIN_EXPECTED ? 1 : 0;
+      if (aOk !== bOk) return bOk - aOk;
+      return b.lift - a.lift;
+    });
+  }, [data]);
 
   if (isLoading) {
     return (
@@ -803,7 +880,15 @@ function CompositeTrendsTab() {
     );
   }
 
-  const candidates = data?.candidates ?? [];
+  // Same 50/page treatment as the runs and entities tables. 105 pairs today,
+  // but this grows with the corpus and the whole list was rendering at once.
+  const COMPOSITE_PAGE_SIZE = 50;
+  const pageCount = Math.max(1, Math.ceil(candidates.length / COMPOSITE_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pagedCandidates = candidates.slice(
+    safePage * COMPOSITE_PAGE_SIZE,
+    safePage * COMPOSITE_PAGE_SIZE + COMPOSITE_PAGE_SIZE
+  );
   const lastRun = data?.lastRunAt
     ? new Date(data.lastRunAt).toLocaleString()
     : "never";
@@ -812,10 +897,13 @@ function CompositeTrendsTab() {
     <div>
       <div className="mb-3 flex items-start justify-between text-xs text-muted-foreground">
         <p className="max-w-2xl">
-          Entity pairs co-mentioned far more often than chance would predict in
-          the last {data?.windowDays ?? 14} days. Joint mentions ≥{" "}
-          {data?.minJointMentions ?? 5}, lift ≥{" "}
-          {(data?.minLift ?? 2).toFixed(1)}×. Last run: {lastRun}.
+          Entity pairs mentioned together in the same post far more often than
+          chance would predict, over the last {data?.windowDays ?? 14} days.
+          Showing pairs with at least {data?.minJointMentions ?? 5} joint
+          mentions and lift ≥ {(data?.minLift ?? 2).toFixed(1)}×. Hover any
+          column heading for what it means. Greyed-out lift means the pair is
+          too rare for the ratio to be trustworthy — judge those on Joint and
+          Per-entity. Last run: {lastRun}.
         </p>
         {candidates.length > 0 && (
           <Badge variant="outline">{candidates.length} pairs</Badge>
@@ -834,23 +922,111 @@ function CompositeTrendsTab() {
         <div className="rounded-xl border border-border overflow-hidden">
           <div className="grid grid-cols-[3fr_104px_88px_88px_88px_120px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
             <div>Pair</div>
-            <div className="text-right">Trend</div>
-            <div className="text-right">Joint</div>
-            <div className="text-right">Expected</div>
-            <div className="text-right">Lift</div>
-            <div className="text-right">Per-entity</div>
-            <div className="text-right">Window</div>
+            <CompositeHeader label="Trend" tip="Daily joint mentions of the two together across the window. Flat means a steady association, a spike means they started being mentioned together recently." />
+            <CompositeHeader label="Joint" tip="How many separate posts mentioned BOTH of these in the window. This is the raw count everything else is derived from." />
+            <CompositeHeader label="Expected" tip="How many joint mentions you would get by chance alone, if the two were unrelated: (times A appears x times B appears) / total posts. Below 1 means chance predicts they should essentially never co-occur." />
+            <CompositeHeader label="Lift" tip="Joint divided by Expected: how many times more often they appear together than chance predicts. Reliable when Expected is around 1 or more. When Expected is far below 1 the division blows up and the number stops being meaningful — those rows are greyed out." />
+            <CompositeHeader label="Per-entity" tip="How often each one appeared on its own in this window, A / B. Small numbers here mean the pair rests on very little evidence, however large the Lift looks." />
+            <CompositeHeader label="Window" tip="The rolling date range this was measured over, set by Window (days) in the Control Panel." />
           </div>
           <div className="divide-y divide-border">
-            {candidates.map((c) => (
+            {pagedCandidates.map((c) => (
               <CompositeRow key={c.id} c={c} />
             ))}
+          </div>
+
+          {/* Always rendered so the visible range is stated even on one page. */}
+          <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/20 text-xs">
+            <span className="text-muted-foreground tabular-nums">
+              {`${safePage * COMPOSITE_PAGE_SIZE + 1}–${Math.min(
+                (safePage + 1) * COMPOSITE_PAGE_SIZE,
+                candidates.length
+              )} of ${candidates.length.toLocaleString()}`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Previous
+              </button>
+              <span className="text-muted-foreground tabular-nums">
+                Page {safePage + 1} of {pageCount.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={safePage >= pageCount - 1}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
 }
+
+function LiftCell({ lift, expected }: { lift: number; expected: number }) {
+  const reliable = expected >= LIFT_RELIABLE_MIN_EXPECTED;
+  if (!reliable) {
+    return (
+      <div className="text-right">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {/* An em dash, not ">100x". The whole point is that lift is not
+                measurable for this pair, and any number here — even a hedged
+                one — still reads as a magnitude and pulls the eye. Same
+                convention the Movement column uses when there is not enough
+                evidence to score something. */}
+            <span className="tabular-nums text-muted-foreground/70 cursor-help">—</span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs text-xs">
+            Chance predicted only {expected < 0.01 ? "<0.01" : expected.toFixed(2)} joint
+            mentions here, so dividing by it produces a huge number from very little
+            evidence. Read the Joint and Per-entity counts instead.
+          </TooltipContent>
+        </Tooltip>
+      </div>
+    );
+  }
+  // Genuine, well-supported lift: the higher it is, the stronger the pairing.
+  const tone =
+    lift >= 10 ? "text-green-600" : lift >= 4 ? "text-emerald-600" : "text-foreground";
+  return (
+    <div className={`text-right tabular-nums font-semibold ${tone}`}>
+      {lift.toFixed(1)}×
+    </div>
+  );
+}
+
+function CompositeHeader({ label, tip }: { label: string; tip: string }) {
+  return (
+    <div className="text-right">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">
+            {label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs font-normal normal-case tracking-normal">
+          {tip}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+// Lift = joint / expected, and expected = (countA * countB) / totalPosts. When
+// both entities are rare, expected falls far below 1 and the division explodes:
+// a pair seen 5 times together scored 1490x purely because chance predicted
+// ~0.003. That is arithmetic, not evidence. Rows below this threshold are shown
+// muted with the reason, rather than presented as the strongest finds.
+const LIFT_RELIABLE_MIN_EXPECTED = 1;
 
 function CompositeRow({ c }: { c: CompositeCandidate }) {
   const [, navigate] = useLocation();
@@ -891,17 +1067,17 @@ function CompositeRow({ c }: { c: CompositeCandidate }) {
         <Sparkline data={c.sparkline} />
       </div>
       <div className="text-right">
-        <div className="tabular-nums">{c.jointCount}</div>
+        <div className="tabular-nums font-medium">{c.jointCount}</div>
         <PriorDelta current={c.jointCount} prior={c.priorJointCount} />
       </div>
       <div className="text-right tabular-nums text-muted-foreground">
-        {c.expectedCount.toFixed(2)}
+        {c.expectedCount < 0.01 ? "<0.01" : c.expectedCount.toFixed(2)}
       </div>
-      <div className="text-right tabular-nums font-medium text-foreground">
-        {c.lift.toFixed(1)}×
-      </div>
+      <LiftCell lift={c.lift} expected={c.expectedCount} />
       <div className="text-right tabular-nums text-muted-foreground text-xs">
-        {c.countA} / {c.countB}
+        <span className="text-foreground/70">{c.countA}</span>
+        <span className="mx-0.5">/</span>
+        <span className="text-foreground/70">{c.countB}</span>
       </div>
       <div className="text-right text-xs text-muted-foreground">
         {c.windowStart} → {c.windowEnd}

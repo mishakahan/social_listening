@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { usePublishBreadcrumbTitle } from "@/hooks/use-breadcrumb-title";
 import { useParams, useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
@@ -278,6 +279,11 @@ export default function TrendDetailPage() {
     enabled: !!trendId,
   });
 
+  // Otherwise the breadcrumb shows the row id ("Radar > Trends > 61"). Called
+  // before the early returns below so the hook order stays stable across the
+  // loading, error and loaded renders.
+  usePublishBreadcrumbTitle(trend?.title);
+
   if (isLoading) {
     return (
       <div className="p-8 max-w-4xl mx-auto">
@@ -440,7 +446,7 @@ export default function TrendDetailPage() {
             label="Movement"
             tooltip={
               trend.sovGrowthPct == null
-                ? "Not enough cross-platform evidence to score movement. Needs at least 3 mentions on each of 2+ platforms in the earlier window, so a single-platform spike is not reported as a trend."
+                ? "No movement score: this needs at least 3 mentions on each of 2 or more platforms during the EARLIER comparison window, and it does not have that. Note this is stricter than the platform badges above, which list every platform the trend has appeared on at all in the last 90 days — one stray post is enough to earn a badge, but not enough to compare against."
                 : "Growth in this trend's share of all conversation, last 60 days vs the 60 before, measured within each platform and corroborated across 2+ of them."
             }
           />

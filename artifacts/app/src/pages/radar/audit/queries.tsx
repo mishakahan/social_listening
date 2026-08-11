@@ -94,6 +94,34 @@ async function launchScrapers(companyId: number, queryIds: number[]): Promise<vo
   if (!res.ok) throw new Error(await res.text());
 }
 
+// Two different kinds of two-letter code are shown on this page and they used
+// to render identically, which is why "AR, BR, CL, CO, MX, PT, ES" read as one
+// confusing list: the COLUMN headers are countries (ISO 3166) and the tag on
+// each cell entry is a LANGUAGE (ISO 639). PT and ES are the worst of it —
+// they look like Portugal and Spain but mean Portuguese and Spanish.
+//
+// Intl.DisplayNames resolves both without a hand-maintained lookup, so this
+// keeps working for whatever markets the setup bot generates next. It throws a
+// RangeError on a malformed code, so every call falls back to the raw string.
+const REGION_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
+const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
+
+function countryName(code: string): string {
+  try {
+    return REGION_NAMES.of(code.toUpperCase()) ?? code.toUpperCase();
+  } catch {
+    return code.toUpperCase();
+  }
+}
+
+function languageName(code: string): string {
+  try {
+    return LANGUAGE_NAMES.of(code.toLowerCase()) ?? code.toUpperCase();
+  } catch {
+    return code.toUpperCase();
+  }
+}
+
 // A single query entry within a matrix cell
 interface CellEntryProps {
   query: ScoutQuery;
@@ -105,13 +133,23 @@ interface CellEntryProps {
   isDeleting: boolean;
 }
 
+// How many keywords/hashtags the tooltip lists before summarising the rest.
+// Queries carry 36-84 keywords (median 56), so the old tooltip joined every one
+// of them into a single comma-separated blob inside a max-w-xs box — an
+// unreadable wall of text. The point of the hover is "what kind of terms is
+// this query firing", which a dozen answers; the full list belongs in the
+// expanded view, not a tooltip.
+const TIP_KEYWORD_LIMIT = 12;
+const TIP_HASHTAG_LIMIT = 8;
+
+function summariseList(items: string[], limit: number): string {
+  if (items.length <= limit) return items.join(", ");
+  return `${items.slice(0, limit).join(", ")}  +${items.length - limit} more`;
+}
+
 function CellEntry({ query, selected, onSelect, onToggle, onDelete, isToggling, isDeleting }: CellEntryProps) {
-  const tipContent = [
-    query.keywords?.length ? `Keywords: ${query.keywords.join(", ")}` : null,
-    query.hashtags?.length ? `Hashtags: ${query.hashtags.map(h => h.startsWith("#") ? h : `#${h}`).join(", ")}` : null,
-    query.scrapeCadence ? `Cadence: ${query.scrapeCadence}` : null,
-    `Last ingested: ${query.lastIngestedAt ? new Date(query.lastIngestedAt).toLocaleString() : "never"}`,
-  ].filter(Boolean).join("\n");
+  const hashtags = (query.hashtags ?? []).map((h) => (h.startsWith("#") ? h : `#${h}`));
+  const keywords = query.keywords ?? [];
 
   return (
     <div className="flex items-center gap-1.5 py-0.5 group/entry">
@@ -123,15 +161,45 @@ function CellEntry({ query, selected, onSelect, onToggle, onDelete, isToggling, 
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="text-[10px] font-mono uppercase text-muted-foreground cursor-default w-5 flex-shrink-0">
+            {/* Lowercase, so it is visually distinct from the uppercase COUNTRY
+                badges in the column headers. */}
+            <span className="text-[10px] font-mono lowercase text-muted-foreground cursor-default w-5 flex-shrink-0">
               {query.language}
             </span>
           </TooltipTrigger>
-          {tipContent && (
-            <TooltipContent side="top" className="max-w-xs text-xs whitespace-pre-line">
-              {tipContent}
-            </TooltipContent>
-          )}
+          {/* Labels use a tint of the tooltip's OWN foreground. text-muted-
+              foreground is resolved against the page background, and the
+              tooltip is bg-primary, so it renders nearly invisible in here. */}
+          <TooltipContent side="top" className="max-w-sm text-xs">
+            <div className="space-y-1.5">
+              <div className="font-medium">
+                {languageName(query.language)} · {countryName(query.geography)}
+              </div>
+              {keywords.length > 0 && (
+                <div>
+                  <span className="text-primary-foreground/70">
+                    Keywords ({keywords.length}):{" "}
+                  </span>
+                  {summariseList(keywords, TIP_KEYWORD_LIMIT)}
+                </div>
+              )}
+              {hashtags.length > 0 && (
+                <div>
+                  <span className="text-primary-foreground/70">
+                    Hashtags ({hashtags.length}):{" "}
+                  </span>
+                  {summariseList(hashtags, TIP_HASHTAG_LIMIT)}
+                </div>
+              )}
+              <div className="text-primary-foreground/70">
+                {query.scrapeCadence ? `Cadence: ${query.scrapeCadence} · ` : ""}
+                Last ingested:{" "}
+                {query.lastIngestedAt
+                  ? new Date(query.lastIngestedAt).toLocaleString()
+                  : "never"}
+              </div>
+            </div>
+          </TooltipContent>
         </Tooltip>
       </TooltipProvider>
       {/* Status dot — click to toggle active */}
@@ -318,8 +386,16 @@ export default function QueriesAuditPage() {
             matrix shows topic (rows) × geography (columns), with one entry per query per cell. A green
             dot means the query is active; grey means inactive. Launching selected queries fires actor
             runs for each query × platform combination — typically 4–6 runs per query covering Instagram
-            posts, Instagram reels, TikTok, Reddit, and Google Trends. Hover a language tag to see its
-            keywords. Once scrapers are launched, monitor results in Runs.
+            posts, Instagram reels, TikTok, Reddit, and Google Trends. Once scrapers are launched,
+            monitor results in Runs.
+          </p>
+          <p className="text-muted-foreground text-sm max-w-3xl mt-2">
+            Two kinds of code appear below and they mean different things. Column headers are{" "}
+            <span className="font-medium text-foreground">countries</span> (MX = Mexico, BR = Brazil).
+            The small lowercase tag on each entry is the{" "}
+            <span className="font-medium text-foreground">language</span> the keywords are written in
+            (es = Spanish, pt = Portuguese), which is why Mexico and Colombia both show{" "}
+            <span className="font-mono text-xs">es</span>. Hover that tag for the query's keywords.
           </p>
         </div>
         <div className="text-right">
@@ -447,6 +523,13 @@ export default function QueriesAuditPage() {
                           <Badge variant="outline" className="text-xs font-semibold px-2">
                             {geo}
                           </Badge>
+                          {/* The code alone ("CL", "PE") is not readable at a
+                              glance, and sits next to lowercase LANGUAGE tags
+                              that look just like it. Naming the country is what
+                              separates the two. */}
+                          <span className="text-[10px] font-medium text-foreground leading-tight">
+                            {countryName(geo)}
+                          </span>
                           <span className="text-[10px] text-muted-foreground">
                             {geoIds.length} {geoIds.length === 1 ? "query" : "queries"}
                           </span>

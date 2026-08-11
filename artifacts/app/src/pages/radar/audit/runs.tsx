@@ -179,11 +179,20 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// Every runMode on every row is prefixed "backfill:" (verified: 860/860 rows
+// across all five actors), so the prefix distinguishes nothing and just costs
+// ~65px of table width on every row. The full value stays in a title attr.
+function shortRunMode(mode: string): string {
+  return mode.replace(/^backfill:/, "");
+}
+
 const fmt = {
   cost: (v?: number) => v == null ? "—" : `$${v.toFixed(4)}`,
   num:  (v?: number) => v == null ? "—" : v.toLocaleString(),
+  // 24-hour: "Aug 9, 17:33" instead of "Aug 9, 05:33 PM". Three characters
+  // narrower on every row, and unambiguous in an audit log.
   time: (iso?: string) => !iso ? "—" : new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
   }),
 };
 
@@ -251,6 +260,7 @@ export default function RunsAuditPage() {
   const companyId = useCompanyId();
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [viewingRun, setViewingRun] = useState<ActorRun | null>(null);
+  const [page, setPage] = useState(0);
 
   const { data: runs = [], isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["actor-runs", companyId],
@@ -391,9 +401,31 @@ export default function RunsAuditPage() {
   const allRowsSelected  = allRunIds.length > 0 && allRunIds.every((id) => selectedIds.has(id));
   const someRowsSelected = allRunIds.some((id) => selectedIds.has(id)) && !allRowsSelected;
 
+  // Total spend across every run in this list. costUsd is Apify's real billed
+  // figure per run (verified 1.00x against the account's own usageTotalUsd), so
+  // summing it is honest — but only over runs that HAVE one. Queued and running
+  // runs have not been billed yet, and counting them as $0 would quietly
+  // understate the total, so they are excluded and reported separately.
+  const runsWithCost   = runs.filter((r) => typeof r.costUsd === "number");
+  const totalCostUsd   = runsWithCost.reduce((s, r) => s + (r.costUsd ?? 0), 0);
+  const runsMissingCost = runs.length - runsWithCost.length;
+
+  // PAGINATION. The list renders every run the API returns — 860 rows on
+  // company 2 after the August sweep — which makes the page slow to paint and
+  // impossible to scan. Select-all and the bulk actions deliberately still
+  // operate on ALL runs, not just the visible page: the toolbar states the
+  // count it is acting on, and scoping them to a page would silently change
+  // what those buttons do.
+  const PAGE_SIZE = 50;
+  const pageCount = Math.max(1, Math.ceil(runs.length / PAGE_SIZE));
+  // Runs can disappear (delete, or a refetch) so a stale page index must not
+  // strand the user on a blank page.
+  const safePage  = Math.min(page, pageCount - 1);
+  const pagedRuns = runs.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
   if (isLoading) {
     return (
-      <div className="p-8 max-w-5xl mx-auto">
+      <div className="px-6 py-8 max-w-7xl mx-auto">
         <div className="mb-6">
           <Skeleton className="h-7 w-36 mb-2" />
           <Skeleton className="h-4 w-64" />
@@ -407,7 +439,7 @@ export default function RunsAuditPage() {
 
   if (error) {
     return (
-      <div className="p-8 max-w-5xl mx-auto">
+      <div className="px-6 py-8 max-w-7xl mx-auto">
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
@@ -419,7 +451,7 @@ export default function RunsAuditPage() {
   }
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="px-6 py-8 max-w-7xl mx-auto">
       {viewingRun && (
         <OutputDialog run={viewingRun} onClose={() => setViewingRun(null)} />
       )}
@@ -506,6 +538,24 @@ export default function RunsAuditPage() {
           <Badge className="bg-red-500 text-white border-0">{failedCount} failed</Badge>
         )}
         <Badge variant="outline" className="text-xs">{runs.length} total</Badge>
+        {runs.length > 0 && (
+          <Badge
+            variant="outline"
+            className="text-xs tabular-nums"
+            title={
+              runsMissingCost > 0
+                ? `Apify's real billed cost, summed over the ${runsWithCost.length} runs that have been billed. ${runsMissingCost} run${runsMissingCost !== 1 ? "s are" : " is"} still queued or running and not billed yet, so the true total will be higher.`
+                : `Apify's real billed cost, summed over all ${runsWithCost.length} runs.`
+            }
+          >
+            ${totalCostUsd.toFixed(2)} total cost
+            {runsMissingCost > 0 && (
+              <span className="text-muted-foreground ml-1">
+                ({runsMissingCost} unbilled)
+              </span>
+            )}
+          </Badge>
+        )}
       </div>
 
       {/* Bulk actions toolbar — visible whenever there are runs. Supports
@@ -670,16 +720,19 @@ export default function RunsAuditPage() {
                 <TableHead>Query</TableHead>
                 <TableHead>Mode</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="text-right">Fetched</TableHead>
-                <TableHead className="text-right">Usable</TableHead>
+                {/* Merged: two separate columns cost ~90px of width for two
+                    numbers that are only meaningful as a ratio (how much of
+                    what the scraper returned survived the noise + language
+                    filter). Shown as "fetched / usable". */}
+                <TableHead className="text-right whitespace-nowrap">Fetched / Usable</TableHead>
                 <TableHead className="text-right">Cost</TableHead>
                 <TableHead>Ingestion</TableHead>
                 <TableHead>Started</TableHead>
-                <TableHead className="w-24"></TableHead>
+                <TableHead className="w-10"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {runs.map((run) => {
+              {pagedRuns.map((run) => {
                 const active   = isActive(run);
                 const viewable = isViewable(run);
                 return (
@@ -702,7 +755,7 @@ export default function RunsAuditPage() {
                     <TableCell>
                       <PlatformBadge platform={run.platform} />
                     </TableCell>
-                    <TableCell className="max-w-[220px]">
+                    <TableCell className="max-w-[180px]">
                       {run.inputPayload?.topicLabel ? (
                         <>
                           <div
@@ -735,7 +788,9 @@ export default function RunsAuditPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className="text-sm font-medium">{run.runMode}</div>
+                      <div className="text-sm font-medium whitespace-nowrap" title={run.runMode}>
+                        {shortRunMode(run.runMode)}
+                      </div>
                       {run.runSubLabel && (
                         <div className="text-xs text-muted-foreground">{run.runSubLabel}</div>
                       )}
@@ -748,18 +803,27 @@ export default function RunsAuditPage() {
                         </p>
                       )}
                     </TableCell>
-                    <TableCell className="text-right text-sm tabular-nums">
+                    <TableCell className="text-right text-sm tabular-nums whitespace-nowrap">
                       {fmt.num(run.recordsFetched)}
-                    </TableCell>
-                    <TableCell className="text-right text-sm tabular-nums">
-                      {fmt.num(run.recordsUsable)}
+                      <span className="text-muted-foreground"> / </span>
+                      <span className="text-muted-foreground">{fmt.num(run.recordsUsable)}</span>
                     </TableCell>
                     <TableCell className="text-right text-sm tabular-nums text-muted-foreground">
                       {fmt.cost(run.costUsd)}
                     </TableCell>
-                    <TableCell>
+                    {/* The ingestion timestamp used to render as a second line
+                        under the chip, which widened this column enough to push
+                        Started and the row actions off-screen. It is secondary
+                        detail, so it lives on the chip's tooltip instead. */}
+                    <TableCell className="whitespace-nowrap">
                       {run.ingestionStatus && (
-                        <span className={[
+                        <span
+                          title={
+                            run.lastIngestedAt
+                              ? `Last ingestion completed: ${new Date(run.lastIngestedAt).toLocaleString()}`
+                              : "Not ingested yet"
+                          }
+                          className={[
                           "inline-block rounded px-1.5 py-0.5 text-[10px] font-medium",
                           run.ingestionStatus === "done" ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300" :
                           run.ingestionStatus === "processing" ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" :
@@ -769,16 +833,8 @@ export default function RunsAuditPage() {
                           {run.ingestionStatus}
                         </span>
                       )}
-                      {run.lastIngestedAt && (
-                        <div
-                          className="text-[10px] text-muted-foreground mt-0.5 tabular-nums"
-                          title={`Last ingestion completed: ${new Date(run.lastIngestedAt).toLocaleString()}`}
-                        >
-                          {fmt.time(run.lastIngestedAt)}
-                        </div>
-                      )}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {fmt.time(run.startedAt)}
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
@@ -828,6 +884,36 @@ export default function RunsAuditPage() {
               })}
             </TableBody>
           </Table>
+
+          {/* Pager. Always rendered so the visible range is stated even on a
+              single page — otherwise 50 rows out of 860 reads as missing data
+              rather than as page 1. */}
+          <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/20 text-xs">
+            <span className="text-muted-foreground tabular-nums">
+              {`${safePage * PAGE_SIZE + 1}–${Math.min((safePage + 1) * PAGE_SIZE, runs.length)} of ${runs.length.toLocaleString()}`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Previous
+              </button>
+              <span className="text-muted-foreground tabular-nums">
+                Page {safePage + 1} of {pageCount.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={safePage >= pageCount - 1}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
