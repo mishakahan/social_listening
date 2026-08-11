@@ -4,6 +4,7 @@ import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-
 import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "../services/discovery-origin.js";
 import { fetchShareOfVoice } from "../services/share-of-voice.js";
 import { fetchSignalPercentiles } from "../services/signal-strength.js";
+import { gateConfigFromPipeline } from "../services/confirmation-gate.js";
 import {
   companies,
   users,
@@ -2108,6 +2109,14 @@ export interface TrendConfirmationVerdict {
   significanceP: number;
   entropyBits: number;
   evaluatedAt: string;
+  /**
+   * The thresholds this verdict was judged against. Sent because they are now
+   * PER-COMPANY config (gateMinSourceEntropyBits), and the UI was hardcoding
+   * 1.0 bits to decide whether to render the chip as passed. Set a company to
+   * 0.5 and an entity at 0.7 bits would clear the real gate while the page drew
+   * it as failed — the reporter disagreeing with the engine.
+   */
+  thresholds: { minSourceEntropyBits: number; significanceAlpha: number };
 }
 
 export interface TrendSpecificityVerdict {
@@ -2161,6 +2170,8 @@ export async function getTrendDetail(
   // label is in the company's stoplist becomes a 404.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
   const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+  // Needed to stamp the gate thresholds onto the verdict below.
+  const gateCfg = gateConfigFromPipeline(await getPipelineConfig(companyId));
 
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
@@ -2316,7 +2327,17 @@ export async function getTrendDetail(
     updatedAt: ki.updatedAt.toISOString(),
     volume7d: es.volume7d,
     volume30d: es.volume30d,
-    confirmationVerdict: es.confirmationVerdict ?? null,
+    // Stamp the thresholds this company is actually judged against, so the
+    // detail page can render pass/fail without hardcoding 1.0 bits.
+    confirmationVerdict: es.confirmationVerdict
+      ? {
+          ...(es.confirmationVerdict as unknown as Omit<TrendConfirmationVerdict, "thresholds">),
+          thresholds: {
+            minSourceEntropyBits: gateCfg.minSourceEntropyBits,
+            significanceAlpha: gateCfg.significanceAlpha,
+          },
+        }
+      : null,
     specificityVerdict: es.specificityVerdict ?? null,
     evidence,
     evidenceRecentCount,

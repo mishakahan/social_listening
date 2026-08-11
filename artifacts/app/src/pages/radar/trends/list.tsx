@@ -310,8 +310,32 @@ export default function TrendsListPage() {
       <div className="p-8 max-w-6xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-foreground mb-1">Trends</h1>
-          <p className="text-muted-foreground text-sm">
-            Browse all detected trends across platforms and geographies.
+          {/* PAGE-LEVEL DEFINITION. The client's words: "I do need this type of
+              stuff clearly defined." The distinction that matters is this page
+              versus Emerging, and it was only ever explained in conversation:
+              this page is things that are already established, Emerging is
+              things that are still small. Both pages state the contrast, so
+              whichever you land on first tells you what the other is for. */}
+          <p className="text-muted-foreground text-sm max-w-3xl">
+            Things being talked about at enough volume, across enough different
+            platforms and people, to be worth acting on. Everything here has
+            cleared four checks: it is growing, it has real volume, the
+            conversation is spread across more than one platform, and it is
+            specific enough to be a thing rather than a category.
+          </p>
+          <p className="text-muted-foreground text-sm max-w-3xl mt-2">
+            These are established, not early. Something big and steady sits near
+            the top because it is <span className="font-medium text-foreground">big</span>,
+            not because it just moved. For small things moving unusually fast,
+            which is the opposite question, see{" "}
+            <button
+              type="button"
+              onClick={() => navigate("/radar/emerging")}
+              className="text-primary hover:underline underline-offset-2 font-medium"
+            >
+              Emerging
+            </button>
+            .
           </p>
         </div>
         <Tabs defaultValue="single">

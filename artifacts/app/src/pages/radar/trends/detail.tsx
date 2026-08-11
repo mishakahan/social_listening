@@ -88,6 +88,9 @@ interface TrendDetail {
     significanceP: number;
     entropyBits: number;
     evaluatedAt: string;
+    /** Per-company thresholds this verdict was judged against. Optional so an
+        older stored verdict without them still renders. */
+    thresholds?: { minSourceEntropyBits: number; significanceAlpha: number };
   } | null;
   specificityVerdict?: {
     specific: boolean;
@@ -241,17 +244,20 @@ function VerdictChips({
       <div className="flex flex-wrap items-center gap-2">
         {verdict && (
           <>
+            {/* Thresholds come from the verdict, NOT hardcoded. They are
+                per-company config now, so a company set to 0.5 bits would have
+                had entities pass the real gate while this drew them as failed. */}
             <VerdictChip
-              pass={verdict.significanceP <= 0.05}
+              pass={verdict.significanceP <= (verdict.thresholds?.significanceAlpha ?? 0.05)}
               label="Rising"
               detail={`p=${verdict.significanceP.toFixed(3)}`}
-              title="Beats the entity's own historical noise (permutation test)."
+              title="Being mentioned more than is normal for this thing itself, rather than just having a busy week. The number is roughly how likely that jump was to happen by chance, so smaller is stronger."
             />
             <VerdictChip
-              pass={verdict.entropyBits >= 1.0}
+              pass={verdict.entropyBits >= (verdict.thresholds?.minSourceEntropyBits ?? 1.0)}
               label="Broad"
               detail={`${verdict.entropyBits.toFixed(2)} bits`}
-              title="Author diversity across platforms (Shannon entropy)."
+              title="How spread out the conversation is across different platforms and different people. This is what stops one account posting ten times from looking like a trend. Higher is more spread out."
             />
           </>
         )}

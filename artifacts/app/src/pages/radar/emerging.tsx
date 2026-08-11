@@ -317,12 +317,34 @@ export default function EmergingLongTailPage() {
               <Sparkles className="h-5 w-5 text-emerald-500" />
               <h1 className="text-2xl font-bold text-foreground">Emerging long-tail</h1>
             </div>
+            {/* PAGE-LEVEL DEFINITION. This previously opened with "Bayesian
+                posterior probability that the rate at least doubled", which is
+                precise and tells a reader nothing about what the page is FOR.
+                The distinction that matters is against the main radar, and it
+                had only ever been explained in conversation. */}
             <p className="text-muted-foreground text-sm max-w-2xl">
-              Low-volume entities that show a statistically meaningful jump
-              vs their prior-year (or prior 30-day) baseline. Ranked by
-              Bayesian posterior probability that the rate at least doubled.
-              Posterior threshold: {Math.round((data?.minPosterior ?? 0.9) * 100)}%.
-              Minimum current mentions: {data?.minMentions ?? 5}.
+              Weak signals: things still small enough that most people have not
+              noticed them, but being mentioned at least twice as often as they
+              used to be. Early rather than established.
+            </p>
+            <p className="text-muted-foreground text-sm max-w-2xl mt-2">
+              This page deliberately <span className="font-medium text-foreground">excludes
+              anything big</span>, which is the opposite of the{" "}
+              <button
+                type="button"
+                onClick={() => navigate("/radar/trends")}
+                className="text-primary hover:underline underline-offset-2 font-medium"
+              >
+                main radar
+              </button>
+              . Staples like queso and mango cannot appear here however fast they
+              move, because they are already too widely talked about to be an
+              early signal. That is why this list looks more specific.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              Currently: at least {data?.minMentions ?? 5} mentions in the window,
+              and at least {Math.round((data?.minPosterior ?? 0.9) * 100)}% confidence
+              the rate genuinely doubled rather than being a run of luck.
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Last evaluated: {lastRunAt}
@@ -379,7 +401,7 @@ export default function EmergingLongTailPage() {
               No long-tail candidates yet
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Either no entity has cleared the posterior threshold, or the lane
+              Either nothing has cleared the confidence bar, or the lane
               hasn't been evaluated. Click "Re-evaluate now" to run it.
             </p>
           </div>
@@ -397,7 +419,7 @@ export default function EmergingLongTailPage() {
                 <SortHeader label="Uplift" field="uplift" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div className="text-right">
-                <SortHeader label="Posterior" field="posterior" current={sortBy} dir={sortDir} onSort={handleSort} />
+                <SortHeader label="Confidence" field="posterior" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div>Trend (30d)</div>
               <div className="text-right">Action</div>
@@ -472,9 +494,15 @@ export default function EmergingLongTailPage() {
                           <PosteriorBadge p={c.posteriorProb} />
                         </span>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="text-xs max-w-[280px]">
-                        Bayesian posterior that the true rate is at least 2× the
-                        baseline rate, under a Beta(1,1) prior on the proportion.
+                      <TooltipContent side="top" className="text-xs max-w-[300px]">
+                        How confident we are that this is genuinely being mentioned
+                        twice as often as before, rather than a few mentions
+                        happening to land close together.
+                        <span className="block mt-1.5 text-primary-foreground/70">
+                          It reads the same on every row because the window here is
+                          so narrow that only one combination of numbers can clear
+                          the bar. Read the names, not this figure.
+                        </span>
                       </TooltipContent>
                     </Tooltip>
                   </div>
