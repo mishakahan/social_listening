@@ -15,6 +15,7 @@ import {
   mapApifyStatus,
 } from "../services/apify.js";
 import { ingestActorRun, ingestGoogleTrendsRun } from "../services/ingestion.js";
+import { gateConfigPatchSchema } from "../services/confirmation-gate.js";
 import { fetchShareOfVoice } from "../services/share-of-voice.js";
 import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
@@ -1132,6 +1133,12 @@ const patchConfigSchema = z
     compositeMinLift: z.number().min(1).max(50).optional(),
     compositeWindowDays: z.number().int().min(7).max(90).optional(),
   })
+  // Confirmation-gate columns. Merged in from the gate service so the ranges
+  // live with the semantics they protect, not copied here where they would
+  // drift. This object is .passthrough(), so without an explicit entry these
+  // would reach the DB unvalidated — and they decide what surfaces on the
+  // radar.
+  .merge(gateConfigPatchSchema)
   .passthrough();
 
 router.patch("/companies/:id/pipeline-config", async (req, res) => {
@@ -1149,6 +1156,22 @@ router.patch("/companies/:id/pipeline-config", async (req, res) => {
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to update pipeline config");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/config-impact
+// What each threshold is currently doing to this company's data, so the
+// Control Panel can show consequence next to each number instead of a bare
+// value. See storage.getConfigImpact for why it is deliberately partial.
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/config-impact", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json(await storage.getConfigImpact(companyId));
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get config impact");
     res.status(500).json({ error: err.message });
   }
 });
@@ -1332,11 +1355,16 @@ router.get("/companies/:id/trends", async (req, res) => {
     const entityTypes = entityTypesRaw
       ? entityTypesRaw.split(",").map((t) => t.trim()).filter(Boolean)
       : undefined;
+    // ?evidenceWindow=7|30|90 — which precomputed volume window the Evidence
+    // column shows. Anything else falls back to 30, so a bad value can never
+    // produce a column labelled one window and filled from another.
+    const evidenceWindow = storage.parseEvidenceWindow(req.query.evidenceWindow);
     const trends = await storage.getTrendsEnriched(companyId, {
       archived,
       sortBy,
       sortDir,
       entityTypes,
+      evidenceWindow,
     });
     res.json(trends);
   } catch (err: any) {

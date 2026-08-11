@@ -273,8 +273,11 @@ export async function runStateMachine(
     try {
     // Aggregate timeseries across all platforms and geographies for this entity
     const timeseries = await withDbRetry("getEntityTimeseries", () =>
-      storage.getEntityTimeseries(entity.id, 90)
+      storage.getEntityTimeseries(entity.id, storage.STATE_MACHINE_WINDOW_DAYS)
     );
+    // No activity inside the window — skipped, so this entity never gets a
+    // state row and never appears in the entities table. The "active entities"
+    // count on the pipeline card uses this same constant so the two agree.
     if (timeseries.length === 0) continue;
 
     // Group by geography

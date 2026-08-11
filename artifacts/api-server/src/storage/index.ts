@@ -80,6 +80,7 @@ import {
   not,
   sql,
   count,
+  countDistinct,
   sum,
   gte,
   lte,
@@ -1756,7 +1757,19 @@ export interface EnrichedTrend {
   yoyCurrent: number | null;
   yoyPrior: number | null;
   platforms: string[];
+  /**
+   * Mentions in the last 30 days. Kept as the default so existing callers and
+   * the trend-detail page keep agreeing (services/evidence-window.ts) — it is
+   * exactly volume30d, verified equal on all 135 live rows.
+   */
   evidenceCount: number;
+  /**
+   * The state machine computes all three windows per entity, so the Trends list
+   * can offer a real choice rather than relabelling one number. Every value
+   * here is precomputed and distinct — do NOT add a window the state machine
+   * does not actually calculate.
+   */
+  evidenceByWindow: { 7: number; 30: number; 90: number };
   geography: string;
   territoryTag: string | null;
   summary: string | null;
@@ -1787,6 +1800,21 @@ export type TrendSortBy =
   | "sov"
   | "yoyGrowthPct"
   | "evidence";
+
+/**
+ * Windows the Evidence column can show. These are exactly the windows the state
+ * machine precomputes onto tp_entity_state (volume7d/30d/90d) — the list must
+ * never offer a window it would have to invent.
+ */
+export const EVIDENCE_WINDOWS = [7, 30, 90] as const;
+export type EvidenceWindow = (typeof EVIDENCE_WINDOWS)[number];
+
+export function parseEvidenceWindow(raw: unknown): EvidenceWindow {
+  const n = Number(raw);
+  return (EVIDENCE_WINDOWS as readonly number[]).includes(n)
+    ? (n as EvidenceWindow)
+    : 30;
+}
 
 /**
  * Build a case-insensitive matcher against the company's core-vocabulary
@@ -1889,6 +1917,8 @@ export async function getTrendsEnriched(
     sortDir?: SortDir;
     // Allow-list of tp_entities.entity_type values. Undefined = no filtering.
     entityTypes?: string[];
+    /** Which precomputed volume window the Evidence column shows and sorts by. */
+    evidenceWindow?: EvidenceWindow;
   }
 ): Promise<EnrichedTrend[]> {
   const conditions = [
@@ -1961,6 +1991,11 @@ export async function getTrendsEnriched(
         yoyPrior: r.es.yoyPrior ?? null,
         platforms: r.es.platformsSeen ?? [],
         evidenceCount: r.ki.evidenceCount ?? 0,
+        evidenceByWindow: {
+          7: r.es.volume7d ?? 0,
+          30: r.es.volume30d ?? 0,
+          90: r.es.volume90d ?? 0,
+        },
         discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
         watchTopic: seedMatch.watchTopic,
         searchTerm: seedMatch.searchTerm,
@@ -1979,6 +2014,7 @@ export async function getTrendsEnriched(
   const sortBy = filters?.sortBy ?? "signal";
   const dir = filters?.sortDir ?? "desc";
   const mul = dir === "asc" ? 1 : -1;
+  const evidenceWindow = filters?.evidenceWindow ?? 30;
   // Nulls always sort last regardless of direction. In desc (mul=-1) the
   // largest value comes first, so a null must compare as the smallest
   // (-Infinity). In asc (mul=+1) the smallest comes first, so null must
@@ -1995,7 +2031,14 @@ export async function getTrendsEnriched(
       // without enough cross-platform evidence never lead the radar.
       case "sov":          av = key(a.sovGrowthPct);    bv = key(b.sovGrowthPct);    break;
       case "yoyGrowthPct": av = key(a.yoyGrowthPct);   bv = key(b.yoyGrowthPct);   break;
-      case "evidence":     av = a.evidenceCount;       bv = b.evidenceCount;       break;
+      // Sort by the SAME window the list is displaying. If this stayed pinned
+      // to 30d, picking 7d or 90d would reorder nothing and the column would
+      // appear unsorted — the number on screen and the ordering must come from
+      // one source.
+      case "evidence":
+        av = a.evidenceByWindow[evidenceWindow];
+        bv = b.evidenceByWindow[evidenceWindow];
+        break;
       case "signal":
       default:             av = a.signalStrength;      bv = b.signalStrength;      break;
     }
@@ -2126,6 +2169,11 @@ export async function getTrendDetail(
       evidence: [],
       evidenceRecentCount: recentEvidenceCount(ki.evidenceCount),
       evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+      // No entity-state row on this fallback path, so the per-window volumes
+      // genuinely do not exist. Report the 30d count under 30 (same metric)
+      // and zero elsewhere rather than repeating it under every window, which
+      // would claim 7d and 90d data we do not have.
+      evidenceByWindow: { 7: 0, 30: recentEvidenceCount(ki.evidenceCount), 90: 0 },
       evidenceTotalCount: 0,
     };
   }
@@ -2235,6 +2283,11 @@ export async function getTrendDetail(
     evidence,
     evidenceRecentCount,
     evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+    evidenceByWindow: {
+      7: es.volume7d ?? 0,
+      30: es.volume30d ?? 0,
+      90: es.volume90d ?? 0,
+    },
     evidenceTotalCount,
   };
 }
@@ -2367,10 +2420,21 @@ export interface PipelineRunStatus {
     lastComputedAt: string | null;
   };
   stateMachine: {
+    /** Entities with a timeseries bucket inside the state machine's window — the set it will actually process. */
     activeEntities: number;
+    /** Every non-deleted entity, all time. activeEntities is a subset. */
+    totalEntities: number;
+    windowDays: number;
     lastComputedAt: string | null;
   };
 }
+
+// The per-entity timeseries window the state machine reads. An entity with no
+// bucket inside it is skipped entirely, so this is what decides whether an
+// entity is "active". Lives here rather than in state-machine.ts because
+// state-machine.ts already imports storage, and the count below must use the
+// SAME number the machine does — if these drift, the card starts lying again.
+export const STATE_MACHINE_WINDOW_DAYS = 90;
 
 export async function getPipelineRunStatus(
   companyId: number,
@@ -2384,6 +2448,7 @@ export async function getPipelineRunStatus(
     timeseriesWindowRows,
     timeseriesLastRows,
     activeEntityRows,
+    totalEntityRows,
     stateLastRows,
   ] = await Promise.all([
     db
@@ -2425,6 +2490,34 @@ export async function getPipelineRunStatus(
       .where(
         and(eq(tpEntities.companyId, companyId), isNull(tpEntities.deletedAt))
       ),
+    // Entities the state machine will ACTUALLY process. It reads a 90-day
+    // timeseries window per entity and `continue`s when that comes back empty
+    // (services/state-machine.ts), so an entity whose last mention is older
+    // than the window is skipped and never gets a state row.
+    //
+    // This used to be a flat count of every non-deleted entity, which is why
+    // the card read "17,371 active entities" while the table below it listed
+    // 13,042: the card was counting all-time extractions, including 4,329 that
+    // had not been mentioned since May. Neither number was wrong, but "active"
+    // was, and the runtime estimate built on it was ~33% too high.
+    db
+      .select({ cnt: countDistinct(tpEntityTimeseries.entityId) })
+      .from(tpEntityTimeseries)
+      .innerJoin(tpEntities, eq(tpEntityTimeseries.entityId, tpEntities.id))
+      .where(
+        and(
+          eq(tpEntities.companyId, companyId),
+          isNull(tpEntities.deletedAt),
+          gte(
+            tpEntityTimeseries.bucketDate,
+            new Date(Date.now() - STATE_MACHINE_WINDOW_DAYS * 86400 * 1000)
+              .toISOString()
+              .slice(0, 10)
+          )
+        )
+      ),
+    // Every non-deleted entity, all time. Reported alongside the active count
+    // so the two numbers on the page reconcile instead of looking contradictory.
     db
       .select({ cnt: count() })
       .from(tpEntities)
@@ -2467,8 +2560,86 @@ export async function getPipelineRunStatus(
     },
     stateMachine: {
       activeEntities: Number(activeEntityRows[0]?.cnt ?? 0),
+      totalEntities: Number(totalEntityRows[0]?.cnt ?? 0),
+      windowDays: STATE_MACHINE_WINDOW_DAYS,
       lastComputedAt: toIso(stateLastRows[0]?.ts ?? null),
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Control Panel: what each threshold is currently doing to THIS company's data
+// ---------------------------------------------------------------------------
+
+/**
+ * A setting shown as a bare number ("0.30", "9") tells you nothing about
+ * whether it is doing anything. This reports, for each threshold, how many
+ * things currently clear it.
+ *
+ * DELIBERATELY PARTIAL. Only thresholds whose effect can be attributed
+ * EXACTLY to that one setting are included. noiseFloor and
+ * languageConfidenceThreshold are not: signals are dropped at ingestion
+ * without recording which filter rejected them, so any per-knob number would
+ * be a guess. The ingestion figure below is reported once, at section level,
+ * as the combined effect of all ingestion filters — never attributed to a
+ * single knob.
+ */
+export interface ConfigImpact {
+  trackedEntities: number;
+  minVolume: { threshold: number; clearing: number };
+  minWowGrowth: { threshold: number; clearing: number };
+  /** Denominator is entities the GATE has evaluated, not all entities: the gate only runs for surfacing states. */
+  gateBreadth: { threshold: number; clearing: number; evaluated: number };
+  longTailFloor: { threshold: number; clearing: number };
+  /** All ingestion filters combined, not attributable to any single setting. `usable` is counted from the signals table, not the per-run counter. */
+  ingestion: { fetched: number; usable: number };
+}
+
+export async function getConfigImpact(companyId: number): Promise<ConfigImpact> {
+  const cfg = await getPipelineConfig(companyId);
+  const c = cfg as unknown as Record<string, number>;
+  const minVol = cfg.candidateToEmergingMinVolume;
+  const minWow = cfg.candidateToEmergingMinWowGrowth;
+  const minBits = c.gateMinSourceEntropyBits ?? 1.0;
+  const longTailMin = cfg.longTailMinMentions;
+
+  const [rows] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}) AS tracked,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND volume_30d >= ${minVol}) AS clearing_volume,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND growth_wow >= ${minWow}) AS clearing_wow,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND confirmation_verdict IS NOT NULL) AS gate_evaluated,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND confirmation_verdict IS NOT NULL
+           AND (confirmation_verdict->>'entropyBits')::float >= ${minBits}) AS clearing_bits,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND volume_30d >= ${longTailMin}) AS clearing_longtail,
+        (SELECT coalesce(sum(records_fetched), 0) FROM tp_actor_runs WHERE company_id = ${companyId}) AS fetched,
+        -- Counted from the signals table, NOT sum(records_usable). That column
+        -- is 0 on any run whose ingestion was interrupted before its final
+        -- write-back (161 such runs on company 2, holding 23,095 real
+        -- signals), so summing it understates what was kept by roughly half.
+        (SELECT count(*) FROM tp_raw_signals WHERE company_id = ${companyId}) AS usable
+    `),
+  ]);
+  const r = (rows as any).rows[0] ?? {};
+  const n = (v: unknown) => Number(v ?? 0);
+
+  return {
+    trackedEntities: n(r.tracked),
+    minVolume: { threshold: minVol, clearing: n(r.clearing_volume) },
+    minWowGrowth: { threshold: minWow, clearing: n(r.clearing_wow) },
+    gateBreadth: {
+      threshold: minBits,
+      clearing: n(r.clearing_bits),
+      evaluated: n(r.gate_evaluated),
+    },
+    longTailFloor: { threshold: longTailMin, clearing: n(r.clearing_longtail) },
+    ingestion: { fetched: n(r.fetched), usable: n(r.usable) },
   };
 }
 
