@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useCompanyId } from "@/hooks/use-company";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +55,6 @@ interface PipelineConfig {
   peakingWeeksNegVelocity: number;
   decliningWeeksNegVelocity: number;
   dormantThresholdWeeks: number;
-  radarSurfaceMinSignalStrength: number;
   // Other
   authorAllowlist: string[];
   coreVocabulary: string[];
@@ -64,6 +64,10 @@ interface PipelineConfig {
   scoutPullDow: number;
   scoutPullHourUtc: number;
   lastScoutPullAt: string | null;
+  // Confirmation gate. gateRequireSignificance is a real column and is settable
+  // by API, but is deliberately not rendered — see the Confirmation gate card.
+  gateEnabled: boolean;
+  gateMinSourceEntropyBits: number;
   [key: string]: unknown;
 }
 
@@ -460,6 +464,31 @@ function slugifyTypeId(input: string): string {
     .slice(0, 40);
 }
 
+// What each threshold is currently doing to this company's data. Only
+// thresholds whose effect is attributable to that ONE setting are reported —
+// see storage.getConfigImpact. Rendered as a line under the control so a bare
+// "0.30" reads as a consequence instead of a number.
+interface ConfigImpact {
+  trackedEntities: number;
+  minVolume: { threshold: number; clearing: number };
+  minWowGrowth: { threshold: number; clearing: number };
+  gateBreadth: { threshold: number; clearing: number; evaluated: number };
+  longTailFloor: { threshold: number; clearing: number };
+  ingestion: { fetched: number; usable: number };
+}
+
+async function fetchImpact(companyId: number): Promise<ConfigImpact> {
+  const res = await fetch(`/api/pipeline/companies/${companyId}/config-impact`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function Impact({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-xs text-muted-foreground/80 mt-1 tabular-nums">{children}</p>
+  );
+}
+
 async function fetchConfig(companyId: number): Promise<PipelineConfig> {
   const res = await fetch(`/api/pipeline/companies/${companyId}/pipeline-config`);
   if (!res.ok) throw new Error(await res.text());
@@ -488,11 +517,23 @@ function useAutoSave(
   const isFirstRender = useRef(true);
 
   useEffect(() => {
-    if (!ready) return;
+    // Consume the first-render flag BEFORE the ready check, not after.
+    //
+    // The effect only re-runs when `value` changes. On mount `ready` is false
+    // (the parent's `local` is still null for one render), so the old order
+    // returned early and left isFirstRender set. The parent then filled
+    // `local` without changing this field's value, so the effect did not run
+    // again — and the flag was still armed when the user's FIRST edit arrived,
+    // which swallowed it. Verified live: typing 7 into Minimum engagement sent
+    // no request at all, typing 8 immediately after saved 8.
+    //
+    // That is the worst shape a bug can take here — the field displays the new
+    // value, there is no error, and the setting silently did not change.
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
+    if (!ready) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       mutate({ [key]: value } as Partial<PipelineConfig>);
@@ -510,11 +551,16 @@ function useAutoSave(
 interface FieldRowProps {
   label: string;
   help: string;
-  saved: boolean;
+  /** Live consequence of the current value, rendered under the help text. */
+  impact?: React.ReactNode;
+  // Optional: the debounced fields drive this off useAutoSave, but controls
+  // that save on the interaction itself (a switch) have no debounce window to
+  // report and rely on the header's "Saving…" badge instead.
+  saved?: boolean;
   children: React.ReactNode;
 }
 
-function FieldRow({ label, help, saved, children }: FieldRowProps) {
+function FieldRow({ label, help, impact, saved, children }: FieldRowProps) {
   return (
     <div className="flex items-start gap-4 py-3 border-b border-border last:border-0">
       <div className="flex-1 min-w-0">
@@ -523,6 +569,7 @@ function FieldRow({ label, help, saved, children }: FieldRowProps) {
           {saved && <CheckCircle2 className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />}
         </div>
         <p className="text-xs text-muted-foreground">{help}</p>
+        {impact}
       </div>
       <div className="flex-shrink-0 w-56">{children}</div>
     </div>
@@ -533,6 +580,7 @@ interface NumberFieldProps {
   fieldKey: string;
   label: string;
   help: string;
+  impact?: React.ReactNode;
   value: number;
   min?: number;
   max?: number;
@@ -541,14 +589,14 @@ interface NumberFieldProps {
   ready: boolean;
 }
 
-function NumberField({ fieldKey, label, help, value, min, max, onChange, onSave, ready }: NumberFieldProps) {
+function NumberField({ fieldKey, label, help, impact, value, min, max, onChange, onSave, ready }: NumberFieldProps) {
   const [local, setLocal] = useState(value);
   const saved = useAutoSave(fieldKey, local, (p) => onSave(fieldKey, p[fieldKey]), ready);
 
   useEffect(() => { setLocal(value); }, [value]);
 
   return (
-    <FieldRow label={label} help={help} saved={saved}>
+    <FieldRow label={label} help={help} impact={impact} saved={saved}>
       <Input
         type="number"
         min={min}
@@ -568,6 +616,7 @@ interface SliderFieldProps {
   fieldKey: string;
   label: string;
   help: string;
+  impact?: React.ReactNode;
   value: number;
   min: number;
   max: number;
@@ -577,14 +626,14 @@ interface SliderFieldProps {
   ready: boolean;
 }
 
-function SliderField({ fieldKey, label, help, value, min, max, step = 0.01, onChange, onSave, ready }: SliderFieldProps) {
+function SliderField({ fieldKey, label, help, impact, value, min, max, step = 0.01, onChange, onSave, ready }: SliderFieldProps) {
   const [local, setLocal] = useState(value ?? min);
   const saved = useAutoSave(fieldKey, local, (p) => onSave(fieldKey, p[fieldKey]), ready);
 
   useEffect(() => { setLocal(value ?? min); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <FieldRow label={label} help={help} saved={saved}>
+    <FieldRow label={label} help={help} impact={impact} saved={saved}>
       <div className="flex items-center gap-3">
         <Slider
           min={min}
@@ -1420,6 +1469,15 @@ function ControlPanelInner() {
     refetchOnWindowFocus: false,
   });
 
+  // Impact stats refetch after every save, so the consequence line updates as
+  // you drag a slider rather than going stale against the value on screen.
+  const { data: impact } = useQuery({
+    queryKey: ["config-impact", companyId],
+    queryFn: () => fetchImpact(companyId),
+    refetchOnWindowFocus: false,
+  });
+  const pctOf = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
+
   const [local, setLocal] = useState<PipelineConfig | null>(null);
 
   useEffect(() => {
@@ -1436,6 +1494,7 @@ function ControlPanelInner() {
       // stale snapshot (which would silently hide just-saved fields like
       // coreVocabulary, authorAllowlist, etc.).
       queryClient.setQueryData(["pipeline-config", companyId], updated);
+      queryClient.invalidateQueries({ queryKey: ["config-impact", companyId] });
     },
     onError: (err: Error) => {
       toast.error(err.message || "Failed to save");
@@ -1610,188 +1669,187 @@ function ControlPanelInner() {
         </CardContent>
       </Card>
 
-      <Accordion type="multiple" defaultValue={["tier1", "tier2", "tier3"]} className="space-y-3">
-        {/* Tier 1 */}
+      {/* Pipeline-stage sections.
+          Replaces the old Tier 1/2/3 accordion. Two problems with that:
+          (1) "Tier 2 · tune after runs 2-4" is our build vocabulary, not a
+          description of what the setting does, and (2) it exposed seven knobs
+          that nothing in the pipeline reads. Measured by grepping every field
+          for a read outside the schema, the reset-tier defaults and this file:
+          commercialIntentThreshold, candidateToEmergingMinWeeks,
+          minEvidenceForKnowledgeItem, volatilityTolerance,
+          peakingWeeksNegVelocity, decliningWeeksNegVelocity,
+          dormantThresholdWeeks and radarSurfaceMinSignalStrength are written
+          to the DB and read back here, and never consulted again. The last one
+          is the subtlest: state-machine.ts passes it into ensureKnowledgeItem
+          as `minSignalStrength` and the function never references it, so it
+          looks wired from a grep but filters nothing. The state machine derives its declining and
+          dormant thresholds from minWow/minVol instead
+          (services/state-machine.ts). Their columns still exist, so nothing is
+          lost and any of them can be surfaced again the moment it is wired up.
+
+          Order follows the pipeline, so reading top to bottom is the journey a
+          post takes: what gets in, what counts as growing, what reaches the
+          radar. */}
+      <div className="space-y-3">
+        {/* Stage 1 — ingestion */}
         <Card>
-          <AccordionItem value="tier1" className="border-0">
-            <AccordionTrigger className="px-5 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <Badge className="bg-blue-500 text-white border-0 text-xs">Tier 1</Badge>
-                <span className="text-sm font-semibold">Signal Quality</span>
-                <span className="text-xs text-muted-foreground font-normal">tune after run 1</span>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-5">
-                <NumberField
-                  fieldKey="noiseFloor"
-                  label="Noise Floor"
-                  help="Minimum engagement threshold to consider a post as a signal. Range 1–50."
-                  value={cfg.noiseFloor}
-                  min={1}
-                  max={50}
-                  onChange={(v) => setField("noiseFloor", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <SliderField
-                  fieldKey="commercialIntentThreshold"
-                  label="Commercial Intent Threshold"
-                  help="Minimum commercial intent score (0–1) required to include a post."
-                  value={cfg.commercialIntentThreshold}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onChange={(v) => setField("commercialIntentThreshold", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <SliderField
-                  fieldKey="languageConfidenceThreshold"
-                  label="Language Confidence Threshold"
-                  help="Minimum confidence for language detection to accept a post."
-                  value={cfg.languageConfidenceThreshold}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onChange={(v) => setField("languageConfidenceThreshold", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-              </div>
-            </AccordionContent>
-          </AccordionItem>
+          <CardHeader className="pb-2">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs text-muted-foreground tabular-nums">1</span>
+              <h2 className="text-sm font-semibold text-foreground">What counts as a post</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Applied as posts are ingested. Anything rejected here never
+              reaches the rest of the pipeline, so these are the strictest
+              levers you have.
+            </p>
+            {/* Section level on purpose. Signals are dropped without recording
+                WHICH filter rejected them, so this cannot honestly be split
+                between the two settings below. */}
+            {impact && (
+              <p className="text-xs text-muted-foreground/80 mt-1 tabular-nums">
+                Kept {impact.ingestion.usable.toLocaleString()} of{" "}
+                {impact.ingestion.fetched.toLocaleString()} scraped posts (
+                {pctOf(impact.ingestion.usable, impact.ingestion.fetched)}%),
+                across all ingestion filters combined.
+              </p>
+            )}
+          </CardHeader>
+          <CardContent className="pt-2 pb-5">
+            <NumberField
+              fieldKey="noiseFloor"
+              label="Minimum engagement"
+              help="A post needs at least this much engagement (likes, comments, shares, weighted per platform) to count. Higher = fewer, louder posts. Reddit is exempt, because that scraper stopped returning vote counts."
+              value={cfg.noiseFloor}
+              min={1}
+              max={50}
+              onChange={(v) => setField("noiseFloor", v)}
+              onSave={handleSave}
+              ready={ready}
+            />
+            <SliderField
+              fieldKey="languageConfidenceThreshold"
+              label="Language confidence"
+              help="How sure the language detector must be before a post is accepted. Lower it if real posts in your markets are being dropped; short captions are the usual casualty."
+              value={cfg.languageConfidenceThreshold}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => setField("languageConfidenceThreshold", v)}
+              onSave={handleSave}
+              ready={ready}
+            />
+          </CardContent>
         </Card>
 
-        {/* Tier 2 */}
+        {/* Stage 2 — growth */}
         <Card>
-          <AccordionItem value="tier2" className="border-0">
-            <AccordionTrigger className="px-5 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <Badge className="bg-amber-500 text-white border-0 text-xs">Tier 2</Badge>
-                <span className="text-sm font-semibold">Growth Detection</span>
-                <span className="text-xs text-muted-foreground font-normal">tune after runs 2–4</span>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-5">
-                <NumberField
-                  fieldKey="candidateToEmergingMinWeeks"
-                  label="Candidate → Emerging Min Weeks"
-                  help="Minimum weeks of sustained signal before a candidate is promoted to emerging."
-                  value={cfg.candidateToEmergingMinWeeks}
-                  min={1}
-                  onChange={(v) => setField("candidateToEmergingMinWeeks", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <SliderField
-                  fieldKey="candidateToEmergingMinWowGrowth"
-                  label="Min WoW Growth"
-                  help="Minimum week-over-week growth rate required for promotion to Emerging."
-                  value={cfg.candidateToEmergingMinWowGrowth}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onChange={(v) => setField("candidateToEmergingMinWowGrowth", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <NumberField
-                  fieldKey="candidateToEmergingMinVolume"
-                  label="Min Volume (30d)"
-                  help="Minimum 30-day post count needed before a trend can be promoted."
-                  value={cfg.candidateToEmergingMinVolume}
-                  min={1}
-                  onChange={(v) => setField("candidateToEmergingMinVolume", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <NumberField
-                  fieldKey="minEvidenceForKnowledgeItem"
-                  label="Min Evidence for Knowledge Item"
-                  help="Minimum number of signals before a trend is surfaced as a Knowledge Item."
-                  value={cfg.minEvidenceForKnowledgeItem}
-                  min={1}
-                  onChange={(v) => setField("minEvidenceForKnowledgeItem", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <SliderField
-                  fieldKey="volatilityTolerance"
-                  label="Volatility Tolerance"
-                  help="Higher values allow more volatile trends to be promoted. Range 0.5–3.0."
-                  value={cfg.volatilityTolerance}
-                  min={0.5}
-                  max={3}
-                  step={0.1}
-                  onChange={(v) => setField("volatilityTolerance", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-              </div>
-            </AccordionContent>
-          </AccordionItem>
+          <CardHeader className="pb-2">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs text-muted-foreground tabular-nums">2</span>
+              <h2 className="text-sm font-semibold text-foreground">What counts as growing</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              How much movement an entity needs before it is treated as a real
+              trend rather than chatter. These two also set the declining and
+              dormant thresholds, which are derived from them rather than
+              configured separately.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-2 pb-5">
+            <SliderField
+              fieldKey="candidateToEmergingMinWowGrowth"
+              label="Minimum week-on-week growth"
+              help="Mentions must rise by at least this much week on week to be promoted. 0.30 = 30%. An entity falling faster than 80% of this figure, on BOTH the week and the month, is marked declining."
+              impact={impact && (
+                <Impact>
+                  {impact.minWowGrowth.clearing.toLocaleString()} of{" "}
+                  {impact.trackedEntities.toLocaleString()} tracked entities currently clear this (
+                  {pctOf(impact.minWowGrowth.clearing, impact.trackedEntities)}%)
+                </Impact>
+              )}
+              value={cfg.candidateToEmergingMinWowGrowth}
+              min={0}
+              max={3}
+              step={0.05}
+              onChange={(v) => setField("candidateToEmergingMinWowGrowth", v)}
+              onSave={handleSave}
+              ready={ready}
+            />
+            <NumberField
+              fieldKey="candidateToEmergingMinVolume"
+              label="Minimum mentions (30 days)"
+              help="Floor on how much conversation an entity needs before growth is believable. A 200% jump off two mentions is noise. Anything under a third of this is treated as dormant."
+              impact={impact && (
+                <Impact>
+                  {impact.minVolume.clearing.toLocaleString()} of{" "}
+                  {impact.trackedEntities.toLocaleString()} tracked entities currently clear this (
+                  {pctOf(impact.minVolume.clearing, impact.trackedEntities)}%)
+                </Impact>
+              )}
+              value={cfg.candidateToEmergingMinVolume}
+              min={1}
+              onChange={(v) => setField("candidateToEmergingMinVolume", v)}
+              onSave={handleSave}
+              ready={ready}
+            />
+          </CardContent>
         </Card>
 
-        {/* Tier 3 */}
-        <Card>
-          <AccordionItem value="tier3" className="border-0">
-            <AccordionTrigger className="px-5 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <Badge className="bg-purple-500 text-white border-0 text-xs">Tier 3</Badge>
-                <span className="text-sm font-semibold">Lifecycle</span>
-                <span className="text-xs text-muted-foreground font-normal">tune after runs 4–8</span>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-5">
-                <NumberField
-                  fieldKey="peakingWeeksNegVelocity"
-                  label="Peaking → Declining Weeks"
-                  help="Consecutive weeks of negative velocity before a peaking trend transitions to declining."
-                  value={cfg.peakingWeeksNegVelocity}
-                  min={1}
-                  onChange={(v) => setField("peakingWeeksNegVelocity", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <NumberField
-                  fieldKey="decliningWeeksNegVelocity"
-                  label="Declining → Dormant Weeks"
-                  help="Consecutive weeks of declining volume before a trend is marked dormant."
-                  value={cfg.decliningWeeksNegVelocity}
-                  min={1}
-                  onChange={(v) => setField("decliningWeeksNegVelocity", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <NumberField
-                  fieldKey="dormantThresholdWeeks"
-                  label="Dormant Threshold Weeks"
-                  help="Weeks without new evidence before a trend is marked dormant."
-                  value={cfg.dormantThresholdWeeks}
-                  min={1}
-                  onChange={(v) => setField("dormantThresholdWeeks", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-                <NumberField
-                  fieldKey="radarSurfaceMinSignalStrength"
-                  label="Min Signal Strength (0–100)"
-                  help="Minimum computed signal strength score before a trend appears in the Trends tab."
-                  value={cfg.radarSurfaceMinSignalStrength}
-                  min={0}
-                  max={100}
-                  onChange={(v) => setField("radarSurfaceMinSignalStrength", v)}
-                  onSave={handleSave}
-                  ready={ready}
-                />
-              </div>
-            </AccordionContent>
-          </AccordionItem>
-        </Card>
-      </Accordion>
+      </div>
+
+      {/* Confirmation gate — the last stage before the Trends tab. */}
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <h2 className="text-sm font-semibold text-foreground">Confirmation gate</h2>
+          <p className="text-xs text-muted-foreground">
+            The final check between the state machine and the Trends tab. An
+            entity only surfaces if enough different people across enough
+            different platforms are talking about it. Measured on real outcomes:
+            items this check approves went on to grow about 1.65× more than the
+            ones it rejected.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-2 pb-5">
+          <SliderField
+            fieldKey="gateMinSourceEntropyBits"
+            label="Min source breadth (bits)"
+            help="How spread out the conversation has to be. 0 = no spread required, 1.0 = roughly two platforms contributing evenly, 2.0+ = very strict. Above ~2.8 nothing can pass. Lower it if the radar looks too empty."
+            impact={impact && (
+              <Impact>
+                {impact.gateBreadth.clearing.toLocaleString()} of{" "}
+                {impact.gateBreadth.evaluated.toLocaleString()} entities the gate has
+                judged currently clear this (
+                {pctOf(impact.gateBreadth.clearing, impact.gateBreadth.evaluated)}%).
+                The gate only runs for entities already growing.
+              </Impact>
+            )}
+            value={(cfg.gateMinSourceEntropyBits as number) ?? 1.0}
+            min={0}
+            max={3}
+            step={0.05}
+            onChange={(v) => setField("gateMinSourceEntropyBits", v)}
+            onSave={handleSave}
+            ready={ready}
+          />
+          {/* gateEnabled is NOT rendered, same as gateRequireSignificance.
+              Both are real columns and settable by API/SQL, but turning the
+              gate off sends every flagged entity straight to the Trends tab
+              unfiltered — a one-click way to make the radar look broken. It is
+              a debugging lever, not a client-facing setting. If it is ever off,
+              the banner below says so. */}
+          {!((cfg.gateEnabled as boolean) ?? true) && (
+            <Alert variant="destructive" className="mt-3">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                The gate is switched off in this company's config, so everything
+                the state machine flags is surfacing unfiltered. The Trends tab
+                is not a filtered radar right now.
+              </AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Long-tail lane */}
       <Card className="mt-4">
@@ -1805,11 +1863,20 @@ function ControlPanelInner() {
           </p>
         </CardHeader>
         <CardContent className="pt-2 pb-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Stacked, not a grid: these use FieldRow, which is a full-width
+              row (flexible label + fixed-width control). In a narrow grid
+              column the control overlapped the label and the help text wrapped
+              to one word per line. */}
+          <div>
             <NumberField
               fieldKey="longTailMinMentions"
               label="Min mentions (last 30d)"
               help="Entities below this floor are not evaluated. 1–100."
+              impact={impact && (
+                <Impact>
+                  {impact.longTailFloor.clearing.toLocaleString()} entities clear this floor
+                </Impact>
+              )}
               value={(cfg.longTailMinMentions as number) ?? 5}
               min={1}
               max={100}
@@ -1845,7 +1912,8 @@ function ControlPanelInner() {
           </p>
         </CardHeader>
         <CardContent className="pt-2 pb-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Stacked for the same reason as the long-tail lane above. */}
+          <div>
             <NumberField
               fieldKey="compositeMinJointMentions"
               label="Min joint mentions"
