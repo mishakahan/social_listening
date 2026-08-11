@@ -5,6 +5,7 @@ import {
   significanceTest,
   confirmationVerdict,
   gateConfigFromPipeline,
+  gateConfigPatchSchema,
   type GateConfig,
   type SourceObservation,
 } from "./confirmation-gate.js";
@@ -171,6 +172,89 @@ test("breadth still holds a concentrated entity even when significance is not re
   const v = confirmationVerdict(concentrated, { ...cfg, requireSignificance: false }, seeded(1));
   assert.equal(v.decision, "hold", "breadth-only must not become a rubber stamp");
   assert.equal(v.breadth.pass, false);
+});
+
+// ---------------------------------------------------------------------------
+// Control Panel wiring.
+//
+// PATCH /pipeline-config validates with a .passthrough() schema, so any key it
+// does not name reaches storage.updatePipelineConfig unchecked. Now that the
+// gate keys are real columns, an unvalidated write is a write straight into the
+// gate — "9" (a string), 400 (bits), or NaN would all be accepted and would
+// then decide what surfaces on the client's radar. These are the range checks.
+// ---------------------------------------------------------------------------
+
+test("gate patch schema accepts thresholds inside the achievable entropy range", () => {
+  // 0.5 bits is the value company 2 was measured to need (76 entities at a
+  // 1.55x edge vs 9 at 1.0), so it must be settable from the Control Panel.
+  for (const bits of [0, 0.5, 1.0, 2.32, 3]) {
+    const r = gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: bits });
+    assert.equal(r.success, true, `${bits} bits must be accepted, got ${JSON.stringify(r.error?.issues)}`);
+  }
+});
+
+test("gate patch schema rejects entropy thresholds outside the achievable range", () => {
+  // Breadth entropy is computed over PLATFORMS, so it is bounded by
+  // log2(platform count) ≈ 2.81 bits at seven platforms. A value above 3 can
+  // never be reached by any entity — it silently empties the radar rather than
+  // tightening it, so it is a typo, not a preference.
+  for (const bits of [-1, 3.1, 10, 400]) {
+    const r = gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: bits });
+    assert.equal(r.success, false, `${bits} bits must be rejected`);
+  }
+});
+
+test("gate patch schema rejects non-numeric and non-boolean gate values", () => {
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: "0.5" }).success,
+    false,
+    "a stringified number must not reach the gate"
+  );
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: NaN }).success,
+    false,
+    "NaN must not reach the gate — every comparison against it is false"
+  );
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateEnabled: "false" }).success,
+    false,
+    'the string "false" is truthy and would leave the gate on while reading as off'
+  );
+});
+
+test("gate patch schema accepts the booleans", () => {
+  assert.equal(gateConfigPatchSchema.safeParse({ gateEnabled: false }).success, true);
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateRequireSignificance: false }).success,
+    true,
+    "settable by API even though it is deliberately not rendered in the UI"
+  );
+});
+
+test("gateConfigFromPipeline prefers the stored column over the env override", () => {
+  // The Control Panel writes the column. If env still won, the UI would show a
+  // value the gate was not using — the exact class of broken-reporter bug this
+  // project has hit three times.
+  const prev = process.env.GATE_MIN_ENTROPY_BITS;
+  try {
+    process.env.GATE_MIN_ENTROPY_BITS = "2.5";
+    const c = gateConfigFromPipeline({ gateMinSourceEntropyBits: 0.5 } as any);
+    assert.equal(c.minSourceEntropyBits, 0.5, "stored column must win over env");
+  } finally {
+    if (prev === undefined) delete process.env.GATE_MIN_ENTROPY_BITS;
+    else process.env.GATE_MIN_ENTROPY_BITS = prev;
+  }
+});
+
+test("gateConfigFromPipeline honours a stored 0 bits without falling through to the default", () => {
+  // 0 is falsy. A `||` anywhere in the fallback chain turns "no entropy floor"
+  // into the 1.0 default, which is the opposite of what was asked for.
+  const c = gateConfigFromPipeline({ gateMinSourceEntropyBits: 0 } as any);
+  assert.equal(c.minSourceEntropyBits, 0);
+});
+
+test("gateConfigFromPipeline reads a stored gateEnabled=false", () => {
+  assert.equal(gateConfigFromPipeline({ gateEnabled: false } as any).enabled, false);
 });
 
 test("gateConfigFromPipeline keeps significance required unless explicitly disabled", () => {

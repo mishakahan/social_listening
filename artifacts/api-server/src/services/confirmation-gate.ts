@@ -5,7 +5,28 @@
 // machine and the Radar knowledge base. It is descriptive and reversible:
 // it only decides pass/hold for surfacing, and never mutates upstream data.
 
+import { z } from "zod";
 import type { TpEntityTimeseries, TpPipelineConfig } from "@workspace/db/schema";
+
+// Validation for the gate's slice of PATCH /pipeline-config.
+//
+// It lives here, next to the semantics it protects, rather than in the route:
+// the route's patch schema is .passthrough(), so anything it does not name
+// reaches the DB unchecked, and these three columns feed the gate directly.
+// Same single-source-of-truth reasoning as services/signal-strength.ts.
+export const gateConfigPatchSchema = z
+  .object({
+    gateEnabled: z.boolean().optional(),
+    // Breadth entropy is Shannon entropy over PLATFORMS weighted by unique
+    // authors, so it is bounded by log2(platform count) ≈ 2.81 bits at the
+    // seven platforms we ingest. Anything above 3 is unreachable: it would
+    // empty the radar rather than tighten it, so it is a typo, not a choice.
+    // 0 is explicitly allowed and means "no entropy floor" — the author-count
+    // floor still applies.
+    gateMinSourceEntropyBits: z.number().min(0).max(3).optional(),
+    gateRequireSignificance: z.boolean().optional(),
+  })
+  .strict();
 
 export interface GateConfig {
   significanceAlpha: number; // e.g. 0.05
