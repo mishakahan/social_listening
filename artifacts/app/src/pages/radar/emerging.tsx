@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
@@ -12,6 +12,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertCircle,
   ChevronDown,
@@ -37,6 +44,11 @@ interface LongTailRow {
   posteriorProb: number;
   computedAt: string;
   sparkline: number[];
+  /** All-time mentions, every platform and geography. */
+  totalMentions: number;
+  watchTopic: string | null;
+  /** The search that found it; null means no seed keyword went looking for it. */
+  searchTerm: string | null;
 }
 
 interface LongTailResponse {
@@ -46,7 +58,10 @@ interface LongTailResponse {
   minPosterior: number;
 }
 
-type SortKey = "posterior" | "uplift" | "current";
+type SortKey = "posterior" | "uplift" | "current" | "total";
+
+const ALL = "all";
+const NO_SEARCH_TERM = "No matching search term";
 
 async function fetchLongTail(companyId: number): Promise<LongTailResponse> {
   const res = await fetch(`/api/pipeline/companies/${companyId}/long-tail`);
@@ -146,19 +161,47 @@ export default function EmergingLongTailPage() {
   const queryClient = useQueryClient();
   const companyId = useCompanyId();
   const [sortBy, setSortBy] = useState<SortKey>("posterior");
+  // Client-side: the candidate list is small (tens of rows) and already loaded.
+  const [typeFilter, setTypeFilter] = useState(ALL);
+  const [searchFilter, setSearchFilter] = useState(ALL);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  // POST /run-long-tail is FIRE-AND-FORGET: it returns {ok:true} the moment
+  // the run is queued, not when it finishes (see routes/pipeline.ts). So the
+  // old handler declared "re-evaluation complete" and invalidated the query
+  // immediately — the refetch raced ahead of the evaluation and pulled back
+  // the OLD rows. The page then sat there showing stale results, or "no
+  // candidates yet", while the run was still going. Measured: server wrote
+  // results at 4:51:13 while the page still displayed 4:48:21.
+  //
+  // Fixed by polling until the server's own lastRunAt actually advances,
+  // which is the only signal that the work is done.
+  const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["long-tail", companyId],
     queryFn: () => fetchLongTail(companyId),
     refetchOnWindowFocus: false,
+    // Poll only while a run is in flight; stop as soon as it lands.
+    refetchInterval: runStartedAt ? 4000 : false,
   });
+
+  // Detect completion: lastRunAt has moved past what it was when we started.
+  useEffect(() => {
+    if (!runStartedAt || !data) return;
+    const current = data.lastRunAt ?? "";
+    if (current && current !== runStartedAt) {
+      setRunStartedAt(null);
+      toast.success("Long-tail re-evaluation complete");
+    }
+  }, [data, runStartedAt]);
 
   const runMutation = useMutation({
     mutationFn: () => runLongTail(companyId),
     onSuccess: () => {
-      toast.success("Long-tail re-evaluation complete");
-      queryClient.invalidateQueries({ queryKey: ["long-tail", companyId] });
+      // "started", not "complete" — the server has only queued it.
+      toast.info("Re-evaluation started, this takes a minute");
+      setRunStartedAt(data?.lastRunAt ?? "none");
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -197,6 +240,10 @@ export default function EmergingLongTailPage() {
           av = a.currentMentions;
           bv = b.currentMentions;
           break;
+        case "total":
+          av = a.totalMentions;
+          bv = b.totalMentions;
+          break;
         case "posterior":
         default:
           av = a.posteriorProb;
@@ -206,6 +253,27 @@ export default function EmergingLongTailPage() {
       return (av - bv) * mul;
     });
   }, [data, sortBy, sortDir]);
+
+  // Facet options derived from the data itself, so a filter can never offer a
+  // value that returns nothing.
+  const entityTypes = useMemo(
+    () => [...new Set((data?.candidates ?? []).map((c) => c.entityType ?? "uncategorised"))].sort(),
+    [data]
+  );
+  const searchTerms = useMemo(
+    () => [...new Set((data?.candidates ?? []).map((c) => c.searchTerm ?? NO_SEARCH_TERM))].sort(),
+    [data]
+  );
+
+  const candidates = useMemo(
+    () =>
+      sorted.filter(
+        (c) =>
+          (typeFilter === ALL || (c.entityType ?? "uncategorised") === typeFilter) &&
+          (searchFilter === ALL || (c.searchTerm ?? NO_SEARCH_TERM) === searchFilter)
+      ),
+    [sorted, typeFilter, searchFilter]
+  );
 
   if (isLoading) {
     return (
@@ -236,7 +304,6 @@ export default function EmergingLongTailPage() {
     );
   }
 
-  const candidates = sorted;
   const lastRunAt = data?.lastRunAt
     ? new Date(data.lastRunAt).toLocaleString()
     : "never";
@@ -250,12 +317,34 @@ export default function EmergingLongTailPage() {
               <Sparkles className="h-5 w-5 text-emerald-500" />
               <h1 className="text-2xl font-bold text-foreground">Emerging long-tail</h1>
             </div>
+            {/* PAGE-LEVEL DEFINITION. This previously opened with "Bayesian
+                posterior probability that the rate at least doubled", which is
+                precise and tells a reader nothing about what the page is FOR.
+                The distinction that matters is against the main radar, and it
+                had only ever been explained in conversation. */}
             <p className="text-muted-foreground text-sm max-w-2xl">
-              Low-volume entities that show a statistically meaningful jump
-              vs their prior-year (or prior 30-day) baseline. Ranked by
-              Bayesian posterior probability that the rate at least doubled.
-              Posterior threshold: {Math.round((data?.minPosterior ?? 0.9) * 100)}%.
-              Minimum current mentions: {data?.minMentions ?? 5}.
+              Weak signals: things still small enough that most people have not
+              noticed them, but being mentioned at least twice as often as they
+              used to be. Early rather than established.
+            </p>
+            <p className="text-muted-foreground text-sm max-w-2xl mt-2">
+              This page deliberately <span className="font-medium text-foreground">excludes
+              anything big</span>, which is the opposite of the{" "}
+              <button
+                type="button"
+                onClick={() => navigate("/radar/trends")}
+                className="text-primary hover:underline underline-offset-2 font-medium"
+              >
+                main radar
+              </button>
+              . Staples like queso and mango cannot appear here however fast they
+              move, because they are already too widely talked about to be an
+              early signal. That is why this list looks more specific.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              Currently: at least {data?.minMentions ?? 5} mentions in the window,
+              and at least {Math.round((data?.minPosterior ?? 0.9) * 100)}% confidence
+              the rate genuinely doubled rather than being a run of luck.
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Last evaluated: {lastRunAt}
@@ -273,6 +362,38 @@ export default function EmergingLongTailPage() {
           </Button>
         </div>
 
+        {/* Facets. Country is NOT here on purpose: the long-tail lane groups by
+            entity only and sums across geographies, so the data carries no
+            country to filter on. Adding a dropdown over data that cannot
+            support it would be a filter that silently lies. */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="h-8 w-[190px] text-xs">
+              <SelectValue placeholder="All kinds" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL} className="text-xs">All kinds</SelectItem>
+              {entityTypes.map((t) => (
+                <SelectItem key={t} value={t} className="text-xs">{t}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={searchFilter} onValueChange={setSearchFilter}>
+            <SelectTrigger className="h-8 w-[260px] text-xs">
+              <SelectValue placeholder="All search terms" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL} className="text-xs">All search terms</SelectItem>
+              {searchTerms.map((t) => (
+                <SelectItem key={t} value={t} className="text-xs">{t}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+            {candidates.length} of {(data?.candidates ?? []).length}
+          </span>
+        </div>
+
         {candidates.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-16 text-center">
             <TrendingUp className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
@@ -280,22 +401,25 @@ export default function EmergingLongTailPage() {
               No long-tail candidates yet
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Either no entity has cleared the posterior threshold, or the lane
+              Either nothing has cleared the confidence bar, or the lane
               hasn't been evaluated. Click "Re-evaluate now" to run it.
             </p>
           </div>
         ) : (
           <div className="rounded-xl border border-border overflow-hidden">
-            <div className="grid grid-cols-[2fr_96px_96px_96px_140px_140px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="grid grid-cols-[2fr_84px_84px_84px_84px_130px_130px] gap-3 px-5 py-2.5 bg-muted/30 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
               <div>Entity</div>
               <div className="text-right">
-                <SortHeader label="Current" field="current" current={sortBy} dir={sortDir} onSort={handleSort} />
+                <SortHeader label="Window" field="current" current={sortBy} dir={sortDir} onSort={handleSort} />
+              </div>
+              <div className="text-right">
+                <SortHeader label="Total" field="total" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div className="text-right">
                 <SortHeader label="Uplift" field="uplift" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div className="text-right">
-                <SortHeader label="Posterior" field="posterior" current={sortBy} dir={sortDir} onSort={handleSort} />
+                <SortHeader label="Confidence" field="posterior" current={sortBy} dir={sortDir} onSort={handleSort} />
               </div>
               <div>Trend (30d)</div>
               <div className="text-right">Action</div>
@@ -304,7 +428,7 @@ export default function EmergingLongTailPage() {
               {candidates.map((c) => (
                 <div
                   key={c.id}
-                  className="grid grid-cols-[2fr_96px_96px_96px_140px_140px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30"
+                  className="grid grid-cols-[2fr_84px_84px_84px_84px_130px_130px] gap-3 px-5 py-3.5 items-center hover:bg-muted/30"
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-foreground leading-tight truncate">
@@ -315,15 +439,39 @@ export default function EmergingLongTailPage() {
                       {c.aliases.length > 0 && (
                         <span className="ml-1.5">· aka {c.aliases.slice(0, 2).join(", ")}</span>
                       )}
+                      {c.searchTerm ? (
+                        <span className="ml-1.5">· {c.searchTerm}</span>
+                      ) : (
+                        <span className="ml-1.5 text-purple-600 dark:text-purple-400">
+                          · discovered
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="text-right text-sm tabular-nums">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span>{c.currentMentions}</span>
+                        <span className="cursor-help">{c.currentMentions}</span>
                       </TooltipTrigger>
                       <TooltipContent side="top" className="text-xs">
-                        {c.currentMentions} mentions in last 30d ({c.windowStart} → {c.windowEnd})
+                        {c.currentMentions} mentions in the scoring window
+                        ({c.windowStart} → {c.windowEnd}). This lane only admits
+                        entities inside a narrow band, so this number barely varies.
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  {/* All-time volume. Without it every row looks the same size,
+                      because the lane selects on the window count: pesto at 39
+                      all-time and mandioca at 12 both show 9 here. */}
+                  <div className="text-right text-sm tabular-nums font-medium">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="cursor-help">{c.totalMentions}</span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[260px]">
+                        {c.totalMentions} mentions all time, across every platform and
+                        geography. Tells you whether this is genuinely small or a
+                        bigger thing having a quiet month.
                       </TooltipContent>
                     </Tooltip>
                   </div>
@@ -346,9 +494,15 @@ export default function EmergingLongTailPage() {
                           <PosteriorBadge p={c.posteriorProb} />
                         </span>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="text-xs max-w-[280px]">
-                        Bayesian posterior that the true rate is at least 2× the
-                        baseline rate, under a Beta(1,1) prior on the proportion.
+                      <TooltipContent side="top" className="text-xs max-w-[300px]">
+                        How confident we are that this is genuinely being mentioned
+                        twice as often as before, rather than a few mentions
+                        happening to land close together.
+                        <span className="block mt-1.5 text-primary-foreground/70">
+                          It reads the same on every row because the window here is
+                          so narrow that only one combination of numbers can clear
+                          the bar. Read the names, not this figure.
+                        </span>
                       </TooltipContent>
                     </Tooltip>
                   </div>

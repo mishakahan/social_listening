@@ -139,6 +139,7 @@ export const tpSeedItems = pgTable("tp_seed_items", {
   geography: text("geography").notNull(),
   productCategoryLink: text("product_category_link"),
   territoryTag: text("territory_tag"),
+  watchTopic: text("watch_topic"),
   strategicCentrality: integer("strategic_centrality").notNull().default(50),
   actionableAt: text("actionable_at"),
   groundedIn: jsonb("grounded_in").$type<string[]>().default([]),
@@ -160,6 +161,7 @@ export const tpScoutQueries = pgTable("tp_scout_queries", {
     .notNull()
     .references(() => tpSeedItems.id, { onDelete: "cascade" }),
   topicLabel: text("topic_label").notNull(),
+  watchTopic: text("watch_topic"),
   geography: text("geography").notNull(),
   language: text("language").notNull(),
   keywords: jsonb("keywords").notNull().$type<string[]>(),
@@ -904,6 +906,35 @@ export const tpPipelineConfig = pgTable("tp_pipeline_config", {
   lastCoOccurrenceRunAt: timestamp("last_co_occurrence_run_at"),
   // Category-scoped attribute extraction lane (Task #4).
   lastAttributeAggregationAt: timestamp("last_attribute_aggregation_at"),
+  // -------------------------------------------------------------------------
+  // Confirmation gate (the contracted deliverable). gateConfigFromPipeline has
+  // always read these keys off the config object, but they were never columns,
+  // so they read as undefined and fell through to env/defaults — the Control
+  // Panel could expose 45 keys and still not reach the gate.
+  //
+  // DEFAULTS REPRODUCE LIVE BEHAVIOUR, they are not a fresh preference. No
+  // GATE_* env override is set in this deployment, so company 2's live radar
+  // was computed at 1.0 bits with the significance test required. Changing a
+  // default here silently rewrites every verdict on the next recompute.
+  //
+  // gateMinSourceEntropyBits: Shannon entropy floor for the source-breadth
+  //   check. Measured as the only gate check with predictive validity
+  //   (1.65x edge, p<0.0001), so this is the threshold worth tuning per
+  //   company. Range 0-4 bits; 0 disables the entropy floor but NOT the
+  //   author-count floor.
+  // gateRequireSignificance: whether the permutation test must also pass.
+  //   Deliberately NOT surfaced in the Control Panel UI — it is a contracted
+  //   deliverable and switching it off is a client decision, not a knob.
+  //   Settable by SQL / API until that conversation happens.
+  // gateEnabled: master switch. False makes every entity pass the gate.
+  // -------------------------------------------------------------------------
+  gateEnabled: boolean("gate_enabled").notNull().default(true),
+  gateMinSourceEntropyBits: doublePrecision("gate_min_source_entropy_bits")
+    .notNull()
+    .default(1.0),
+  gateRequireSignificance: boolean("gate_require_significance")
+    .notNull()
+    .default(true),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

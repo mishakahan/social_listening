@@ -14,6 +14,8 @@ export interface PipelineRunStatus {
   };
   stateMachine: {
     activeEntities: number;
+    totalEntities: number;
+    windowDays: number;
     lastComputedAt: string | null;
   };
   meta: {
@@ -146,8 +148,17 @@ export function stateMachineEstimate(s: PipelineRunStatus): StepEstimate {
   // Per-entity DB read + compute + upsert. Empirical: ~30–80ms per entity.
   const low = Math.max(2, Math.round((n * 30) / 1000));
   const high = Math.max(5, Math.round((n * 80) / 1000));
+  // Name the window, and account for the rest. "17,371 active entities" above a
+  // table listing 13,042 read as a contradiction to anyone who noticed; the
+  // gap is entities with no mention inside the state machine's window, which
+  // it skips. Saying "dormant" is the honest word for them.
+  const dormant = Math.max(0, s.stateMachine.totalEntities - n);
+  const scope =
+    dormant > 0
+      ? `${n.toLocaleString()} entit${n === 1 ? "y" : "ies"} active in the last ${s.stateMachine.windowDays}d · ${dormant.toLocaleString()} dormant`
+      : `${n.toLocaleString()} entit${n === 1 ? "y" : "ies"} active in the last ${s.stateMachine.windowDays}d`;
   return {
-    scope: `${n.toLocaleString()} active entit${n === 1 ? "y" : "ies"}`,
+    scope,
     estimate: formatRange(low, high),
     willDoWork: true,
   };

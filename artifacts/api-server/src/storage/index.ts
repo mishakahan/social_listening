@@ -1,5 +1,10 @@
 import { db } from "@workspace/db";
 import { canonicalizeLabel } from "../services/entity-canonical.js";
+import { EVIDENCE_WINDOW_DAYS, recentEvidenceCount } from "../services/evidence-window.js";
+import { wasSearchedFor, normalizeTerm, resolveSeedMatch, type SeedMatch } from "../services/discovery-origin.js";
+import { fetchShareOfVoice } from "../services/share-of-voice.js";
+import { fetchSignalPercentiles } from "../services/signal-strength.js";
+import { gateConfigFromPipeline } from "../services/confirmation-gate.js";
 import {
   companies,
   users,
@@ -76,6 +81,7 @@ import {
   not,
   sql,
   count,
+  countDistinct,
   sum,
   gte,
   lte,
@@ -644,6 +650,17 @@ export interface LongTailRow {
   computedAt: string;
   // Compact 30-day sparkline (one entry per day in window, oldest first).
   sparkline: number[];
+  /**
+   * All-time mentions for this entity, every platform and geography. The lane
+   * selects on a NARROW window (5-9 mentions inside it), so currentMentions
+   * alone gives no sense of whether this is a genuinely small thing or a big
+   * thing having a quiet month.
+   */
+  totalMentions: number;
+  /** Watch topic of whichever seed matched, or null for a genuine discovery. */
+  watchTopic: string | null;
+  /** The matching scout query's own topicLabel, i.e. what we went looking for. */
+  searchTerm: string | null;
 }
 
 /**
@@ -694,6 +711,28 @@ export async function getLongTailCandidates(
     )
     .groupBy(tpEntityTimeseries.entityId, tpEntityTimeseries.bucketDate);
 
+  // All-time volume per candidate, deliberately UNBOUNDED by date. The lane
+  // admits entities on a narrow current-window count, so without this there is
+  // no way to tell a genuinely niche term from a big one in a quiet patch.
+  const totalRows = await db
+    .select({
+      entityId: tpEntityTimeseries.entityId,
+      total: sql<number>`coalesce(sum(${tpEntityTimeseries.mentions}), 0)::int`,
+    })
+    .from(tpEntityTimeseries)
+    .where(
+      and(
+        eq(tpEntityTimeseries.companyId, companyId),
+        inArray(tpEntityTimeseries.entityId, entityIds)
+      )
+    )
+    .groupBy(tpEntityTimeseries.entityId);
+  const totalByEntity = new Map(totalRows.map((r) => [r.entityId, Number(r.total) || 0]));
+
+  // Same seed vocabulary the Trends list uses, so "which search found this"
+  // means the same thing on both pages rather than being computed two ways.
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+
   // Build a dense 30-day array per entity by walking the window day-by-day.
   const startMs = new Date(windowStart + "T00:00:00Z").getTime();
   const endMs = new Date(windowEnd + "T00:00:00Z").getTime();
@@ -727,6 +766,11 @@ export async function getLongTailCandidates(
       posteriorProb: r.c.posteriorProb,
       computedAt: r.c.computedAt.toISOString(),
       sparkline,
+      totalMentions: totalByEntity.get(r.c.entityId) ?? 0,
+      ...(() => {
+        const m = resolveSeedMatch(r.ent.canonicalLabel ?? "", seedTerms, termToSeed);
+        return { watchTopic: m.watchTopic, searchTerm: m.searchTerm };
+      })(),
     };
   });
 }
@@ -1730,6 +1774,15 @@ export async function getEntityStateWithEntity(
 
 export interface EnrichedTrend {
   id: number;           // knowledge item id
+  /** tp_entities.entity_type — ingredient / brand / format / dietary_claim / occasion / ... */
+  entityType: string;
+  /**
+   * Growth in the entity's SHARE of all conversation, last 30d vs prior 30d.
+   * Prefer this over momGrowthPct when showing anything to a client: raw
+   * growth is inflated by how much we happened to scrape (see
+   * services/share-of-voice.ts). Null when there is no prior-window history.
+   */
+  sovGrowthPct: number | null;
   title: string;
   state: string;
   signalStrength: number;
@@ -1743,21 +1796,64 @@ export interface EnrichedTrend {
   yoyCurrent: number | null;
   yoyPrior: number | null;
   platforms: string[];
+  /**
+   * Mentions in the last 30 days. Kept as the default so existing callers and
+   * the trend-detail page keep agreeing (services/evidence-window.ts) — it is
+   * exactly volume30d, verified equal on all 135 live rows.
+   */
   evidenceCount: number;
+  /**
+   * The state machine computes all three windows per entity, so the Trends list
+   * can offer a real choice rather than relabelling one number. Every value
+   * here is precomputed and distinct — do NOT add a window the state machine
+   * does not actually calculate.
+   */
+  evidenceByWindow: { 7: number; 30: number; 90: number };
   geography: string;
   territoryTag: string | null;
   summary: string | null;
   description: string | null;
   topicLabel: string | null;
   updatedAt: string;
+  // True when no configured seed keyword/hashtag/topic-label went looking for
+  // this trend's title — it was surfaced by extraction reading real posts
+  // rather than by a query we wrote. See services/discovery-origin.ts.
+  discovered: boolean;
+  // The watch topic (e.g. "Sauces and dipping in Latin America") of whichever
+  // seed term matched this trend, or null when no seed term matched (a
+  // genuine discovery) or the matching scout query predates the watch-topic
+  // column. Null groups under "Uncategorised" in the UI — never hidden.
+  watchTopic: string | null;
+  // The matching scout query's own topicLabel (e.g. "Avocado sauces MX") —
+  // the "search term" facet under a watch topic. Deliberately NOT the same
+  // as `topicLabel` above: that field is the trend's own entity label
+  // (always equal to `title`, set in state-machine.ts), not the seed that
+  // found it. Null under the same conditions as `watchTopic`.
+  searchTerm: string | null;
 }
 
 export type TrendSortBy =
   | "signal"
   | "wow"
   | "momGrowthPct"
+  | "sov"
   | "yoyGrowthPct"
   | "evidence";
+
+/**
+ * Windows the Evidence column can show. These are exactly the windows the state
+ * machine precomputes onto tp_entity_state (volume7d/30d/90d) — the list must
+ * never offer a window it would have to invent.
+ */
+export const EVIDENCE_WINDOWS = [7, 30, 90] as const;
+export type EvidenceWindow = (typeof EVIDENCE_WINDOWS)[number];
+
+export function parseEvidenceWindow(raw: unknown): EvidenceWindow {
+  const n = Number(raw);
+  return (EVIDENCE_WINDOWS as readonly number[]).includes(n)
+    ? (n as EvidenceWindow)
+    : 30;
+}
 
 /**
  * Build a case-insensitive matcher against the company's core-vocabulary
@@ -1781,9 +1877,88 @@ async function getCoreVocabularyMatcher(
   return (s) => !!s && set.has(s.trim().toLowerCase());
 }
 
+/**
+ * Load the company's seed vocabulary — every keyword, hashtag, and topic
+ * label from its scout queries — normalized into a single flat set for
+ * `wasSearchedFor` matching. This is the "what did we go looking for" side
+ * of the discovered-vs-searched-for classification surfaced on the trends
+ * radar (see services/discovery-origin.ts).
+ *
+ * Also builds `termToSeed`, a normalized-term → {watchTopic, searchTerm} map,
+ * from the same rows (one query, no second round trip). Scout queries
+ * created before the watch-topic column existed simply have
+ * `watchTopic: null`; their terms still land in `seedTerms` (and get a
+ * `searchTerm`, since topicLabel is NOT NULL), they just resolve to no watch
+ * topic via `resolveSeedMatch` — the intended "Uncategorised" fallback
+ * rather than a bug.
+ *
+ * DETERMINISM: a term (e.g. "salsa verde", "maionese", "tofu") can appear in
+ * keywords/hashtags across MULTIPLE scout queries that carry different
+ * topicLabel/watchTopic — company 2's live vocabulary has several of these.
+ * `termToSeed` is first-wins (`!termToSeed.has(t)`), so which query "owns"
+ * a shared term depends entirely on iteration order. The explicit
+ * `.orderBy(asc(tpScoutQueries.id))` below pins that order to ascending
+ * scout-query id — i.e. **the earliest-created scout query that contains a
+ * given term wins its watch topic and search term, every time**. Without
+ * this ORDER BY, Postgres row order (and therefore a trend's displayed
+ * group) is unspecified and can change between requests.
+ */
+async function getSeedVocabulary(
+  companyId: number
+): Promise<{ seedTerms: Set<string>; termToSeed: Map<string, SeedMatch> }> {
+  const seedRows = await db
+    .select({
+      keywords: tpScoutQueries.keywords,
+      hashtags: tpScoutQueries.hashtags,
+      topicLabel: tpScoutQueries.topicLabel,
+      watchTopic: tpScoutQueries.watchTopic,
+    })
+    .from(tpScoutQueries)
+    .where(eq(tpScoutQueries.companyId, companyId))
+    .orderBy(asc(tpScoutQueries.id));
+
+  const seedTerms = new Set<string>();
+  const termToSeed = new Map<string, SeedMatch>();
+  for (const r of seedRows) {
+    const terms: string[] = [];
+    for (const k of r.keywords ?? []) terms.push(normalizeTerm(String(k)));
+    for (const h of r.hashtags ?? []) terms.push(normalizeTerm(String(h)));
+    if (r.topicLabel) terms.push(normalizeTerm(r.topicLabel));
+
+    for (const t of terms) {
+      seedTerms.add(t);
+      // First-wins by ascending scout-query id (see DETERMINISM note above).
+      if (!termToSeed.has(t)) {
+        termToSeed.set(t, { watchTopic: r.watchTopic ?? null, searchTerm: r.topicLabel });
+      }
+    }
+  }
+  return { seedTerms, termToSeed };
+}
+
+// Entity types a client may not want on a trend radar by default. These are
+// not products: `dietary_claim` is a claim ("gluten free", "healthy"),
+// `occasion` is a date ("graduation", "gifting"). Jonathan's standing
+// complaint has been that surfaced items are "too generic to be interesting" —
+// twice now, on gummy bears and again on category-level ingredients — and both
+// times the response was to guess at a specificity threshold. This exposes the
+// axis instead of guessing: the caller chooses which kinds of thing to see.
+//
+// NOTHING IS EXCLUDED BY DEFAULT. Omitting the filter returns exactly what the
+// radar returned before, so this cannot silently change what a client sees.
+export const NON_PRODUCT_ENTITY_TYPES = ["dietary_claim", "occasion"] as const;
+
 export async function getTrendsEnriched(
   companyId: number,
-  filters?: { archived?: boolean; sortBy?: TrendSortBy; sortDir?: SortDir }
+  filters?: {
+    archived?: boolean;
+    sortBy?: TrendSortBy;
+    sortDir?: SortDir;
+    // Allow-list of tp_entities.entity_type values. Undefined = no filtering.
+    entityTypes?: string[];
+    /** Which precomputed volume window the Evidence column shows and sorts by. */
+    evidenceWindow?: EvidenceWindow;
+  }
 ): Promise<EnrichedTrend[]> {
   const conditions = [
     eq(tpEntityState.companyId, companyId),
@@ -1795,6 +1970,7 @@ export async function getTrendsEnriched(
     .select({
       ki: knowledgeItems,
       es: tpEntityState,
+      entityType: tpEntities.entityType,
     })
     .from(tpEntityState)
     .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
@@ -1807,39 +1983,77 @@ export async function getTrendsEnriched(
   // from the radar immediately — without needing to re-run the state machine
   // or wait for them to time out into dormant.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+  // Computed at read time rather than stored on tp_entity_state: it needs no
+  // schema change and no 100-minute state-machine recompute to take effect,
+  // and it is a presentation concern, not a state transition.
+  const sov = await fetchShareOfVoice(companyId);
+
+  // Signal strength is recomputed, not read from the stored column, and the
+  // computation lives in services/signal-strength.ts so the list and the
+  // detail page cannot disagree. See that module for why the stored value is
+  // unusable.
+  const signalPct = await fetchSignalPercentiles(companyId);
 
   const mapped = rows
     .filter((r) =>
       filters?.archived === undefined ? !r.ki.archived : r.ki.archived === filters.archived
     )
     .filter((r) => !isCoreVocab(r.ki.title) && !isCoreVocab(r.ki.topicLabel))
-    .map((r) => ({
-      id: r.ki.id,
-      title: r.ki.title,
-      state: r.es.state,
-      signalStrength: r.ki.signalStrength ?? 0,
-      wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
-      momGrowthPct:
-        r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
-      yoyGrowthPct:
-        r.es.yoyGrowthPct == null ? null : Math.round(r.es.yoyGrowthPct * 1000) / 10,
-      momCurrent: r.es.momCurrent ?? null,
-      momPrior: r.es.momPrior ?? null,
-      yoyCurrent: r.es.yoyCurrent ?? null,
-      yoyPrior: r.es.yoyPrior ?? null,
-      platforms: r.es.platformsSeen ?? [],
-      evidenceCount: r.ki.evidenceCount ?? 0,
-      geography: r.es.geography,
-      territoryTag: r.es.territoryTag ?? null,
-      summary: r.ki.summary ?? null,
-      description: r.ki.description ?? null,
-      topicLabel: r.ki.topicLabel ?? null,
-      updatedAt: r.ki.updatedAt.toISOString(),
-    }));
+    // Entity-type allow-list. Applied at the radar layer, like the core-vocab
+    // stoplist above, so toggling it takes effect immediately without
+    // re-running the state machine or re-scraping anything.
+    .filter((r) =>
+      !filters?.entityTypes || filters.entityTypes.length === 0
+        ? true
+        : filters.entityTypes.includes(r.entityType ?? "other")
+    )
+    .map((r) => {
+      const seedMatch = resolveSeedMatch(r.ki.title ?? "", seedTerms, termToSeed);
+      return {
+        id: r.ki.id,
+        sovGrowthPct: (() => {
+          const v = sov.get(r.es.entityId)?.growthPct;
+          return v == null ? null : Math.round(v * 10) / 10;
+        })(),
+        title: r.ki.title,
+        state: r.es.state,
+        signalStrength: signalPct.get(r.es.entityId) ?? 0,
+        wowGrowthPct: Math.round(r.es.growthWow * 1000) / 10,
+        momGrowthPct:
+          r.es.momGrowthPct == null ? null : Math.round(r.es.momGrowthPct * 1000) / 10,
+        yoyGrowthPct:
+          r.es.yoyGrowthPct == null ? null : Math.round(r.es.yoyGrowthPct * 1000) / 10,
+        momCurrent: r.es.momCurrent ?? null,
+        momPrior: r.es.momPrior ?? null,
+        yoyCurrent: r.es.yoyCurrent ?? null,
+        yoyPrior: r.es.yoyPrior ?? null,
+        platforms: r.es.platformsSeen ?? [],
+        evidenceCount: r.ki.evidenceCount ?? 0,
+        evidenceByWindow: {
+          7: r.es.volume7d ?? 0,
+          30: r.es.volume30d ?? 0,
+          90: r.es.volume90d ?? 0,
+        },
+        discovered: !wasSearchedFor(r.ki.title ?? "", seedTerms),
+        watchTopic: seedMatch.watchTopic,
+        searchTerm: seedMatch.searchTerm,
+        geography: r.es.geography,
+        territoryTag: r.es.territoryTag ?? null,
+        summary: r.ki.summary ?? null,
+        description: r.ki.description ?? null,
+        topicLabel: r.ki.topicLabel ?? null,
+        // Surfaced so the UI can show WHY something is on the radar and offer
+        // the filter — an ingredient, a brand, a format, a claim.
+        entityType: r.entityType ?? "other",
+        updatedAt: r.ki.updatedAt.toISOString(),
+      };
+    });
 
   const sortBy = filters?.sortBy ?? "signal";
   const dir = filters?.sortDir ?? "desc";
   const mul = dir === "asc" ? 1 : -1;
+  const evidenceWindow = filters?.evidenceWindow ?? 30;
   // Nulls always sort last regardless of direction. In desc (mul=-1) the
   // largest value comes first, so a null must compare as the smallest
   // (-Infinity). In asc (mul=+1) the smallest comes first, so null must
@@ -1851,8 +2065,19 @@ export async function getTrendsEnriched(
     switch (sortBy) {
       case "wow":          av = a.wowGrowthPct;        bv = b.wowGrowthPct;        break;
       case "momGrowthPct": av = key(a.momGrowthPct);   bv = key(b.momGrowthPct);   break;
+      // Share-of-voice is the honest growth measure (see
+      // services/share-of-voice.ts). Nulls sort last via key(), so items
+      // without enough cross-platform evidence never lead the radar.
+      case "sov":          av = key(a.sovGrowthPct);    bv = key(b.sovGrowthPct);    break;
       case "yoyGrowthPct": av = key(a.yoyGrowthPct);   bv = key(b.yoyGrowthPct);   break;
-      case "evidence":     av = a.evidenceCount;       bv = b.evidenceCount;       break;
+      // Sort by the SAME window the list is displaying. If this stayed pinned
+      // to 30d, picking 7d or 90d would reorder nothing and the column would
+      // appear unsorted — the number on screen and the ordering must come from
+      // one source.
+      case "evidence":
+        av = a.evidenceByWindow[evidenceWindow];
+        bv = b.evidenceByWindow[evidenceWindow];
+        break;
       case "signal":
       default:             av = a.signalStrength;      bv = b.signalStrength;      break;
     }
@@ -1884,6 +2109,14 @@ export interface TrendConfirmationVerdict {
   significanceP: number;
   entropyBits: number;
   evaluatedAt: string;
+  /**
+   * The thresholds this verdict was judged against. Sent because they are now
+   * PER-COMPANY config (gateMinSourceEntropyBits), and the UI was hardcoding
+   * 1.0 bits to decide whether to render the chip as passed. Set a company to
+   * 0.5 and an entity at 0.7 bits would clear the real gate while the page drew
+   * it as failed — the reporter disagreeing with the engine.
+   */
+  thresholds: { minSourceEntropyBits: number; significanceAlpha: number };
 }
 
 export interface TrendSpecificityVerdict {
@@ -1904,6 +2137,9 @@ export async function getTrendDetail(
       volume30d: number;
       confirmationVerdict: TrendConfirmationVerdict | null;
       specificityVerdict: TrendSpecificityVerdict | null;
+      evidenceRecentCount: number;
+      evidenceWindowDays: number;
+      evidenceTotalCount: number;
     })
   | null
 > {
@@ -1913,16 +2149,29 @@ export async function getTrendDetail(
   ];
 
   const rows = await db
-    .select({ ki: knowledgeItems, es: tpEntityState })
+    .select({ ki: knowledgeItems, es: tpEntityState, entityDeletedAt: tpEntities.deletedAt, entityType: tpEntities.entityType })
     .from(tpEntityState)
     .innerJoin(knowledgeItems, eq(tpEntityState.knowledgeItemId, knowledgeItems.id))
+    .innerJoin(tpEntities, eq(tpEntityState.entityId, tpEntities.id))
     .where(and(...conditions))
     .limit(1);
+
+  // A soft-deleted entity (see scripts/merge-dangling-modifiers.ts) must not
+  // still be servable here — getTrendsEnriched already excludes it from the
+  // list, and without this guard the detail route kept serving it forever
+  // (nothing archives/ages it out once hidden from the list). Checked here,
+  // rather than filtered into the WHERE above, so a deleted entity returns
+  // null outright instead of silently falling through to the stateless
+  // knowledge-item fallback below.
+  if (rows.length > 0 && rows[0]!.entityDeletedAt != null) return null;
 
   // Apply the per-company core-vocabulary stoplist so that detail/timeseries
   // surfaces stay consistent with the list endpoint — a bookmarked trend whose
   // label is in the company's stoplist becomes a 404.
   const isCoreVocab = await getCoreVocabularyMatcher(companyId);
+  const { seedTerms, termToSeed } = await getSeedVocabulary(companyId);
+  // Needed to stamp the gate thresholds onto the verdict below.
+  const gateCfg = gateConfigFromPipeline(await getPipelineConfig(companyId));
 
   if (rows.length === 0) {
     // Fall back to plain knowledge item lookup
@@ -1932,8 +2181,14 @@ export async function getTrendDetail(
     if (kiRows.length === 0) return null;
     const ki = kiRows[0]!;
     if (isCoreVocab(ki.title) || isCoreVocab(ki.topicLabel)) return null;
+    const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
     return {
       id: ki.id,
+      // No entity row in this fallback path, so the type is genuinely unknown
+      // rather than "other" — but the field is required, and "other" is the
+      // schema's own bucket for unclassified.
+      entityType: "other",
+      sovGrowthPct: null,
       title: ki.title,
       state: "candidate",
       signalStrength: ki.signalStrength ?? 0,
@@ -1947,6 +2202,9 @@ export async function getTrendDetail(
       yoyPrior: null,
       platforms: [],
       evidenceCount: ki.evidenceCount ?? 0,
+      discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
+      watchTopic: seedMatch.watchTopic,
+      searchTerm: seedMatch.searchTerm,
       geography: ki.geographicScope ?? "Global",
       territoryTag: null,
       summary: ki.summary ?? null,
@@ -1958,6 +2216,14 @@ export async function getTrendDetail(
       confirmationVerdict: null,
       specificityVerdict: null,
       evidence: [],
+      evidenceRecentCount: recentEvidenceCount(ki.evidenceCount),
+      evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+      // No entity-state row on this fallback path, so the per-window volumes
+      // genuinely do not exist. Report the 30d count under 30 (same metric)
+      // and zero elsewhere rather than repeating it under every window, which
+      // would claim 7d and 90d data we do not have.
+      evidenceByWindow: { 7: 0, 30: recentEvidenceCount(ki.evidenceCount), 90: 0 },
+      evidenceTotalCount: 0,
     };
   }
 
@@ -1978,8 +2244,29 @@ export async function getTrendDetail(
         eq(tpRawSignals.companyId, companyId)
       )
     )
-    .orderBy(desc(tpRawSignals.capturedAt))
+    // Order by when the post was PUBLISHED, not when we captured it. Every row
+    // from a single sweep shares roughly the same capturedAt, so ordering on it
+    // is effectively arbitrary — which is why a 2021 YouTube video was showing
+    // in the top 20 directly beneath a headline reading "201 in the last 30
+    // days". Nulls last so undated rows sink rather than lead.
+    .orderBy(sql`${tpRawSignals.postedAt} desc nulls last`, desc(tpRawSignals.capturedAt))
     .limit(20);
+
+  // Real total, not the length of the capped list above (limit 20) — the UI
+  // was rendering that capped length as "all time", which is simply false for
+  // any entity with more than 20 pieces of evidence (see storage/index.ts
+  // getTrendDetail review note: vitamin d3 showed "20 all time" vs a true 48).
+  const evidenceTotalRows = await db
+    .select({ total: count() })
+    .from(tpSignalEntities)
+    .innerJoin(tpRawSignals, eq(tpSignalEntities.rawSignalId, tpRawSignals.id))
+    .where(
+      and(
+        eq(tpSignalEntities.entityId, es.entityId),
+        eq(tpRawSignals.companyId, companyId)
+      )
+    );
+  const evidenceTotalCount = evidenceTotalRows[0]?.total ?? 0;
 
   const evidence: TrendEvidence[] = evidenceRows.map((r) => ({
     id: r.sig.id,
@@ -1996,11 +2283,27 @@ export async function getTrendDetail(
     excerpt: r.sig.text?.slice(0, 300) ?? null,
   }));
 
+  // Sourced from ki.evidenceCount — the exact same column the Trends list
+  // "Evidence (30d)" cell renders for this knowledge item — not from counting
+  // `evidenceRows`, which the query above caps at 20. See
+  // services/evidence-window.ts:recentEvidenceCount for why.
+  const evidenceRecentCount = recentEvidenceCount(ki.evidenceCount);
+  const seedMatch = resolveSeedMatch(ki.title ?? "", seedTerms, termToSeed);
+
+  const detailSov = await fetchShareOfVoice(companyId);
+  // Same source as the list — otherwise the detail page showed the stored
+  // (saturated) score and contradicted the list one click apart.
+  const detailSignalPct = await fetchSignalPercentiles(companyId);
   return {
     id: ki.id,
+    entityType: rows[0]!.entityType ?? "other",
+    sovGrowthPct: (() => {
+      const v = detailSov.get(es.entityId)?.growthPct;
+      return v == null ? null : Math.round(v * 10) / 10;
+    })(),
     title: ki.title,
     state: es.state,
-    signalStrength: ki.signalStrength ?? 0,
+    signalStrength: detailSignalPct.get(es.entityId) ?? 0,
     wowGrowthPct: Math.round(es.growthWow * 1000) / 10,
     growthMomPct: Math.round(es.growthMom * 1000) / 10,
     momGrowthPct:
@@ -2013,6 +2316,9 @@ export async function getTrendDetail(
     yoyPrior: es.yoyPrior ?? null,
     platforms: es.platformsSeen ?? [],
     evidenceCount: ki.evidenceCount ?? 0,
+    discovered: !wasSearchedFor(ki.title ?? "", seedTerms),
+    watchTopic: seedMatch.watchTopic,
+    searchTerm: seedMatch.searchTerm,
     geography: es.geography,
     territoryTag: es.territoryTag ?? null,
     summary: ki.summary ?? null,
@@ -2021,9 +2327,27 @@ export async function getTrendDetail(
     updatedAt: ki.updatedAt.toISOString(),
     volume7d: es.volume7d,
     volume30d: es.volume30d,
-    confirmationVerdict: es.confirmationVerdict ?? null,
+    // Stamp the thresholds this company is actually judged against, so the
+    // detail page can render pass/fail without hardcoding 1.0 bits.
+    confirmationVerdict: es.confirmationVerdict
+      ? {
+          ...(es.confirmationVerdict as unknown as Omit<TrendConfirmationVerdict, "thresholds">),
+          thresholds: {
+            minSourceEntropyBits: gateCfg.minSourceEntropyBits,
+            significanceAlpha: gateCfg.significanceAlpha,
+          },
+        }
+      : null,
     specificityVerdict: es.specificityVerdict ?? null,
     evidence,
+    evidenceRecentCount,
+    evidenceWindowDays: EVIDENCE_WINDOW_DAYS,
+    evidenceByWindow: {
+      7: es.volume7d ?? 0,
+      30: es.volume30d ?? 0,
+      90: es.volume90d ?? 0,
+    },
+    evidenceTotalCount,
   };
 }
 
@@ -2155,10 +2479,21 @@ export interface PipelineRunStatus {
     lastComputedAt: string | null;
   };
   stateMachine: {
+    /** Entities with a timeseries bucket inside the state machine's window — the set it will actually process. */
     activeEntities: number;
+    /** Every non-deleted entity, all time. activeEntities is a subset. */
+    totalEntities: number;
+    windowDays: number;
     lastComputedAt: string | null;
   };
 }
+
+// The per-entity timeseries window the state machine reads. An entity with no
+// bucket inside it is skipped entirely, so this is what decides whether an
+// entity is "active". Lives here rather than in state-machine.ts because
+// state-machine.ts already imports storage, and the count below must use the
+// SAME number the machine does — if these drift, the card starts lying again.
+export const STATE_MACHINE_WINDOW_DAYS = 90;
 
 export async function getPipelineRunStatus(
   companyId: number,
@@ -2172,6 +2507,7 @@ export async function getPipelineRunStatus(
     timeseriesWindowRows,
     timeseriesLastRows,
     activeEntityRows,
+    totalEntityRows,
     stateLastRows,
   ] = await Promise.all([
     db
@@ -2213,6 +2549,34 @@ export async function getPipelineRunStatus(
       .where(
         and(eq(tpEntities.companyId, companyId), isNull(tpEntities.deletedAt))
       ),
+    // Entities the state machine will ACTUALLY process. It reads a 90-day
+    // timeseries window per entity and `continue`s when that comes back empty
+    // (services/state-machine.ts), so an entity whose last mention is older
+    // than the window is skipped and never gets a state row.
+    //
+    // This used to be a flat count of every non-deleted entity, which is why
+    // the card read "17,371 active entities" while the table below it listed
+    // 13,042: the card was counting all-time extractions, including 4,329 that
+    // had not been mentioned since May. Neither number was wrong, but "active"
+    // was, and the runtime estimate built on it was ~33% too high.
+    db
+      .select({ cnt: countDistinct(tpEntityTimeseries.entityId) })
+      .from(tpEntityTimeseries)
+      .innerJoin(tpEntities, eq(tpEntityTimeseries.entityId, tpEntities.id))
+      .where(
+        and(
+          eq(tpEntities.companyId, companyId),
+          isNull(tpEntities.deletedAt),
+          gte(
+            tpEntityTimeseries.bucketDate,
+            new Date(Date.now() - STATE_MACHINE_WINDOW_DAYS * 86400 * 1000)
+              .toISOString()
+              .slice(0, 10)
+          )
+        )
+      ),
+    // Every non-deleted entity, all time. Reported alongside the active count
+    // so the two numbers on the page reconcile instead of looking contradictory.
     db
       .select({ cnt: count() })
       .from(tpEntities)
@@ -2255,8 +2619,86 @@ export async function getPipelineRunStatus(
     },
     stateMachine: {
       activeEntities: Number(activeEntityRows[0]?.cnt ?? 0),
+      totalEntities: Number(totalEntityRows[0]?.cnt ?? 0),
+      windowDays: STATE_MACHINE_WINDOW_DAYS,
       lastComputedAt: toIso(stateLastRows[0]?.ts ?? null),
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Control Panel: what each threshold is currently doing to THIS company's data
+// ---------------------------------------------------------------------------
+
+/**
+ * A setting shown as a bare number ("0.30", "9") tells you nothing about
+ * whether it is doing anything. This reports, for each threshold, how many
+ * things currently clear it.
+ *
+ * DELIBERATELY PARTIAL. Only thresholds whose effect can be attributed
+ * EXACTLY to that one setting are included. noiseFloor and
+ * languageConfidenceThreshold are not: signals are dropped at ingestion
+ * without recording which filter rejected them, so any per-knob number would
+ * be a guess. The ingestion figure below is reported once, at section level,
+ * as the combined effect of all ingestion filters — never attributed to a
+ * single knob.
+ */
+export interface ConfigImpact {
+  trackedEntities: number;
+  minVolume: { threshold: number; clearing: number };
+  minWowGrowth: { threshold: number; clearing: number };
+  /** Denominator is entities the GATE has evaluated, not all entities: the gate only runs for surfacing states. */
+  gateBreadth: { threshold: number; clearing: number; evaluated: number };
+  longTailFloor: { threshold: number; clearing: number };
+  /** All ingestion filters combined, not attributable to any single setting. `usable` is counted from the signals table, not the per-run counter. */
+  ingestion: { fetched: number; usable: number };
+}
+
+export async function getConfigImpact(companyId: number): Promise<ConfigImpact> {
+  const cfg = await getPipelineConfig(companyId);
+  const c = cfg as unknown as Record<string, number>;
+  const minVol = cfg.candidateToEmergingMinVolume;
+  const minWow = cfg.candidateToEmergingMinWowGrowth;
+  const minBits = c.gateMinSourceEntropyBits ?? 1.0;
+  const longTailMin = cfg.longTailMinMentions;
+
+  const [rows] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}) AS tracked,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND volume_30d >= ${minVol}) AS clearing_volume,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND growth_wow >= ${minWow}) AS clearing_wow,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND confirmation_verdict IS NOT NULL) AS gate_evaluated,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND confirmation_verdict IS NOT NULL
+           AND (confirmation_verdict->>'entropyBits')::float >= ${minBits}) AS clearing_bits,
+        (SELECT count(*) FROM tp_entity_state WHERE company_id = ${companyId}
+           AND volume_30d >= ${longTailMin}) AS clearing_longtail,
+        (SELECT coalesce(sum(records_fetched), 0) FROM tp_actor_runs WHERE company_id = ${companyId}) AS fetched,
+        -- Counted from the signals table, NOT sum(records_usable). That column
+        -- is 0 on any run whose ingestion was interrupted before its final
+        -- write-back (161 such runs on company 2, holding 23,095 real
+        -- signals), so summing it understates what was kept by roughly half.
+        (SELECT count(*) FROM tp_raw_signals WHERE company_id = ${companyId}) AS usable
+    `),
+  ]);
+  const r = (rows as any).rows[0] ?? {};
+  const n = (v: unknown) => Number(v ?? 0);
+
+  return {
+    trackedEntities: n(r.tracked),
+    minVolume: { threshold: minVol, clearing: n(r.clearing_volume) },
+    minWowGrowth: { threshold: minWow, clearing: n(r.clearing_wow) },
+    gateBreadth: {
+      threshold: minBits,
+      clearing: n(r.clearing_bits),
+      evaluated: n(r.gate_evaluated),
+    },
+    longTailFloor: { threshold: longTailMin, clearing: n(r.clearing_longtail) },
+    ingestion: { fetched: n(r.fetched), usable: n(r.usable) },
   };
 }
 

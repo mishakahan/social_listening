@@ -8,6 +8,8 @@ import {
 import { and, eq, gte, isNull, lte, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { getPipelineConfig } from "../storage/index.js";
+import { isWellFormed } from "./well-formedness.js";
+import { judgeSpecificityBatch, type SpecificityResult } from "./specificity.js";
 
 // ---------------------------------------------------------------------------
 // Long-tail Bayesian uplift evaluator (Task #2).
@@ -32,13 +34,218 @@ import { getPipelineConfig } from "../storage/index.js";
 // via Lanczos lnGamma + Numerical-Recipes continued fraction; numerically
 // stable for small integer counts and far cheaper than sampling).
 //
-// Qualifying entities (>= longTailMinMentions current AND posterior >=
-// longTailMinPosterior AND not in core_vocabulary) get a fresh row in
+// Qualifying entities (>= longTailMinMentions current AND < the volume
+// ceiling AND well-formed AND posterior >= longTailMinPosterior AND not in
+// core_vocabulary AND judged specific) get a fresh row in
 // tp_long_tail_candidates tagged with the run's computedAt. Rows from
 // prior runs for this company are deleted at the end of the run — the
 // table is effectively a "current snapshot" with the unique index allowing
 // a brief window of co-existence during the transaction.
+//
+// FILTER ORDER — cheapest first, so an entity that would be rejected anyway
+// never spends a paid OpenAI call:
+//   1. mention floor        (>= longTailMinMentions)
+//   2. volume ceiling       (< the company's own percentile ceiling — see
+//                            LONG_TAIL_VOLUME_CEILING_PERCENTILE below)
+//   3. core vocabulary      (bare exact-match against the company blocklist)
+//   4. well-formedness      (pure, deterministic — well-formedness.ts)
+//   5. Bayesian posterior   (>= longTailMinPosterior; still just arithmetic)
+//   6. specificity          (LLM, last — specificity.ts, batched per run)
+// This mirrors the ordering state-machine.ts uses for the confirmation gate,
+// where well-formedness gates the specificity call.
+//
+// -----------------------------------------------------------------------
+// WHY A VOLUME CEILING (added 2026-08 after a client asked "are we using
+// this page?"): the lane had a floor but no ceiling, so with no upper bound
+// the HIGHEST-volume entities in the company's vocabulary qualified — the
+// opposite of "long tail". On company 2 (Fast Food) the top candidates by
+// current-30d mentions were café (83), aguacate (65), ajo (42), sal (27),
+// pollo (34), huevo (25) — salt, chicken, egg, avocado. Those are staples,
+// not an emerging long tail.
+//
+// The ceiling is derived from each company's OWN distribution (a percentile)
+// rather than a hardcoded absolute mention count, because companies differ
+// wildly in scale: verified against real data (2026-08), among entities that
+// already clear longTailMinMentions=5,
+//   company 1 (Leone):     n=279 entities, median=8,  max=221 (gummy)
+//   company 2 (Fast Food): n=119 entities, median=7,  max=83  (café)
+// A single absolute cutoff could not work for both — e.g. "cap at 20" would
+// exclude almost everything for company 2 (p90=24) while still letting
+// company 1's mid-volume staples (chocolate=87, probiotic=68, vegan=61)
+// through. The default percentile is 50 (the median): at that line company
+// 2's offenders above are all well clear of the ceiling and get excluded,
+// while the surviving half is dominated by single-digit (5-7 mention)
+// entities — an actual long tail. Env-configurable
+// (LONG_TAIL_VOLUME_CEILING_PERCENTILE) per company/deployment in case a
+// company's real long tail sits at a different point in its own
+// distribution.
 // ---------------------------------------------------------------------------
+
+// Percentile (0-100) of the current-30d mention-count distribution, among
+// entities that already clear longTailMinMentions, used as the upper volume
+// bound. Default 50 = median; see the reasoning block above for why a
+// percentile beats a hardcoded absolute here.
+export const LONG_TAIL_VOLUME_CEILING_PERCENTILE =
+  Number(process.env.LONG_TAIL_VOLUME_CEILING_PERCENTILE ?? "50") || 50;
+
+/**
+ * Percentile-rank (nearest-rank method) of a set of current-30d mention
+ * counts. Pure and re-computed fresh every run from the company's own
+ * above-floor entities, not a cross-company constant. Returns null when
+ * there is nothing to compute a ceiling from (no entities clear the floor).
+ */
+export function computeVolumeCeiling(
+  mentionCounts: number[],
+  percentile: number
+): number | null {
+  if (mentionCounts.length === 0) return null;
+  const sorted = [...mentionCounts].sort((a, b) => a - b);
+  const clampedPct = Math.min(100, Math.max(0, percentile));
+  const idx = Math.min(sorted.length - 1, Math.floor((clampedPct / 100) * sorted.length));
+  return sorted[idx]!;
+}
+
+// ---------------------------------------------------------------------------
+// Pure selection pass (testable without DB or LLM I/O). Applies every filter
+// EXCEPT specificity, which needs a (batched) OpenAI call and stays in
+// runLongTailEvaluation below so this function can be unit tested cheaply.
+// ---------------------------------------------------------------------------
+
+export interface EntityVolumeRow {
+  entityId: number;
+  canonicalLabel: string;
+  currentMentions: number;
+  priorMentions: number;
+  yoyMentions: number;
+}
+
+export interface LongTailSpecificityCandidate {
+  entityId: number;
+  canonicalLabel: string;
+  currentMentions: number;
+  baselineMentions: number;
+  baselineKind: string;
+  upliftScore: number;
+  posteriorProb: number;
+}
+
+export interface LongTailSelectionConfig {
+  minMentions: number;
+  minPosterior: number;
+  /** lowercased, trimmed labels */
+  coreVocabulary: Set<string>;
+  volumeCeilingPercentile: number;
+}
+
+export interface LongTailSelectionStats {
+  evaluated: number;
+  filteredBelowFloor: number;
+  volumeCeiling: number | null;
+  filteredAboveCeiling: number;
+  filteredCoreVocab: number;
+  filteredMalformed: number;
+  filteredNoBaseline: number;
+  filteredLowPosterior: number;
+  candidatesForSpecificity: number;
+}
+
+export interface LongTailSelectionResult {
+  candidates: LongTailSpecificityCandidate[];
+  stats: LongTailSelectionStats;
+}
+
+export function selectLongTailCandidates(
+  rows: EntityVolumeRow[],
+  cfg: LongTailSelectionConfig
+): LongTailSelectionResult {
+  const stats: LongTailSelectionStats = {
+    evaluated: rows.length,
+    filteredBelowFloor: 0,
+    volumeCeiling: null,
+    filteredAboveCeiling: 0,
+    filteredCoreVocab: 0,
+    filteredMalformed: 0,
+    filteredNoBaseline: 0,
+    filteredLowPosterior: 0,
+    candidatesForSpecificity: 0,
+  };
+
+  // Stage 1: mention floor.
+  const aboveFloor = rows.filter((r) => r.currentMentions >= cfg.minMentions);
+  stats.filteredBelowFloor = rows.length - aboveFloor.length;
+
+  // Stage 2: volume ceiling, computed from the above-floor set itself (the
+  // company's own long-tail-eligible distribution), not the whole
+  // vocabulary — the whole vocabulary includes a mass of near-zero entities
+  // that would drag any percentile down to nothing.
+  const ceiling = computeVolumeCeiling(
+    aboveFloor.map((r) => r.currentMentions),
+    cfg.volumeCeilingPercentile
+  );
+  stats.volumeCeiling = ceiling;
+
+  const candidates: LongTailSpecificityCandidate[] = [];
+
+  for (const r of aboveFloor) {
+    // Strictly BELOW the ceiling: with small integer mention counts, ties
+    // sitting exactly at the percentile boundary are common, and "below the
+    // median" should mean the bottom half, not the bottom half plus every
+    // entity tied with the median.
+    if (ceiling !== null && r.currentMentions >= ceiling) {
+      stats.filteredAboveCeiling++;
+      continue;
+    }
+
+    // Stage 3: core vocabulary. Matches the same "bare exact match" rule
+    // used at extraction time and in the radar list filter.
+    if (cfg.coreVocabulary.has(r.canonicalLabel.trim().toLowerCase())) {
+      stats.filteredCoreVocab++;
+      continue;
+    }
+
+    // Stage 4: well-formedness (pure, deterministic, free).
+    const wellFormed = isWellFormed(r.canonicalLabel);
+    if (!wellFormed.wellFormed) {
+      stats.filteredMalformed++;
+      continue;
+    }
+
+    // Stage 5: Bayesian posterior uplift. Prefer YoY baseline when the
+    // prior-year window has any data; otherwise fall back to the
+    // immediately preceding 30d. If neither window has any data, the
+    // entity is brand-new — we can't estimate uplift against nothing, so
+    // skip rather than report a misleading +infinity.
+    let baseline = r.yoyMentions;
+    let baselineKind = "yoy";
+    if (baseline === 0) {
+      baseline = r.priorMentions;
+      baselineKind = "prior_window";
+    }
+    if (baseline === 0) {
+      stats.filteredNoBaseline++;
+      continue;
+    }
+
+    const posteriorProb = bayesianUpliftPosterior(r.currentMentions, baseline);
+    if (posteriorProb < cfg.minPosterior) {
+      stats.filteredLowPosterior++;
+      continue;
+    }
+
+    candidates.push({
+      entityId: r.entityId,
+      canonicalLabel: r.canonicalLabel,
+      currentMentions: r.currentMentions,
+      baselineMentions: baseline,
+      baselineKind,
+      upliftScore: r.currentMentions / Math.max(baseline, 1),
+      posteriorProb,
+    });
+  }
+
+  stats.candidatesForSpecificity = candidates.length;
+  return { candidates, stats };
+}
 
 // Lanczos approximation of log Gamma. Standard 6-term coefficients; accurate
 // to ~1e-10 for x > 0 which is more than enough for our integer-counts use.
@@ -143,9 +350,44 @@ function toDateStr(d: Date): string {
 export interface LongTailRunStats {
   evaluated: number;
   qualified: number;
+  filteredBelowFloor: number;
+  volumeCeiling: number | null;
+  filteredAboveCeiling: number;
   filteredCoreVocab: number;
+  filteredMalformed: number;
+  filteredNoBaseline: number;
+  filteredLowPosterior: number;
+  filteredNotSpecific: number;
   windowStart: string;
   windowEnd: string;
+}
+
+// Terms per judgeSpecificityBatch call. That prompt is only ever exercised
+// with a single term in production today (state-machine.ts judges one entity
+// at a time), so a long-tail run — which can hand it dozens of surviving
+// candidates in one pass — chunks rather than sending an unbounded prompt.
+// A failed chunk keeps its terms by default (interpretSpecificityVerdict's
+// own "never silently drop on error" rule, applied at the chunk level too)
+// and does not abort the rest of the run.
+const SPECIFICITY_CHUNK_SIZE = 20;
+
+async function judgeSpecificityChunked(
+  labels: string[]
+): Promise<Map<string, SpecificityResult>> {
+  const out = new Map<string, SpecificityResult>();
+  for (let i = 0; i < labels.length; i += SPECIFICITY_CHUNK_SIZE) {
+    const chunk = labels.slice(i, i + SPECIFICITY_CHUNK_SIZE);
+    try {
+      const judged = await judgeSpecificityBatch(chunk);
+      for (const [k, v] of judged) out.set(k, v);
+    } catch (e) {
+      logger.warn(
+        { err: e, chunk },
+        "long-tail specificity judge failed for a batch — keeping those candidates by default"
+      );
+    }
+  }
+  return out;
 }
 
 /**
@@ -209,6 +451,36 @@ export async function runLongTailEvaluation(
     .groupBy(tpEntityTimeseries.entityId, tpEntities.canonicalLabel);
 
   const computedAt = new Date();
+
+  // Stages 1-5 (mention floor, volume ceiling, core vocabulary,
+  // well-formedness, Bayesian posterior) — pure, no I/O, fully unit tested
+  // in long-tail.test.ts.
+  const selection = selectLongTailCandidates(
+    rows.map((r) => ({
+      entityId: r.entityId,
+      canonicalLabel: r.canonicalLabel,
+      currentMentions: Number(r.currentMentions) || 0,
+      priorMentions: Number(r.priorMentions) || 0,
+      yoyMentions: Number(r.yoyMentions) || 0,
+    })),
+    {
+      minMentions,
+      minPosterior,
+      coreVocabulary: coreVocab,
+      volumeCeilingPercentile: LONG_TAIL_VOLUME_CEILING_PERCENTILE,
+    }
+  );
+
+  // Stage 6: specificity — the one LLM call, last, and only ever asked about
+  // the (usually small) set of candidates that survived every free filter
+  // above. Reuses judgeSpecificityBatch (the tuned two-axis prompt with its
+  // own eval suite) rather than a second relevance-scoring implementation.
+  const specificityMap =
+    selection.candidates.length > 0
+      ? await judgeSpecificityChunked(selection.candidates.map((c) => c.canonicalLabel))
+      : new Map<string, SpecificityResult>();
+
+  let filteredNotSpecific = 0;
   const qualifyingInserts: Array<{
     companyId: number;
     entityId: number;
@@ -222,49 +494,26 @@ export async function runLongTailEvaluation(
     computedAt: Date;
   }> = [];
 
-  let filteredCoreVocab = 0;
-
-  for (const r of rows) {
-    const current = Number(r.currentMentions) || 0;
-    if (current < minMentions) continue;
-
-    // Skip if the entity's canonical label is in the company's core vocab.
-    // Matches the same "bare exact match" rule used at extraction time and
-    // in the radar list filter.
-    if (coreVocab.has(r.canonicalLabel.trim().toLowerCase())) {
-      filteredCoreVocab++;
+  for (const c of selection.candidates) {
+    // No verdict (chunk failed, or the model dropped the term) keeps by
+    // default — same "never silently drop on error" rule as
+    // interpretSpecificityVerdict itself.
+    const verdict = specificityMap.get(c.canonicalLabel.toLowerCase());
+    if (verdict && !verdict.specific) {
+      filteredNotSpecific++;
       continue;
     }
 
-    // Prefer YoY baseline when prior-year window has any data; otherwise
-    // fall back to immediately preceding 30d. Tag each row so the UI can
-    // render "vs same 30d last year" vs "vs prior 30d".
-    let baseline = Number(r.yoyMentions) || 0;
-    let baselineKind = "yoy";
-    if (baseline === 0) {
-      baseline = Number(r.priorMentions) || 0;
-      baselineKind = "prior_window";
-    }
-    // If neither window has any data, the entity is brand-new — we can't
-    // estimate uplift against nothing, so skip rather than report a
-    // misleading +infinity.
-    if (baseline === 0) continue;
-
-    const posterior = bayesianUpliftPosterior(current, baseline);
-    if (posterior < minPosterior) continue;
-
-    const upliftScore = current / Math.max(baseline, 1);
-
     qualifyingInserts.push({
       companyId,
-      entityId: r.entityId,
+      entityId: c.entityId,
       windowStart: curStart,
       windowEnd: today,
-      currentMentions: current,
-      baselineMentions: baseline,
-      baselineKind,
-      upliftScore,
-      posteriorProb: posterior,
+      currentMentions: c.currentMentions,
+      baselineMentions: c.baselineMentions,
+      baselineKind: c.baselineKind,
+      upliftScore: c.upliftScore,
+      posteriorProb: c.posteriorProb,
       computedAt,
     });
   }
@@ -288,7 +537,14 @@ export async function runLongTailEvaluation(
   const stats: LongTailRunStats = {
     evaluated: rows.length,
     qualified: qualifyingInserts.length,
-    filteredCoreVocab,
+    filteredBelowFloor: selection.stats.filteredBelowFloor,
+    volumeCeiling: selection.stats.volumeCeiling,
+    filteredAboveCeiling: selection.stats.filteredAboveCeiling,
+    filteredCoreVocab: selection.stats.filteredCoreVocab,
+    filteredMalformed: selection.stats.filteredMalformed,
+    filteredNoBaseline: selection.stats.filteredNoBaseline,
+    filteredLowPosterior: selection.stats.filteredLowPosterior,
+    filteredNotSpecific,
     windowStart: curStart,
     windowEnd: today,
   };

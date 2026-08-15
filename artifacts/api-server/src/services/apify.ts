@@ -76,17 +76,38 @@ const BACKFILL_MONTHS = 6;
 
 // Per-actor result cap. Env-overridable so a cheap verification pass can use a
 // small cap (e.g. 40) before a full-depth run at the default 200.
-const RESULT_CAP = Number(process.env.BACKFILL_RESULT_CAP ?? "200") || 200;
+export const RESULT_CAP = Number(process.env.BACKFILL_RESULT_CAP ?? "200") || 200;
 
 // Instagram is by far the most expensive actor per result (~85% of scrape
 // cost), so it gets its own, smaller cap. Trend detection needs enough posts
 // to measure volume + author diversity, not hundreds. Env-overridable.
-const IG_RESULT_CAP = Number(process.env.IG_RESULT_CAP ?? "40") || 40;
+export const IG_RESULT_CAP = Number(process.env.IG_RESULT_CAP ?? "40") || 40;
 
 // Cap how many hashtag variants we expand to on IG — each variant is a
 // separate (billed) scrape, so we keep this small. Popular tags don't need
 // singular+plural both; this mainly helps sparse/niche tags.
-const IG_MAX_VARIANT_TAGS = Number(process.env.IG_MAX_VARIANT_TAGS ?? "4") || 4;
+export const IG_MAX_VARIANT_TAGS = Number(process.env.IG_MAX_VARIANT_TAGS ?? "4") || 4;
+
+// YouTube gets its OWN result cap, separate from the shared RESULT_CAP.
+//
+// MEASURED 2026-08-07: streamers/youtube-scraper applies `maxResults` PER
+// SEARCH QUERY, not per run. Across all 41 successful YouTube runs in the DB,
+// records_fetched / keyword count is exactly the cap (40.0 at cap 40, 50.0 at
+// cap 50) and cost_usd / keyword count is exactly $0.12 (at cap 40) — i.e.
+// a YouTube run's records, and therefore its cost, are
+// (keywords x cap), not (cap). Company 2's single YouTube run fetched
+// 38 keywords x 40 = 1,520 records and cost $4.56 in tp_actor_runs.cost_usd,
+// which itself undercounts real Apify billing ~4x (~$18 real for ONE run).
+//
+// Letting YouTube inherit the shared RESULT_CAP of 200 therefore multiplies
+// its bill by 5x against the only setting we have ever actually measured.
+// Default 40: the value every measured YouTube run used, and the one that
+// produced this project's best entity yield of any platform (320 distinct
+// entities from a single 38-keyword run). Raise it only alongside a
+// correspondingly lower YOUTUBE_MAX_KEYWORDS — the product of the two is what
+// gets billed.
+export const YOUTUBE_RESULT_CAP =
+  Number(process.env.YOUTUBE_RESULT_CAP ?? "40") || 40;
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -188,7 +209,9 @@ export function buildActorInput(
         searchQueries: kws,
         oldestPostDate: afterDate,
         sortingOrder: "date",
-        maxResults: RESULT_CAP,
+        // Per SEARCH QUERY, not per run — see YOUTUBE_RESULT_CAP above. This
+        // run fetches (kws.length x YOUTUBE_RESULT_CAP) records.
+        maxResults: YOUTUBE_RESULT_CAP,
       };
     }
 

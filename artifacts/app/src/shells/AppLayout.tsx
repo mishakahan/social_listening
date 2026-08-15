@@ -2,6 +2,10 @@ import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
 import {
+  BreadcrumbTitleProvider,
+  useBreadcrumbTitleValue,
+} from "@/hooks/use-breadcrumb-title";
+import {
   LayoutDashboard, Search, ClipboardCheck, PlayCircle, TrendingUp,
   Settings, Radar, ChevronRight, Activity, Tag, Sparkles, Layers,
 } from "lucide-react";
@@ -20,6 +24,16 @@ const navItems = [
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    // Wraps BOTH the breadcrumb and the page: the page publishes its title,
+    // the breadcrumb consumes it, so they must share one provider.
+    <BreadcrumbTitleProvider>
+      <AppLayoutInner>{children}</AppLayoutInner>
+    </BreadcrumbTitleProvider>
+  );
+}
+
+function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
 
   return (
@@ -69,6 +83,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
 function Breadcrumbs({ location }: { location: string }) {
   const parts = location.split("/").filter(Boolean);
+  // Set by whichever detail page is mounted (see usePublishBreadcrumbTitle).
+  const publishedTitle = useBreadcrumbTitleValue();
   const labels: Record<string, string> = {
     radar: "Radar",
     setup: "Setup",
@@ -79,6 +95,8 @@ function Breadcrumbs({ location }: { location: string }) {
     signals: "Signals",
     entities: "Entities",
     trends: "Trends",
+    emerging: "Emerging",
+    attributes: "Attributes",
     "control-panel": "Control Panel",
   };
 
@@ -88,7 +106,13 @@ function Breadcrumbs({ location }: { location: string }) {
         <span key={i} className="flex items-center gap-1">
           {i > 0 && <ChevronRight className="h-3 w-3" />}
           <span className={i === parts.length - 1 ? "text-foreground font-medium" : ""}>
-            {labels[part] ?? part}
+            {/* A bare id is never a useful crumb. When the segment is numeric
+                and it is the last one, prefer the title the page published;
+                fall back to the id only until the record loads. */}
+            {labels[part] ??
+              (i === parts.length - 1 && /^\d+$/.test(part) && publishedTitle
+                ? publishedTitle
+                : part)}
           </span>
         </span>
       ))}

@@ -26,7 +26,13 @@ function isAlreadySingular(w: string): boolean {
   return SINGULAR_ENDING_IN_S.has(w) || /(?:us|is|ss)$/.test(w);
 }
 
-function singularizeWord(word: string): string {
+// Exported for reuse by discovery-origin.ts, which needs the same
+// plural/singular equivalence for single words when matching a trend title
+// against the seed vocabulary. Do not change this function's behavior for
+// that caller's sake — it's also load-bearing for the extraction pipeline's
+// entity canonicalization above, and the isAlreadySingular guard exists
+// specifically to prevent the "citrus" -> "citru" corruption bug.
+export function singularizeWord(word: string): string {
   const w = word;
   if (isAlreadySingular(w)) return w;
   // ...ies -> ...y  (gummies -> gummy, candies -> candy)

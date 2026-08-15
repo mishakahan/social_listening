@@ -5,7 +5,28 @@
 // machine and the Radar knowledge base. It is descriptive and reversible:
 // it only decides pass/hold for surfacing, and never mutates upstream data.
 
+import { z } from "zod";
 import type { TpEntityTimeseries, TpPipelineConfig } from "@workspace/db/schema";
+
+// Validation for the gate's slice of PATCH /pipeline-config.
+//
+// It lives here, next to the semantics it protects, rather than in the route:
+// the route's patch schema is .passthrough(), so anything it does not name
+// reaches the DB unchecked, and these three columns feed the gate directly.
+// Same single-source-of-truth reasoning as services/signal-strength.ts.
+export const gateConfigPatchSchema = z
+  .object({
+    gateEnabled: z.boolean().optional(),
+    // Breadth entropy is Shannon entropy over PLATFORMS weighted by unique
+    // authors, so it is bounded by log2(platform count) ≈ 2.81 bits at the
+    // seven platforms we ingest. Anything above 3 is unreachable: it would
+    // empty the radar rather than tighten it, so it is a typo, not a choice.
+    // 0 is explicitly allowed and means "no entropy floor" — the author-count
+    // floor still applies.
+    gateMinSourceEntropyBits: z.number().min(0).max(3).optional(),
+    gateRequireSignificance: z.boolean().optional(),
+  })
+  .strict();
 
 export interface GateConfig {
   significanceAlpha: number; // e.g. 0.05
@@ -13,6 +34,30 @@ export interface GateConfig {
   minSourceEntropyBits: number; // e.g. 1.0
   minUniqueAuthors: number; // e.g. 3
   enabled: boolean; // master toggle (revert behaviour)
+  // Whether a candidate must clear the SIGNIFICANCE test to surface, or only
+  // the breadth test. Defaults to true, i.e. current shipped behaviour is
+  // unchanged unless this is explicitly turned off.
+  //
+  // WHY THIS EXISTS (measured 2026-08-08, scripts/holdout-validate.ts and
+  // scripts/gate-variants.ts). A retrospective holdout replayed this gate at
+  // three past cutoffs and compared what the passed and held cohorts actually
+  // did over the following 56 days:
+  //
+  //   cutoff    shipped (sig AND breadth)   breadth only
+  //   Apr 22    1.43x edge, 93 surfaced     1.55x edge, 162 surfaced
+  //   May 07    1.44x edge, 82 surfaced     1.50x edge, 162 surfaced
+  //   May 22    1.43x edge, 70 surfaced     1.65x edge, 151 surfaced
+  //
+  // The significance test on its own separates nothing: on 760 Leone entities
+  // its passed and held cohorts grew at 1.44x versus 1.44x, a ratio of exactly
+  // 1.00 (p=0.73), replicated on Fast Food at 0.91x (p=0.31). Requiring it
+  // therefore costs roughly half the coverage and lowers the quality of what
+  // survives, at every cutoff tested. Breadth carries the entire edge.
+  //
+  // It is left ON by default regardless, because the significance test is a
+  // CONTRACTED deliverable and removing it is the client's decision, not a
+  // silent code change. Turn it off per company once that decision is made.
+  requireSignificance: boolean;
 }
 
 export interface SourceObservation {
@@ -140,8 +185,21 @@ export function confirmationVerdict(
   if (!cfg.enabled) {
     return { decision: "pass", significance, breadth, reasons: ["gate disabled"] };
   }
-  const reasons = [significance.reason, breadth.reason];
-  const decision = significance.pass && breadth.pass ? "pass" : "hold";
+  // The significance result is ALWAYS computed and always reported, even when
+  // it is not required to pass. Keeping it visible means a verdict stays
+  // auditable, the backtest can still be run both ways, and turning the
+  // requirement back on is a config flip rather than a rebuild.
+  const requireSignificance = cfg.requireSignificance !== false;
+  const reasons = [
+    requireSignificance
+      ? significance.reason
+      : `${significance.reason} (not required)`,
+    breadth.reason,
+  ];
+  const decision =
+    (requireSignificance ? significance.pass : true) && breadth.pass
+      ? "pass"
+      : "hold";
   return { decision, significance, breadth, reasons };
 }
 
@@ -165,6 +223,16 @@ export function gateConfigFromPipeline(config: TpPipelineConfig): GateConfig {
       (Number(process.env.GATE_MIN_ENTROPY_BITS) || 1.0),
     minUniqueAuthors: (c.gateMinUniqueAuthors as number) ?? 3,
     enabled: (c.gateEnabled as boolean) ?? true,
+    // Same defensive per-company pattern as minSourceEntropyBits above: read a
+    // pipeline_config column if one is ever added, else an env override, else
+    // the shipped default. GATE_REQUIRE_SIGNIFICANCE=false switches the gate
+    // to breadth-only — the configuration the holdout measured as strictly
+    // better on both edge and coverage (see GateConfig.requireSignificance).
+    // Only an explicit "false" disables it; anything else keeps it on, so a
+    // typo or an empty string can never silently weaken the gate.
+    requireSignificance:
+      (c.gateRequireSignificance as boolean) ??
+      (process.env.GATE_REQUIRE_SIGNIFICANCE !== "false"),
   };
 }
 

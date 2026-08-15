@@ -37,61 +37,41 @@ export function SignalScoreInfo({
           <div>
             <p className="font-semibold text-foreground">How signal strength is calculated</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              A 0–100 score blending recent volume with growth.
+              A 0–100 percentile for how well-evidenced a trend is, relative to
+              everything else on this radar.
             </p>
           </div>
 
           <p className="text-sm">
-            Three ingredients are added together with these weights, then the result is rounded
-            and capped at 100:
+            It ranks each trend against the others on two things:
           </p>
           <ul className="space-y-2 text-sm">
             <li className="flex items-start gap-2">
               <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
               <span>
-                <span className="font-medium">Recent volume — weight 30.</span>{" "}
+                <span className="font-medium">Volume of evidence.</span>{" "}
                 <span className="text-muted-foreground">
-                  Mentions in the last 7 days, divided by 10. So 10 mentions adds 30, 20 mentions
-                  adds 60.
+                  How many posts mention it in the last 30 days.
                 </span>
               </span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
               <span>
-                <span className="font-medium">Week-over-week growth — weight 40.</span>{" "}
+                <span className="font-medium">Spread across platforms.</span>{" "}
                 <span className="text-muted-foreground">
-                  Positive WoW growth rate × 40 (e.g. +50% growth adds 20).
-                </span>
-              </span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
-              <span>
-                <span className="font-medium">Month-over-month growth — weight 30.</span>{" "}
-                <span className="text-muted-foreground">
-                  Positive MoM growth rate × 30.
+                  The same volume carries more weight when it comes from several
+                  places rather than one.
                 </span>
               </span>
             </li>
           </ul>
 
-          <div className="rounded-md bg-muted px-2.5 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
-            score = min(100, round(
-            <br />
-            &nbsp;&nbsp;(volume7d / 10) × 30
-            <br />
-            &nbsp;&nbsp;+ max(0, growthWoW) × 40
-            <br />
-            &nbsp;&nbsp;+ max(0, growthMoM) × 30
-            <br />
-            ))
-          </div>
-
           <p className="text-xs text-muted-foreground">
-            Only positive growth contributes — declining trends earn points only from raw volume.
-            A high-volume trend can hit 100 from volume alone. Scores above 70 show in green,
-            40–69 in amber, below 40 in gray.
+            A score of 80 means it is better evidenced than 80% of the trends on
+            this radar. It deliberately excludes growth — that is what the
+            Movement column measures. Being a percentile rather than a fixed
+            formula means it stays meaningful however much data we collect.
           </p>
         </div>
       </PopoverContent>

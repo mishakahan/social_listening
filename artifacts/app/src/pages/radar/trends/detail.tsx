@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { usePublishBreadcrumbTitle } from "@/hooks/use-breadcrumb-title";
 import { useParams, useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +50,7 @@ interface TrendDetail {
   state:
     | "candidate"
     | "emerging"
-    | "confirmed"
+    | "sustained"
     | "peaking"
     | "declining"
     | "dormant"
@@ -58,6 +59,8 @@ interface TrendDetail {
   wowGrowthPct?: number;
   growthMomPct?: number;
   momGrowthPct?: number | null;
+  /** Share-of-voice growth — see services/share-of-voice.ts on the server. */
+  sovGrowthPct?: number | null;
   yoyGrowthPct?: number | null;
   momCurrent?: number | null;
   momPrior?: number | null;
@@ -72,6 +75,12 @@ interface TrendDetail {
   summary?: string;
   description?: string;
   evidence?: EvidenceItem[];
+  evidenceRecentCount?: number;
+  evidenceWindowDays?: number;
+  evidenceTotalCount?: number;
+  discovered?: boolean;
+  watchTopic?: string | null;
+  searchTerm?: string | null;
   updatedAt?: string;
   confirmationVerdict?: {
     decision: "pass" | "hold";
@@ -79,6 +88,9 @@ interface TrendDetail {
     significanceP: number;
     entropyBits: number;
     evaluatedAt: string;
+    /** Per-company thresholds this verdict was judged against. Optional so an
+        older stored verdict without them still renders. */
+    thresholds?: { minSourceEntropyBits: number; significanceAlpha: number };
   } | null;
   specificityVerdict?: {
     specific: boolean;
@@ -91,7 +103,7 @@ interface TrendDetail {
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
   candidate: { label: "Candidate", className: "bg-gray-500 text-white border-0" },
   emerging: { label: "Emerging", className: "bg-amber-500 text-white border-0" },
-  confirmed: { label: "Confirmed", className: "bg-green-500 text-white border-0" },
+  sustained: { label: "Sustained", className: "bg-green-500 text-white border-0" },
   peaking: { label: "Peaking", className: "bg-orange-500 text-white border-0" },
   declining: { label: "Declining", className: "bg-blue-500 text-white border-0" },
   dormant: { label: "Dormant", className: "bg-gray-400 text-white border-0" },
@@ -150,28 +162,6 @@ function GrowthStatCard({
   );
 }
 
-function WoWGrowth({ pct }: { pct?: number }) {
-  if (pct == null) return null;
-  const isPos = pct > 0;
-  const isNeg = pct < 0;
-  return (
-    <div
-      className={`flex items-center gap-1 text-sm font-semibold ${
-        isPos ? "text-green-600" : isNeg ? "text-red-500" : "text-muted-foreground"
-      }`}
-    >
-      {isPos ? (
-        <TrendingUp className="h-4 w-4" />
-      ) : isNeg ? (
-        <TrendingDown className="h-4 w-4" />
-      ) : (
-        <Minus className="h-4 w-4" />
-      )}
-      {isPos ? "+" : ""}
-      {pct.toFixed(1)}% WoW
-    </div>
-  );
-}
 
 function formatDate(iso?: string) {
   if (!iso) return null;
@@ -218,10 +208,9 @@ function VerdictChip({
   detail: string;
   title?: string;
 }) {
-  return (
+  const chip = (
     <span
-      title={title}
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border ${
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border cursor-help ${
         pass
           ? "bg-green-500/10 text-green-700 dark:text-green-300 border-green-500/30"
           : "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/30"
@@ -232,11 +221,20 @@ function VerdictChip({
       <span className="opacity-70">{detail}</span>
     </span>
   );
+  if (!title) return chip;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[300px] text-xs">
+        {title}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 // Renders the "why confirmed / why held" chip row from the stored gate verdict.
-// Significance passes below alpha=0.05; breadth passes at >=1.0 bits (the gate's
-// own thresholds). Specificity comes from the cached LLM judgment.
+// Thresholds come from the verdict itself, since they are per-company config.
+// Specificity comes from the cached LLM judgment.
 function VerdictChips({
   verdict,
   specificity,
@@ -254,17 +252,20 @@ function VerdictChips({
       <div className="flex flex-wrap items-center gap-2">
         {verdict && (
           <>
+            {/* Thresholds come from the verdict, NOT hardcoded. They are
+                per-company config now, so a company set to 0.5 bits would have
+                had entities pass the real gate while this drew them as failed. */}
             <VerdictChip
-              pass={verdict.significanceP <= 0.05}
+              pass={verdict.significanceP <= (verdict.thresholds?.significanceAlpha ?? 0.05)}
               label="Rising"
               detail={`p=${verdict.significanceP.toFixed(3)}`}
-              title="Beats the entity's own historical noise (permutation test)."
+              title="Being mentioned more than is normal for this thing itself, rather than just having a busy week. The number is roughly how likely that jump was to happen by chance, so smaller is stronger."
             />
             <VerdictChip
-              pass={verdict.entropyBits >= 1.0}
+              pass={verdict.entropyBits >= (verdict.thresholds?.minSourceEntropyBits ?? 1.0)}
               label="Broad"
               detail={`${verdict.entropyBits.toFixed(2)} bits`}
-              title="Author diversity across platforms (Shannon entropy)."
+              title="How spread out the conversation is across different platforms and different people. This is what stops one account posting ten times from looking like a trend. Higher is more spread out."
             />
           </>
         )}
@@ -291,6 +292,11 @@ export default function TrendDetailPage() {
     queryFn: () => fetchTrend(companyId, trendId!),
     enabled: !!trendId,
   });
+
+  // Otherwise the breadcrumb shows the row id ("Radar > Trends > 61"). Called
+  // before the early returns below so the hook order stays stable across the
+  // loading, error and loaded renders.
+  usePublishBreadcrumbTitle(trend?.title);
 
   if (isLoading) {
     return (
@@ -363,11 +369,34 @@ export default function TrendDetailPage() {
       {/* Title + meta */}
       <div className="mb-6">
         <div className="flex items-start justify-between gap-4">
-          <h1 className="text-2xl font-bold text-foreground leading-tight">{trend.title}</h1>
+          <h1 className="text-2xl font-bold text-foreground leading-tight">
+            {trend.title}
+            {trend.discovered && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="ml-2 align-middle rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-xs font-medium text-violet-700 dark:text-violet-300 cursor-help">
+                    Discovered
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[300px] text-xs">
+                  Nothing we searched for matches this. It came out of reading
+                  real posts rather than from a keyword we wrote, which is the
+                  system finding something rather than confirming something.
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </h1>
           <Badge className={`flex-shrink-0 text-sm px-3 py-1 ${stateCfg.className}`}>
             {stateCfg.label}
           </Badge>
         </div>
+
+        <p className="text-muted-foreground text-sm max-w-3xl mt-2">
+          Everything behind one trend: why it cleared the gate, how much
+          conversation there actually is, and the individual posts it was built
+          from. Every number on this page traces back to posts you can open and
+          read yourself.
+        </p>
 
         <div className="flex flex-wrap items-center gap-2 mt-3">
           {trend.geography && trend.geography !== "Global" && (
@@ -380,6 +409,16 @@ export default function TrendDetailPage() {
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
               <Tag className="h-3 w-3" />
               {trend.territoryTag}
+            </span>
+          )}
+          {trend.watchTopic && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
+              Watch topic: {trend.watchTopic}
+            </span>
+          )}
+          {trend.searchTerm && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground border border-border">
+              Search term: {trend.searchTerm}
             </span>
           )}
           {(trend.platforms ?? []).map((p) => {
@@ -407,7 +446,7 @@ export default function TrendDetailPage() {
 
       {/* Stats grid */}
       <TooltipProvider delayDuration={150}>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+        <div className="grid grid-cols-3 gap-4 mb-6">
           {/* Signal strength */}
           <Card>
             <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
@@ -422,32 +461,20 @@ export default function TrendDetailPage() {
             </CardContent>
           </Card>
 
-          {/* WoW growth */}
+          {/* Movement — share of conversation.
+              WoW, MoM and YoY tiles used to sit here. They are raw mention
+              counts, inflated by how much we happened to scrape: this page was
+              showing maionese at +340.7% MoM and +16700% YoY while its share
+              of conversation grew 34.5%. Removed rather than kept alongside,
+              because two growth numbers that disagree on the same screen
+              invite exactly the question we cannot answer well. */}
           <GrowthStatCard
-            pct={trend.wowGrowthPct ?? null}
-            label="WoW"
-            tooltip="Week over week — this week vs prior week."
-          />
-
-          {/* MoM growth (fixed window) */}
-          <GrowthStatCard
-            pct={trend.momGrowthPct ?? null}
-            label="MoM"
+            pct={trend.sovGrowthPct ?? null}
+            label="Movement"
             tooltip={
-              trend.momGrowthPct == null
-                ? "Not enough history for MoM — need at least 30 days of activity in the 60-day comparison window."
-                : `Last 30 days vs prior 30 days: ${trend.momCurrent ?? 0} mentions vs ${trend.momPrior ?? 0}.`
-            }
-          />
-
-          {/* YoY growth (fixed window) */}
-          <GrowthStatCard
-            pct={trend.yoyGrowthPct ?? null}
-            label="YoY"
-            tooltip={
-              trend.yoyGrowthPct == null
-                ? "No mentions in the same 90-day window one year ago — no YoY baseline."
-                : `Last 90 days vs same 90 days last year: ${trend.yoyCurrent ?? 0} mentions vs ${trend.yoyPrior ?? 0}.`
+              trend.sovGrowthPct == null
+                ? "No movement score: this needs at least 3 mentions on each of 2 or more platforms during the EARLIER comparison window, and it does not have that. Note this is stricter than the platform badges above, which list every platform the trend has appeared on at all in the last 90 days — one stray post is enough to earn a badge, but not enough to compare against."
+                : "Growth in this trend's share of all conversation, last 60 days vs the 60 before, measured within each platform and corroborated across 2+ of them."
             }
           />
 
@@ -474,7 +501,14 @@ export default function TrendDetailPage() {
       {trend.evidence && trend.evidence.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-foreground mb-3">
-            Evidence ({trend.evidence.length})
+            Evidence
+            <span className="ml-2 font-normal text-muted-foreground">
+              {trend.evidenceRecentCount ?? trend.evidence.length} in the last{" "}
+              {trend.evidenceWindowDays ?? 30} days
+              {trend.evidenceTotalCount != null &&
+                trend.evidenceTotalCount > trend.evidence.length &&
+                `, showing ${trend.evidence.length} of ${trend.evidenceTotalCount} all time`}
+            </span>
           </h2>
           <div className="space-y-3">
             {trend.evidence.map((ev) => {

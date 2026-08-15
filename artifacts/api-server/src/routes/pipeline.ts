@@ -15,6 +15,8 @@ import {
   mapApifyStatus,
 } from "../services/apify.js";
 import { ingestActorRun, ingestGoogleTrendsRun } from "../services/ingestion.js";
+import { gateConfigPatchSchema } from "../services/confirmation-gate.js";
+import { fetchShareOfVoice } from "../services/share-of-voice.js";
 import { runEntityExtraction } from "../services/entity-extraction.js";
 import { runTimeseriesAggregation } from "../services/timeseries.js";
 import { runStateMachine } from "../services/state-machine.js";
@@ -23,6 +25,12 @@ import { runLongTailEvaluation } from "../services/long-tail.js";
 import { runCoOccurrenceAggregation } from "../services/co-occurrence.js";
 import { extractAttributesForBatch } from "../services/attribute-extraction.js";
 import { logger } from "../lib/logger.js";
+import {
+  startPipelineRun,
+  getPipelineRun,
+  resetPipelineRun,
+  type StageDeps,
+} from "../services/pipeline-runner.js";
 
 const router = Router();
 
@@ -275,6 +283,7 @@ async function commitSeeds(req: any, res: any) {
         geography: item.geography,
         productCategoryLink: item.productCategoryLink,
         territoryTag: item.territoryTag,
+        watchTopic: item.watchTopic ?? null,
         strategicCentrality: item.strategicCentrality,
         actionableAt: item.actionableAt,
         groundedIn: item.groundedIn,
@@ -306,6 +315,7 @@ async function commitSeeds(req: any, res: any) {
           companyId,
           seedItemId: seedItem.id,
           topicLabel: item.label,
+          watchTopic: seedItem.watchTopic ?? null,
           geography: item.geography,
           language: q.language,
           keywords: q.keywords,
@@ -1003,10 +1013,17 @@ router.post("/webhooks/apify", async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Ingestion trigger helper (async, not awaited from webhook)
+//
+// Returns the number of USABLE signals actually written to the DB for this
+// run (0 if the run was missing, already claimed by another worker, or the
+// dataset yielded nothing usable after normalisation / noise-floor /
+// language filtering / dedup). This is deliberately NOT "did we attempt it"
+// — the orchestrator's ingest stage (below) sums this return value, and a
+// run dispatched-but-zero-usable must read as zero, not as "processed."
 // ---------------------------------------------------------------------------
-async function triggerIngestion(runId: number, datasetId: string): Promise<void> {
+async function triggerIngestion(runId: number, datasetId: string): Promise<number> {
   const run = await storage.getActorRun(runId);
-  if (!run) return;
+  if (!run) return 0;
 
   logger.info({ runId, datasetId }, "Fetching dataset for ingestion");
   const items = await getApifyClient().dataset(datasetId).listItems({ limit: 1000 });
@@ -1015,8 +1032,8 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
   // Google Trends has its own narrow target table; everything else flows
   // through the standard social-mention ingestion + entity extraction path.
   if (run.platform === "google_trends") {
-    await ingestGoogleTrendsRun(run, data);
-    return;
+    const gtStats = await ingestGoogleTrendsRun(run, data);
+    return gtStats.usable;
   }
 
   // Defer markIngestionDone until AFTER entity extraction completes. Otherwise
@@ -1028,7 +1045,7 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
   // If we lost the race to claim ingestion, another worker owns this run's
   // post-processing — do not run extraction or mark done here, or we'd
   // release the finalize guard early while the real owner is still working.
-  if (!stats.claimed) return;
+  if (!stats.claimed) return 0;
 
   // Run entity extraction. If it throws, mark ingestion FAILED so the
   // finalize SQL guard ('done'|'failed') can still release. Without this,
@@ -1051,6 +1068,12 @@ async function triggerIngestion(runId: number, datasetId: string): Promise<void>
     oldestPostedAt: stats.oldestPostedAt,
     newestPostedAt: stats.newestPostedAt,
   });
+
+  // stats.usable can legitimately be 0 here (empty dataset, everything
+  // dropped by the noise floor / language filter, or fully deduped) without
+  // ever throwing — that is exactly the case the orchestrator's ingest
+  // stage needs to see, not silently absorb into "we tried."
+  return stats.usable;
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1133,12 @@ const patchConfigSchema = z
     compositeMinLift: z.number().min(1).max(50).optional(),
     compositeWindowDays: z.number().int().min(7).max(90).optional(),
   })
+  // Confirmation-gate columns. Merged in from the gate service so the ranges
+  // live with the semantics they protect, not copied here where they would
+  // drift. This object is .passthrough(), so without an explicit entry these
+  // would reach the DB unvalidated — and they decide what surfaces on the
+  // radar.
+  .merge(gateConfigPatchSchema)
   .passthrough();
 
 router.patch("/companies/:id/pipeline-config", async (req, res) => {
@@ -1127,6 +1156,22 @@ router.patch("/companies/:id/pipeline-config", async (req, res) => {
     res.json(updated);
   } catch (err: any) {
     logger.error({ err }, "Failed to update pipeline config");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/config-impact
+// What each threshold is currently doing to this company's data, so the
+// Control Panel can show consequence next to each number instead of a bare
+// value. See storage.getConfigImpact for why it is deliberately partial.
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/config-impact", async (req, res) => {
+  try {
+    const companyId = parseInt(req.params.id!, 10);
+    res.json(await storage.getConfigImpact(companyId));
+  } catch (err: any) {
+    logger.error({ err }, "Failed to get config impact");
     res.status(500).json({ error: err.message });
   }
 });
@@ -1296,12 +1341,31 @@ router.get("/companies/:id/trends", async (req, res) => {
     const companyId = parseInt(req.params.id!, 10);
     const archived = req.query.archived !== undefined ? req.query.archived === "true" : undefined;
     const sortByRaw = req.query.sortBy as string | undefined;
-    const allowedSorts = ["signal", "wow", "momGrowthPct", "yoyGrowthPct", "evidence"] as const;
+    const allowedSorts = ["signal", "wow", "momGrowthPct", "yoyGrowthPct", "evidence", "sov"] as const;
     const sortBy = allowedSorts.includes(sortByRaw as any)
       ? (sortByRaw as (typeof allowedSorts)[number])
       : undefined;
     const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
-    const trends = await storage.getTrendsEnriched(companyId, { archived, sortBy, sortDir });
+    // ?entityTypes=brand,format,ingredient — allow-list of entity types to
+    // show. Omitted means no filtering, i.e. exactly the previous behaviour.
+    // Kept as a query parameter rather than stored config so the UI can offer
+    // it as a live toggle without a schema migration, and so different users
+    // of the same company can view it differently.
+    const entityTypesRaw = req.query.entityTypes as string | undefined;
+    const entityTypes = entityTypesRaw
+      ? entityTypesRaw.split(",").map((t) => t.trim()).filter(Boolean)
+      : undefined;
+    // ?evidenceWindow=7|30|90 — which precomputed volume window the Evidence
+    // column shows. Anything else falls back to 30, so a bad value can never
+    // produce a column labelled one window and filled from another.
+    const evidenceWindow = storage.parseEvidenceWindow(req.query.evidenceWindow);
+    const trends = await storage.getTrendsEnriched(companyId, {
+      archived,
+      sortBy,
+      sortDir,
+      entityTypes,
+      evidenceWindow,
+    });
     res.json(trends);
   } catch (err: any) {
     logger.error({ err }, "Failed to get trends");
@@ -1475,7 +1539,16 @@ router.get("/companies/:id/entity-states", async (req, res) => {
     if (req.query.state) filters.state = req.query.state as string;
     if (req.query.geography) filters.geography = req.query.geography as string;
     const states = await storage.getEntityStateWithEntity(companyId, filters);
-    res.json(states);
+    // Attach share-of-voice so this page can show the same honest growth
+    // measure the Trends page does, instead of raw WoW/MoM — which are
+    // inflated by how much we happened to scrape (services/share-of-voice.ts).
+    const sov = await fetchShareOfVoice(companyId);
+    res.json(
+      states.map((s: any) => {
+        const v = sov.get(s.entityId)?.growthPct;
+        return { ...s, sovGrowthPct: v == null ? null : Math.round(v * 10) / 10 };
+      })
+    );
   } catch (err: any) {
     logger.error({ err }, "Failed to get entity states");
     res.status(500).json({ error: err.message });
@@ -1616,6 +1689,174 @@ router.post("/companies/:id/run-state-machine", async (req, res) => {
     logger.error({ err }, "Failed to start state machine");
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// One-click full pipeline run (Task #7)
+//
+// Chains the same five stage handlers above behind a single call, so a
+// non-engineer can drive the whole pipeline from one button instead of
+// clicking scout-queries/launch -> run-ingestion -> run-entity-extraction ->
+// run-timeseries -> run-state-machine in order across four admin pages.
+//
+// Each stage below calls the exact same service function its own manual
+// route calls — this does NOT issue HTTP requests to itself.
+// ---------------------------------------------------------------------------
+// Bounds on the "ingest" safety-net pass (fix round 1 / Important #3). Left
+// unbounded, it would walk every succeeded-but-uningested run this company
+// has ever had, serially, each one paying for an Apify dataset fetch AND an
+// entity-extraction (LLM) pass inside triggerIngestion. The recency window
+// keeps it scoped to "why hasn't my recent scrape shown up," and the count
+// cap bounds worst-case spend for any single orchestrated run; a persistent
+// backlog beyond the cap drains oldest-first across repeated runs rather
+// than the same newest N winning forever.
+const INGEST_STAGE_MAX_RUNS = 25;
+const INGEST_STAGE_RECENCY_DAYS = 14;
+
+const pipelineStageDeps: StageDeps = {
+  // Fires paid Apify scrapes. Mirrors POST /companies/:id/scout-queries/launch
+  // with no queryIds, i.e. "launch every active scout query for this company."
+  // Throws "No queries to launch" (no Apify call made) when nothing is active.
+  //
+  // IMPORTANT: launchBatch() resolves as soon as the Apify actor runs are
+  // *started* — not when they finish. Real data typically lands hours later,
+  // delivered via the Apify webhook, which already drives its own
+  // ingest -> extract -> timeseries -> state-machine chain per batch (see
+  // finalizeBatchIfDone in services/launch-batch.ts). The "ingest" stage
+  // below is a safety net for older runs, not a way to wait for this batch.
+  scrape: async (companyId) => {
+    await launchBatch(companyId, { kind: "manual" });
+  },
+  // Normally ingestion fires automatically off the Apify webhook per actor
+  // run as each scrape finishes. This stage is the safety net: it re-drives
+  // ingestion (via the same triggerIngestion() the webhook and the manual
+  // run-ingestion route both use) for a bounded, recent slice of succeeded
+  // runs this company has that haven't finished ingesting yet.
+  //
+  // Reports itemsProcessed = USABLE SIGNALS ACTUALLY INGESTED (summed from
+  // triggerIngestion's return), not "runs we dispatched." A run can
+  // legitimately dispatch several candidates and ingest zero usable
+  // signals — empty Apify dataset, everything dropped by the noise floor /
+  // language filter, or fully deduped — without triggerIngestion ever
+  // throwing. The orchestrator (pipeline-runner.ts) gates on this exact
+  // number: zero usable signals must stop the run at "awaiting-data", never
+  // sail on through extract/timeseries/state-machine to report "done" on
+  // nothing. runsAttempted/deferred are informational only (surfaced for
+  // the UI/logs) — they are never the gate.
+  ingest: async (companyId) => {
+    const recencyCutoff = new Date(
+      Date.now() - INGEST_STAGE_RECENCY_DAYS * 24 * 60 * 60 * 1000
+    );
+    const runs = await storage.getActorRuns(companyId, { status: "succeeded" });
+    const eligible = runs
+      .filter(
+        (r) =>
+          r.apifyDatasetId &&
+          r.ingestionStatus !== "done" &&
+          r.ingestionStatus !== "processing" &&
+          r.completedAt != null &&
+          r.completedAt >= recencyCutoff
+      )
+      .sort((a, b) => a.completedAt!.getTime() - b.completedAt!.getTime());
+    const candidates = eligible.slice(0, INGEST_STAGE_MAX_RUNS);
+    const deferred = eligible.length - candidates.length;
+
+    logger.info(
+      { companyId, eligible: eligible.length, processing: candidates.length, deferred },
+      deferred > 0
+        ? "pipeline run: ingest stage starting — cap truncated the eligible backlog"
+        : "pipeline run: ingest stage starting"
+    );
+
+    let runsAttempted = 0;
+    let usableTotal = 0;
+    for (const run of candidates) {
+      // Mirrors the manual run-ingestion route (below): reset failed rows to
+      // 'pending' BEFORE calling triggerIngestion. Without this,
+      // claimIngestion()'s `WHERE ingestion_status='pending'` guard refuses
+      // the row — but only AFTER triggerIngestion has already paid for the
+      // Apify dataset fetch — so a previously-failed run would otherwise
+      // cost money on every orchestrated run while never actually being
+      // retried.
+      if (run.ingestionStatus === "failed") {
+        await storage.updateActorRun(run.id, { ingestionStatus: "pending" } as any);
+      }
+      runsAttempted++;
+      logger.info(
+        { companyId, runId: run.id, index: runsAttempted, total: candidates.length },
+        "pipeline run: ingest stage progress"
+      );
+      usableTotal += await triggerIngestion(run.id, run.apifyDatasetId!);
+    }
+
+    logger.info(
+      { companyId, runsAttempted, usableTotal, deferred },
+      "pipeline run: ingest stage finished"
+    );
+
+    return { itemsProcessed: usableTotal, runsAttempted, deferred };
+  },
+  extract: async (companyId) => {
+    await runEntityExtraction(companyId);
+  },
+  timeseries: async (companyId) => {
+    await runTimeseriesAggregation(companyId);
+    await storage.setLastTimeseriesRunAt(companyId);
+  },
+  "state-machine": async (companyId) => {
+    await runStateMachine(companyId);
+    await storage.setLastStateMachineRunAt(companyId);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-pipeline
+// Starts the full chained run. Fire-and-forget: the client polls
+// run-pipeline-status for progress. Refuses (409) if one is already running
+// for this company.
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-pipeline", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  try {
+    const state = getPipelineRun(companyId);
+    if (state && state.status === "running") {
+      res.status(409).json({ error: "pipeline already running", state });
+      return;
+    }
+    // Fire and forget: the client polls run-pipeline-status for progress.
+    void startPipelineRun(companyId, pipelineStageDeps).catch((e) =>
+      logger.error({ err: e, companyId }, "pipeline run failed")
+    );
+    res.status(202).json({ started: true, companyId });
+  } catch (err: any) {
+    logger.error({ err }, "Failed to start pipeline run");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipeline/companies/:id/run-pipeline-status
+// ---------------------------------------------------------------------------
+router.get("/companies/:id/run-pipeline-status", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  res.json(getPipelineRun(companyId) ?? { status: "idle", companyId });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipeline/companies/:id/run-pipeline/reset
+// Manually clears a wedged "running" state (e.g. a stage stuck past its
+// timeout for longer than an operator wants to wait it out) so a developer
+// isn't required to restart the server to unstick a client. No-op (404) if
+// nothing is running for this company.
+// ---------------------------------------------------------------------------
+router.post("/companies/:id/run-pipeline/reset", async (req, res) => {
+  const companyId = parseInt(req.params.id!, 10);
+  const cleared = resetPipelineRun(companyId);
+  if (!cleared) {
+    res.status(404).json({ error: "No running pipeline for this company" });
+    return;
+  }
+  res.json({ ok: true, state: cleared });
 });
 
 // ---------------------------------------------------------------------------

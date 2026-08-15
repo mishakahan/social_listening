@@ -176,12 +176,12 @@ rolling 90-day window.
 ## Stage 6: The Growth State Machine — flagging what's rising
 
 Now the system looks at each entity's timeseries and assigns it a *state* based on
-volume and growth: `candidate`, `emerging`, `confirmed`, `peaking`, `declining`,
+volume and growth: `candidate`, `emerging`, `sustained`, `peaking`, `declining`,
 `dormant`, or `resurgent`. It uses configurable thresholds — a minimum volume and
 a minimum week-over-week growth rate — to decide when something moves from
 "candidate" to "emerging" and beyond.
 
-Only entities that reach a *surfacing* state (emerging, confirmed, peaking, or
+Only entities that reach a *surfacing* state (emerging, sustained, peaking, or
 resurgent) get passed on to the final stage.
 
 **Here is the gap that motivated this whole project.** The state machine decides

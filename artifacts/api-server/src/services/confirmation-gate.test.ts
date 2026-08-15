@@ -4,6 +4,8 @@ import {
   sourceBreadth,
   significanceTest,
   confirmationVerdict,
+  gateConfigFromPipeline,
+  gateConfigPatchSchema,
   type GateConfig,
   type SourceObservation,
 } from "./confirmation-gate.js";
@@ -26,6 +28,9 @@ const cfg: GateConfig = {
   minSourceEntropyBits: 1.0,
   minUniqueAuthors: 3,
   enabled: true,
+  // Current shipped behaviour: significance is required. Set explicitly so
+  // this baseline never drifts if the default changes.
+  requireSignificance: true,
 };
 
 test("single dominant source -> low entropy -> hold", () => {
@@ -115,4 +120,162 @@ test("disabled gate always passes", () => {
   );
   assert.equal(v.decision, "pass");
   assert.ok(v.reasons.includes("gate disabled"));
+});
+
+// ---------------------------------------------------------------------------
+// requireSignificance — the breadth-only configuration.
+//
+// Measured 2026-08-08 (holdout-validate.ts / gate-variants.ts): across three
+// cutoffs the significance test's passed and held cohorts grew identically
+// (1.00x, p=0.73 on 760 entities), while requiring it halved coverage. This
+// flag makes that a config decision instead of a code change — but it must
+// default to the CURRENT behaviour, because the significance test is a
+// contracted deliverable and must never switch off by accident.
+// ---------------------------------------------------------------------------
+
+// An entity with real, broad author spread but a flat (non-significant) series
+// — exactly the population the holdout showed is being wrongly held.
+const broadButFlat = {
+  dailyMentions: Array.from({ length: 60 }, () => 1),
+  sources: [
+    { platform: "tiktok", uniqueAuthors: 6, mentions: 20 },
+    { platform: "youtube", uniqueAuthors: 6, mentions: 20 },
+    { platform: "reddit", uniqueAuthors: 6, mentions: 20 },
+    { platform: "x", uniqueAuthors: 6, mentions: 20 },
+  ],
+};
+
+test("by default the significance test is still required (shipped behaviour unchanged)", () => {
+  const v = confirmationVerdict(broadButFlat, cfg, seeded(1));
+  assert.equal(v.significance.pass, false, "fixture must be non-significant to be a valid test");
+  assert.equal(v.breadth.pass, true, "fixture must pass breadth to isolate the significance effect");
+  assert.equal(v.decision, "hold");
+});
+
+test("requireSignificance=false surfaces a broad entity whose series is flat", () => {
+  const v = confirmationVerdict(broadButFlat, { ...cfg, requireSignificance: false }, seeded(1));
+  assert.equal(v.decision, "pass");
+  // The significance result must still be computed and reported, so the
+  // verdict stays auditable and the decision can be re-run both ways.
+  assert.equal(v.significance.pass, false);
+  assert.ok(
+    v.reasons.some((r) => r.includes("not required")),
+    `verdict must say significance was not required, got: ${JSON.stringify(v.reasons)}`
+  );
+});
+
+test("breadth still holds a concentrated entity even when significance is not required", () => {
+  const concentrated = {
+    dailyMentions: broadButFlat.dailyMentions,
+    sources: [{ platform: "tiktok", uniqueAuthors: 24, mentions: 80 }],
+  };
+  const v = confirmationVerdict(concentrated, { ...cfg, requireSignificance: false }, seeded(1));
+  assert.equal(v.decision, "hold", "breadth-only must not become a rubber stamp");
+  assert.equal(v.breadth.pass, false);
+});
+
+// ---------------------------------------------------------------------------
+// Control Panel wiring.
+//
+// PATCH /pipeline-config validates with a .passthrough() schema, so any key it
+// does not name reaches storage.updatePipelineConfig unchecked. Now that the
+// gate keys are real columns, an unvalidated write is a write straight into the
+// gate — "9" (a string), 400 (bits), or NaN would all be accepted and would
+// then decide what surfaces on the client's radar. These are the range checks.
+// ---------------------------------------------------------------------------
+
+test("gate patch schema accepts thresholds inside the achievable entropy range", () => {
+  // 0.5 bits is the value company 2 was measured to need (76 entities at a
+  // 1.55x edge vs 9 at 1.0), so it must be settable from the Control Panel.
+  for (const bits of [0, 0.5, 1.0, 2.32, 3]) {
+    const r = gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: bits });
+    assert.equal(r.success, true, `${bits} bits must be accepted, got ${JSON.stringify(r.error?.issues)}`);
+  }
+});
+
+test("gate patch schema rejects entropy thresholds outside the achievable range", () => {
+  // Breadth entropy is computed over PLATFORMS, so it is bounded by
+  // log2(platform count) ≈ 2.81 bits at seven platforms. A value above 3 can
+  // never be reached by any entity — it silently empties the radar rather than
+  // tightening it, so it is a typo, not a preference.
+  for (const bits of [-1, 3.1, 10, 400]) {
+    const r = gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: bits });
+    assert.equal(r.success, false, `${bits} bits must be rejected`);
+  }
+});
+
+test("gate patch schema rejects non-numeric and non-boolean gate values", () => {
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: "0.5" }).success,
+    false,
+    "a stringified number must not reach the gate"
+  );
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateMinSourceEntropyBits: NaN }).success,
+    false,
+    "NaN must not reach the gate — every comparison against it is false"
+  );
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateEnabled: "false" }).success,
+    false,
+    'the string "false" is truthy and would leave the gate on while reading as off'
+  );
+});
+
+test("gate patch schema accepts the booleans", () => {
+  assert.equal(gateConfigPatchSchema.safeParse({ gateEnabled: false }).success, true);
+  assert.equal(
+    gateConfigPatchSchema.safeParse({ gateRequireSignificance: false }).success,
+    true,
+    "settable by API even though it is deliberately not rendered in the UI"
+  );
+});
+
+test("gateConfigFromPipeline prefers the stored column over the env override", () => {
+  // The Control Panel writes the column. If env still won, the UI would show a
+  // value the gate was not using — the exact class of broken-reporter bug this
+  // project has hit three times.
+  const prev = process.env.GATE_MIN_ENTROPY_BITS;
+  try {
+    process.env.GATE_MIN_ENTROPY_BITS = "2.5";
+    const c = gateConfigFromPipeline({ gateMinSourceEntropyBits: 0.5 } as any);
+    assert.equal(c.minSourceEntropyBits, 0.5, "stored column must win over env");
+  } finally {
+    if (prev === undefined) delete process.env.GATE_MIN_ENTROPY_BITS;
+    else process.env.GATE_MIN_ENTROPY_BITS = prev;
+  }
+});
+
+test("gateConfigFromPipeline honours a stored 0 bits without falling through to the default", () => {
+  // 0 is falsy. A `||` anywhere in the fallback chain turns "no entropy floor"
+  // into the 1.0 default, which is the opposite of what was asked for.
+  const c = gateConfigFromPipeline({ gateMinSourceEntropyBits: 0 } as any);
+  assert.equal(c.minSourceEntropyBits, 0);
+});
+
+test("gateConfigFromPipeline reads a stored gateEnabled=false", () => {
+  assert.equal(gateConfigFromPipeline({ gateEnabled: false } as any).enabled, false);
+});
+
+test("gateConfigFromPipeline keeps significance required unless explicitly disabled", () => {
+  const prev = process.env.GATE_REQUIRE_SIGNIFICANCE;
+  try {
+    // Unset, empty, and a typo must all leave the gate at full strength — only
+    // an exact "false" may weaken it.
+    for (const val of [undefined, "", "true", "FALSE", "0", "no"]) {
+      if (val === undefined) delete process.env.GATE_REQUIRE_SIGNIFICANCE;
+      else process.env.GATE_REQUIRE_SIGNIFICANCE = val;
+      const c = gateConfigFromPipeline({} as any);
+      assert.equal(
+        c.requireSignificance,
+        true,
+        `GATE_REQUIRE_SIGNIFICANCE=${JSON.stringify(val)} must NOT disable the significance test`
+      );
+    }
+    process.env.GATE_REQUIRE_SIGNIFICANCE = "false";
+    assert.equal(gateConfigFromPipeline({} as any).requireSignificance, false);
+  } finally {
+    if (prev === undefined) delete process.env.GATE_REQUIRE_SIGNIFICANCE;
+    else process.env.GATE_REQUIRE_SIGNIFICANCE = prev;
+  }
 });

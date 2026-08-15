@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useCompanyId } from "@/hooks/use-company";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -37,6 +38,8 @@ interface EntityState {
   velocity: number;
   growthWow: number;
   growthMom: number;
+  /** Share-of-voice growth — the same honest measure the Trends page shows. */
+  sovGrowthPct?: number | null;
   volatility: number;
   platformsSeen: string[];
   computedAt: string;
@@ -64,7 +67,7 @@ interface TimeseriesRow {
 const STATE_COLORS: Record<string, string> = {
   candidate: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
   emerging: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  confirmed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  sustained: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
   peaking: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
   declining: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
   dormant: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
@@ -75,7 +78,7 @@ const STATE_COLORS: Record<string, string> = {
 // (so historical rows still render with a chip).
 const FALLBACK_TYPE_COLOR = "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300";
 
-const STATE_OPTIONS = ["all", "candidate", "emerging", "confirmed", "peaking", "declining", "dormant", "resurgent"];
+const STATE_OPTIONS = ["all", "candidate", "emerging", "sustained", "peaking", "declining", "dormant", "resurgent"];
 
 interface EntityTypeConfig {
   id: string;
@@ -341,7 +344,7 @@ function PipelinePanel({
         <PipelineStepRow
           index={3}
           title="State Machine"
-          description="Advances entities through their lifecycle (candidate → emerging → confirmed → peaking → declining → dormant)."
+          description="Advances entities through their lifecycle (candidate → emerging → sustained → peaking → declining → dormant)."
           step={sm}
           lastRunAt={status.stateMachine.lastComputedAt}
           autoTrigger="after every scout pull + nightly 02:30 UTC"
@@ -423,6 +426,55 @@ export default function EntitiesAuditPage() {
     ? allStates
     : allStates.filter((s) => s.entity.entityType === typeFilter);
 
+  // PAGINATION. This page was rendering every row it received — 13,042 of them
+  // on Fast Food — into the DOM at once, each with an expandable detail row.
+  // Paging keeps it usable; the payload itself is still fetched whole, which
+  // is the next thing to fix if it becomes a problem.
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+
+  // Deep link from the Emerging tab's Inspect button, which navigates to
+  // ?entityId=N. Nothing read that param before, so Inspect dumped you on page
+  // 1 of 13,042 rows with no indication of which entity you asked for.
+  //
+  // Verified against live data before wiring: all 7 current long-tail
+  // candidates do have an entity_state row, so they are genuinely present in
+  // this list and can always be located.
+  const [location] = useLocation();
+  const targetEntityId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get("entityId");
+    const n = Number(raw);
+    return raw && Number.isFinite(n) ? n : null;
+  }, [location]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Filters change the result set, so a page index from the previous set can
+  // point past the end. Clamp rather than showing an empty table.
+  const safePage = Math.min(page, pageCount - 1);
+  const paged = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  useEffect(() => { setPage(0); }, [typeFilter, stateFilter, geoFilter]);
+
+  // Jump to the deep-linked entity once the list has loaded: page to it and
+  // expand its row. Guarded on `filtered` so it re-runs when data arrives, and
+  // on targetEntityId so a second Inspect click re-targets.
+  const jumpedToRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (targetEntityId == null || filtered.length === 0) return;
+    if (jumpedToRef.current === targetEntityId) return;
+    const idx = filtered.findIndex((s) => s.entityId === targetEntityId);
+    if (idx === -1) {
+      // Present in the data but filtered out, or genuinely absent. Say so
+      // rather than silently landing the user on page 1 — the old behaviour.
+      toast.error("That entity is not in the current list. Try clearing the filters.");
+      jumpedToRef.current = targetEntityId;
+      return;
+    }
+    setPage(Math.floor(idx / PAGE_SIZE));
+    // `expanded` is keyed on the entity_state row id, NOT the entity id — the
+    // two are different numbers and using the wrong one expands nothing.
+    setExpanded(filtered[idx]!.id);
+    jumpedToRef.current = targetEntityId;
+  }, [targetEntityId, filtered]);
+
   const geographies = [...new Set(allStates.map((s) => s.geography).filter(Boolean))].sort();
 
   if (isLoading) {
@@ -454,13 +506,19 @@ export default function EntitiesAuditPage() {
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground mb-1">Entities Audit</h1>
-          <p className="text-muted-foreground text-sm max-w-3xl">
+          <p className="text-foreground/80 text-sm max-w-3xl mb-2">
+            The things pulled out of those posts, and where each one sits in its life cycle. This is the layer between raw posts and the Trends tab: everything here is tracked, only some of it is established enough to surface.
+          </p>
+          <p className="text-muted-foreground text-xs max-w-3xl">
             Step 5 of 5 — Entities are the named concepts — trends, ingredients, products, places —
             that the LLM extracted from raw signals. Each entity progresses through a lifecycle: it
-            starts as a candidate, may advance to emerging or confirmed as mention volume and
+            starts as a candidate, may advance to emerging or sustained as mention volume and
             week-over-week growth cross configured thresholds across multiple platforms, and eventually
-            peaks, declines, or goes dormant. v7d is the mention count over the last 7 days; WoW and
-            MoM are week-over-week and month-over-month growth rates. Entities reaching "confirmed" or
+            peaks, declines, or goes dormant. v7d is the mention count over the last 7 days. Movement is
+            growth in share of conversation, measured within each platform and
+            corroborated across two or more — raw week-over-week and
+            month-over-month rates are inflated by how much we happened to
+            scrape, so they are no longer shown here. Entities reaching "sustained" or
             above are surfaced to the Radar. The 30-day sparkline shows daily mention volume. Use "Run
             Timeseries" to recompute mention buckets from signals, then "Run State Machine" to advance
             entities through lifecycle transitions based on the latest data.
@@ -523,8 +581,16 @@ export default function EntitiesAuditPage() {
           </SelectContent>
         </Select>
 
-        <span className="text-xs text-muted-foreground ml-auto">
-          {filtered.length.toLocaleString()} entit{filtered.length !== 1 ? "ies" : "y"}
+        {/* Says "tracked" deliberately. This table lists entities that HAVE a
+            lifecycle state, which is not the same set as the "active in the
+            last 90d" count on the State Machine card above — an entity keeps
+            its state row after its activity ages out of the window. Two honest
+            numbers that differ read as a bug unless both say what they count. */}
+        <span
+          className="text-xs text-muted-foreground ml-auto"
+          title="Entities that have been given a lifecycle state by the state machine. Entities extracted but never active inside the state machine's window have no state and are not listed here."
+        >
+          {filtered.length.toLocaleString()} tracked entit{filtered.length !== 1 ? "ies" : "y"}
         </span>
       </div>
 
@@ -554,14 +620,13 @@ export default function EntitiesAuditPage() {
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-28">State</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-16">Geo</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">v7d</th>
-                <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">WoW</th>
-                <th className="px-3 py-2.5 font-medium text-muted-foreground w-20 text-right">MoM</th>
+                <th className="px-3 py-2.5 font-medium text-muted-foreground w-24 text-right">Movement</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground">Platforms</th>
                 <th className="px-3 py-2.5 font-medium text-muted-foreground w-32">Trend (30d)</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s, i) => {
+              {paged.map((s, i) => {
                 const isExpanded = expanded === s.id;
                 return (
                   <>
@@ -597,11 +662,23 @@ export default function EntitiesAuditPage() {
                       </td>
                       <td className="px-3 py-2.5 font-mono text-muted-foreground">{s.geography}</td>
                       <td className="px-3 py-2.5 text-right font-mono">{s.volume7d}</td>
-                      <td className={`px-3 py-2.5 text-right font-mono ${s.growthWow > 0.1 ? "text-green-600" : s.growthWow < -0.1 ? "text-red-500" : "text-muted-foreground"}`}>
-                        {pct(s.growthWow)}
-                      </td>
-                      <td className={`px-3 py-2.5 text-right font-mono ${s.growthMom > 0.1 ? "text-green-600" : s.growthMom < -0.1 ? "text-red-500" : "text-muted-foreground"}`}>
-                        {pct(s.growthMom)}
+                      <td
+                        className={`px-3 py-2.5 text-right font-mono ${
+                          s.sovGrowthPct == null
+                            ? "text-muted-foreground/50"
+                            : s.sovGrowthPct > 10
+                              ? "text-green-600"
+                              : s.sovGrowthPct < -10
+                                ? "text-red-500"
+                                : "text-muted-foreground"
+                        }`}
+                        title={
+                          s.sovGrowthPct == null
+                            ? "Not enough cross-platform evidence to score movement"
+                            : "Share of conversation, last 60 days vs the 60 before"
+                        }
+                      >
+                        {s.sovGrowthPct == null ? "—" : `${s.sovGrowthPct > 0 ? "+" : ""}${s.sovGrowthPct}%`}
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex gap-1 flex-wrap">
@@ -629,8 +706,17 @@ export default function EntitiesAuditPage() {
                               <p className="text-muted-foreground font-medium mb-1">Metrics</p>
                               <p>Velocity: <span className="font-mono">{s.velocity.toFixed(2)}/day</span></p>
                               <p>Volatility: <span className="font-mono">{s.volatility.toFixed(2)}</span></p>
-                              <p>WoW: <span className="font-mono">{pct(s.growthWow)}</span></p>
-                              <p>MoM: <span className="font-mono">{pct(s.growthMom)}</span></p>
+                              <p className="text-muted-foreground/70">
+                                Raw WoW: <span className="font-mono">{pct(s.growthWow)}</span>
+                              </p>
+                              <p className="text-muted-foreground/70">
+                                Raw MoM: <span className="font-mono">{pct(s.growthMom)}</span>
+                              </p>
+                              <p className="text-[10px] text-muted-foreground/60 mt-1 leading-snug">
+                                Raw rates are what the state machine transitions on. They are
+                                inflated by how much we scraped — use Movement for the real
+                                figure.
+                              </p>
                             </div>
                             <div>
                               <p className="text-muted-foreground font-medium mb-1">Transition</p>
@@ -648,6 +734,38 @@ export default function EntitiesAuditPage() {
               })}
             </tbody>
           </table>
+
+          {/* Pager. Always rendered so the row range is visible even on a
+              single page — otherwise "showing 50" of 13,042 looks like data
+              is missing. */}
+          <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/20 text-xs">
+            <span className="text-muted-foreground tabular-nums">
+              {filtered.length === 0
+                ? "No entities match these filters"
+                : `${safePage * PAGE_SIZE + 1}–${Math.min((safePage + 1) * PAGE_SIZE, filtered.length)} of ${filtered.length.toLocaleString()}`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Previous
+              </button>
+              <span className="text-muted-foreground tabular-nums">
+                Page {safePage + 1} of {pageCount.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={safePage >= pageCount - 1}
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
